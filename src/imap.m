@@ -41,7 +41,10 @@
 
 :- implementation.
 
+:- import_module int.
 :- import_module list.
+:- import_module store.
+:- import_module string.
 
 :- include_module imap.charclass.
 :- include_module imap.command.
@@ -56,7 +59,10 @@
 :- import_module subprocess.
 
 :- type imap
-    --->    imap(subprocess).
+    --->    imap(
+                pipe        :: subprocess,
+                tag_counter :: io_mutvar(int)
+            ).
 
 %-----------------------------------------------------------------------------%
 
@@ -65,7 +71,7 @@ open(HostPort, Res, !IO) :-
         ["s_client", "-quiet", "-connect", HostPort], ResSpawn, !IO),
     (
         ResSpawn = ok(Proc),
-        IMAP = imap(Proc),
+        make_imap(Proc, IMAP, !IO),
         wait_for_greeting(IMAP, ResGreeting, !IO),
         (
             ResGreeting = ok(Greeting),
@@ -94,10 +100,24 @@ open(HostPort, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
+:- pred make_imap(subprocess::in, imap::out, io::di, io::uo) is det.
+
+make_imap(Proc, imap(Proc, TagMutvar), !IO) :-
+    store.new_mutvar(1, TagMutvar, !IO).
+
+:- pred get_new_tag(imap::in, tag::out, io::di, io::uo) is det.
+
+get_new_tag(imap(_Proc, TagMutvar), tag(Tag), !IO) :-
+    get_mutvar(TagMutvar, N, !IO),
+    set_mutvar(TagMutvar, N + 1, !IO),
+    Tag = string.from_int(N).
+
+%-----------------------------------------------------------------------------%
+
 login(IMAP, username(UserName), password(Password), Res, !IO) :-
-    IMAP = imap(Pipe),
+    IMAP = imap(Pipe, _TagMutvar),
     % XXX check capabilities first
-    Tag = tag("a"),
+    get_new_tag(IMAP, Tag, !IO),
     Login = login(make_astring(UserName), make_astring(Password)),
     make_command_stream(Tag - command_nonauth(Login), CommandStream),
     write_command_stream(Pipe, CommandStream, Res0, !IO),
@@ -113,7 +133,7 @@ login(IMAP, username(UserName), password(Password), Res, !IO) :-
     is det.
 
 wait_for_greeting(IMAP, Res, !IO) :-
-    IMAP = imap(Pipe),
+    IMAP = imap(Pipe, _TagMutvar),
     read_crlf_line_chop(Pipe, ResRead, !IO),
     (
         ResRead = ok(Bytes),
@@ -138,8 +158,8 @@ wait_for_greeting(IMAP, Res, !IO) :-
 %-----------------------------------------------------------------------------%
 
 logout(IMAP, Res, !IO) :-
-    IMAP = imap(Pipe),
-    Tag = tag("a"),
+    IMAP = imap(Pipe, _TagMutvar),
+    get_new_tag(IMAP, Tag, !IO),
     make_command_stream(Tag - command_any(logout), CommandStream),
     write_command_stream(Pipe, CommandStream, Res0, !IO),
     (
@@ -156,7 +176,7 @@ logout(IMAP, Res, !IO) :-
     io::di, io::uo) is det.
 
 wait_for_response_done(IMAP, Tag, Res, !IO) :-
-    IMAP = imap(Pipe),
+    IMAP = imap(Pipe, _TagMutvar),
     read_crlf_line_chop(Pipe, ResRead, !IO),
     (
         ResRead = ok(Bytes),
