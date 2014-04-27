@@ -1,0 +1,11 @@
+# Default target for mmc --make.
+MAIN_TARGET = main
+
+# General optimisation flags.
+MCFLAGS += --optimise-constructor-last-call
+
+# Module-specific options.
+MCFLAGS-subprocess += --no-ansi-c
+
+# Add workspace-specific options here.
+-include Mercury.params
