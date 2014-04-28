@@ -25,6 +25,9 @@
 :- type uidvalidity
     --->    uidvalidity(integer).   % (0 < n < 4,294,967,296)
 
+:- type message_seq_nr
+    --->    message_seq_nr(integer). % (0 <= n < 4,294,967,296)
+
 :- func make_astring(string) = astring.
 
 %-----------------------------------------------------------------------------%

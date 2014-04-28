@@ -3,6 +3,10 @@
 :- module imap.response.
 :- interface.
 
+:- import_module char.
+:- import_module integer.
+:- import_module map.
+
 :- type greeting
     --->    ok(resp_text)
     ;       preauth(resp_text)
@@ -10,8 +14,8 @@
 
 :- type response_single
     --->    continue_req(continue_req)
-    ;       response_data(response_data)
-    ;       response_done(response_done).
+    ;       response_data(response_data)    % untagged, server data
+    ;       response_done(response_done).   % server completion result
 
 :- type continue_req
     --->    continue_req_resp_text(resp_text).
@@ -20,7 +24,7 @@
 :- type response_data
     --->    cond_state(cond, resp_text)
     ;       bye(resp_text)
-    %;      mailbox_data(...)
+    ;       mailbox_data(mailbox_data)
     %;      message_data(...)
     ;       capability_data(capability_data).
 
@@ -41,18 +45,73 @@
     ;       badcharset(list(astring))
     ;       capability_data(capability_data)
     ;       parse
-    ;       permanentflags % (list(flag_perm))
+    ;       permanent_flags(list(flag), can_create_keyword_flags)
     ;       read_only
     ;       read_write
     ;       trycreate
     ;       uidnext(uid)
     ;       uidvalidity(uidvalidity)
-    ;       unseen(int)
+    ;       unseen(integer)
     ;       other(atom, maybe(string)).
 
 :- type capability_data == list(capability).
 
 :- type capability == atom.
+
+:- type can_create_keyword_flags
+    --->    can_create_keyword_flags
+    ;       cannot_create_keyword_flags.
+
+:- type flag
+    --->    system(system_flag)
+    ;       keyword(atom).
+
+:- type system_flag
+    --->    answered
+    ;       flagged
+    ;       deleted
+    ;       seen
+    ;       draft
+    % does not include \Recent
+    ;       extension(atom).
+
+:- type mailbox_data
+    --->    flags(list(flag))
+    ;       list(mailbox_list)
+    ;       lsub(mailbox_list)
+    ;       search(list(message_seq_nr))
+    ;       status(command.mailbox, status_att_list)
+    ;       exists(integer)
+    ;       recent(integer).
+
+:- type mailbox_list
+    --->    mailbox_list(
+                maybe(mailbox_sflag),
+                list(mailbox_oflag),
+                maybe(hierarchy_separator),
+                command.mailbox
+            ).
+
+:- type mailbox_sflag
+    --->    noselect
+    ;       marked
+    ;       unmarked.
+
+:- type mailbox_oflag
+    --->    noinferiors
+    ;       extension(atom).
+
+:- type hierarchy_separator
+    --->    hierarchy_separator(char).
+
+:- type status_att_list == map(status_att, integer).
+
+:- type status_att
+    --->    messages
+    ;       recent
+    ;       uidnext
+    ;       uidvalidity
+    ;       unseen.
 
 %-----------------------------------------------------------------------------%
 
@@ -66,7 +125,6 @@
 
 :- implementation.
 
-:- import_module char.
 :- import_module require.
 :- import_module string.
 
@@ -92,6 +150,31 @@ tag(Src, tag(Tag), !PS) :-
 text(Src, Text, !PS) :-
     one_or_more_chars('TEXT-CHAR', Src, Chars, !PS),
     string.from_char_list(Chars, Text).
+
+:- pred number(src::in, integer::out, ps::in, ps::out) is semidet.
+
+number(Src, Integer, !PS) :-
+    one_or_more_chars(char.is_digit, Src, Chars, !PS),
+    string.from_char_list(Chars, String),
+    integer.from_string(String) = Integer,
+    zero =< Integer, Integer < det_from_string("4294967296").
+
+:- pred nz_number(src::in, integer::out, ps::in, ps::out) is semidet.
+
+nz_number(Src, Integer, !PS) :-
+    digit_nz(Src, Char, !PS),
+    zero_or_more_chars(char.is_digit, Src, Chars, !PS),
+    string.from_char_list([Char | Chars], String),
+    integer.from_string(String) = Integer,
+    Integer < det_from_string("4294967296").
+
+:- pred digit_nz(src::in, char::out, ps::in, ps::out) is semidet.
+
+digit_nz(Src, C, !PS) :-
+    next_char(Src, C, !PS),
+    ( C = '1' ; C = '2' ; C = '3' ; C = '4' ; C = '5'
+    ; C = '6' ; C = '7' ; C = '8' ; C = '9'
+    ).
 
 %-----------------------------------------------------------------------------%
 
@@ -144,7 +227,8 @@ response_data(Src, ResponseData, !PS) :-
         ResponseData = cond_state(Cond, RespText)
     ; resp_cond_bye(Src, RespText, !PS) ->
         ResponseData = bye(RespText)
-    % mailbox-data
+    ; mailbox_data(Src, MailboxData, !PS) ->
+        ResponseData = mailbox_data(MailboxData)
     % message-data
     ; capability_data(Src, Caps, !PS) ->
         ResponseData = capability_data(Caps)
@@ -214,21 +298,43 @@ standard_resp_text_code(Src, atom(Atom), Code, !PS) :-
         Atom = "ALERT",
         Code = alert
     ;
+        Atom = "BADCHARSET",
+        sorry($module, $pred, Atom)
+    ;
         Atom = "CAPABILITY",
         sp_capabilities(Src, Caps, !PS),
         Code = capability_data(Caps)
     ;
-        ( Atom = "BADCHARSET"
-        ; Atom = "PARSE"
-        ; Atom = "PERMANENTFLAGS"
-        ; Atom = "READ-ONLY"
-        ; Atom = "READ-WRITE"
-        ; Atom = "TRYCREATE"
-        ; Atom = "UIDNEXT"
-        ; Atom = "UIDVALIDITY"
-        ; Atom = "UNSEEN"
-        ),
-        sorry($module, $pred, Atom)
+        Atom = "PARSE",
+        Code = parse
+    ;
+        Atom = "PERMANENTFLAGS",
+        permanent_flags(Src, Flags, CanCreateKeywordFlags, !PS),
+        Code = permanent_flags(Flags, CanCreateKeywordFlags)
+    ;
+        Atom = "READ-ONLY",
+        Code = read_only
+    ;
+        Atom = "READ-WRITE",
+        Code = read_write
+    ;
+        Atom = "TRYCREATE",
+        Code = trycreate
+    ;
+        Atom = "UNSEEN",
+        sp(Src, !PS),
+        nz_number(Src, Number, !PS),
+        Code = unseen(Number)
+    ;
+        Atom = "UIDNEXT",
+        sp(Src, !PS),
+        nz_number(Src, Number, !PS),
+        Code = uidnext(uid(Number))
+    ;
+        Atom = "UIDVALIDITY",
+        sp(Src, !PS),
+        nz_number(Src, Number, !PS),
+        Code = uidvalidity(uidvalidity(Number))
     ).
 
 :- pred other_resp_text_code(src::in, atom::in, resp_text_code::out,
@@ -273,6 +379,129 @@ sp_capability(Src, Cap, !PS) :-
 
 capability(Src, Cap, !PS) :-
     atom(Src, Cap, !PS).
+
+:- pred permanent_flags(src::in, list(flag)::out,
+    can_create_keyword_flags::out, ps::in, ps::out) is semidet.
+
+permanent_flags(Src, Flags, CanCreateKeywordFlags, !PS) :-
+    sp(Src, !PS),
+    next_char(Src, '(', !PS),
+    (
+        permanent_flags_inner(Src, [], RevFlags,
+            cannot_create_keyword_flags, CanCreateKeywordFlags0, !PS)
+    ->
+        list.reverse(RevFlags, Flags),
+        CanCreateKeywordFlags = CanCreateKeywordFlags0
+    ;
+        Flags = [],
+        CanCreateKeywordFlags = cannot_create_keyword_flags
+    ),
+    next_char(Src, ')', !PS).
+
+:- pred permanent_flags_inner(src::in, list(flag)::in, list(flag)::out,
+    can_create_keyword_flags::in, can_create_keyword_flags::out,
+    ps::in, ps::out) is semidet.
+
+permanent_flags_inner(Src, !AccFlags, !CanCreateKeywordFlags, !PS) :-
+    (
+        next_char(Src, '\\', !PS),
+        next_char(Src, '*', !PS)
+    ->
+        !:CanCreateKeywordFlags = can_create_keyword_flags
+    ;
+        flag(Src, Flag, !PS),
+        cons(Flag, !AccFlags)
+    ),
+    ( sp(Src, !PS) ->
+        permanent_flags_inner(Src, !AccFlags, !CanCreateKeywordFlags, !PS)
+    ;
+        true
+    ).
+
+:- pred flag(src::in, flag::out, ps::in, ps::out) is semidet.
+
+flag(Src, Flag, !PS) :-
+    ( next_char(Src, '\\', !PS) ->
+        atom(Src, Atom, !PS),
+        system_flag(Atom, SystemFlag),
+        Flag = system(SystemFlag)
+    ;
+        atom(Src, Atom, !PS),
+        Flag = keyword(Atom)
+    ).
+
+:- pred system_flag(atom::in, system_flag::out) is semidet.
+
+system_flag(Atom, Flag) :-
+    ( Atom = atom("ANSWERED") ->
+        Flag = answered
+    ; Atom = atom("FLAGGED") ->
+        Flag = flagged
+    ; Atom = atom("DELETED") ->
+        Flag = deleted
+    ; Atom = atom("SEEN") ->
+        Flag = seen
+    ; Atom = atom("DRAFT") ->
+        Flag = draft
+    ;
+        not Atom = atom("RECENT"),
+        Flag = extension(Atom)
+    ).
+
+:- pred mailbox_data(src::in, mailbox_data::out, ps::in, ps::out) is semidet.
+
+mailbox_data(Src, MailboxData, !PS) :-
+    % atom is a superset of number so check number first.
+    ( number(Src, Number, !PS) ->
+        sp(Src, !PS),
+        atom(Src, Atom, !PS),
+        (
+            Atom = atom("EXISTS"),
+            MailboxData = exists(Number)
+        ;
+            Atom = atom("RECENT"),
+            MailboxData = recent(Number)
+        )
+    ;
+        atom(Src, Atom, !PS),
+        (
+            Atom = atom("FLAGS"),
+            sp(Src, !PS),
+            flag_list(Src, Flags, !PS),
+            MailboxData = flags(Flags)
+        ;
+            Atom = atom("LIST"),
+            sorry($module, $pred, "LIST")
+        ;
+            Atom = atom("LSUB"),
+            sorry($module, $pred, "LSUB")
+        ;
+            Atom = atom("SEARCH"),
+            sorry($module, $pred, "SEARCH")
+        ;
+            Atom = atom("STATUS"),
+            sorry($module, $pred, "STATUS")
+        )
+    ).
+
+:- pred flag_list(src::in, list(flag)::out, ps::in, ps::out) is semidet.
+
+flag_list(Src, Flags, !PS) :-
+    next_char(Src, '(', !PS),
+    % XXX should have a helper for space-separated lists
+    ( flag(Src, Flag, !PS) ->
+        zero_or_more(sp_flag, Src, FlagsTail, !PS),
+        Flags = [Flag | FlagsTail]
+    ;
+        Flags = []
+    ),
+    next_char(Src, ')', !PS).
+
+:- pred sp_flag(src::in, flag::out, ps::in, ps::out) is semidet.
+
+sp_flag(Src, Flag, !PS) :-
+    sp(Src, !PS),
+    flag(Src, Flag, !PS).
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

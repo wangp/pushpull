@@ -30,7 +30,8 @@ main(!IO) :-
             (
                 ResLogin = ok(RespText),
                 io.write(string(RespText), !IO),
-                io.nl(!IO)
+                io.nl(!IO),
+                logged_in(IMAP, !IO)
             ;
                 ResLogin = no(ResponseText),
                 report_error(string(ResponseText), !IO)
@@ -53,6 +54,28 @@ main(!IO) :-
         )
     ;
         report_error("unexpected arguments", !IO)
+    ).
+
+:- pred logged_in(imap::in, io::di, io::uo) is det.
+
+logged_in(IMAP, !IO) :-
+    examine(IMAP, mailbox("INBOX"), ResExamine, !IO),
+    (
+        ResExamine = ok(RespText),
+        io.write(string(RespText), !IO),
+        io.nl(!IO)
+    ;
+        ResExamine = no(RespText),
+        report_error(string(RespText), !IO)
+    ;
+        ResExamine = bad(RespText),
+        report_error(string(RespText), !IO)
+    ;
+        ResExamine = fatal(RespText),
+        report_error(string(RespText), !IO)
+    ;
+        ResExamine = error(Error),
+        report_error(Error, !IO)
     ).
 
 :- pred report_error(string::in, io::di, io::uo) is det.

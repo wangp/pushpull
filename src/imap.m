@@ -20,6 +20,8 @@
 :- type password
     --->    password(string).
 
+:- type mailbox.
+
 :- type imap_result
     --->    ok(resp_text)
     ;       no(resp_text)
@@ -35,6 +37,11 @@
     io::di, io::uo) is det.
 
 :- pred logout(imap::in, imap_result::out, io::di, io::uo) is det.
+
+:- pred examine(imap::in, mailbox::in, imap_result::out, io::di, io::uo)
+    is det.
+
+:- func mailbox(string) = mailbox.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -63,6 +70,8 @@
                 pipe        :: subprocess,
                 tag_counter :: io_mutvar(int)
             ).
+
+:- type mailbox == command.mailbox.
 
 %-----------------------------------------------------------------------------%
 
@@ -172,6 +181,28 @@ logout(IMAP, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
+examine(IMAP, Mailbox, Res, !IO) :-
+    IMAP = imap(Pipe, _TagMutvar),
+    get_new_tag(IMAP, Tag, !IO),
+    make_command_stream(Tag - command_auth(examine(Mailbox)), CommandStream),
+    write_command_stream(Pipe, CommandStream, Res0, !IO),
+    (
+        Res0 = ok,
+        wait_for_response_done(IMAP, Tag, Res, !IO)
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
+
+mailbox(S) =
+    ( string.to_upper(S, "INBOX") ->
+        inbox
+    ;
+        astring(make_astring(S))
+    ).
+
+%-----------------------------------------------------------------------------%
+
 :- pred wait_for_response_done(imap::in, tag::in, imap_result::out,
     io::di, io::uo) is det.
 
@@ -234,7 +265,16 @@ parse_response_single(Input, Res) :-
     ->
         Res = ok(Response)
     ;
-        Res = error("failed to parse response")
+        Res = error("failed to parse response"),
+        trace [runtime(env("DEBUG_IMAP")), io(!IO)] (
+            ( string.from_code_unit_list(Input, String) ->
+                Stream = io.stderr_stream,
+                io.write_string(Stream, String, !IO),
+                io.nl(Stream, !IO)
+            ;
+                true
+            )
+        )
     ).
 
 %-----------------------------------------------------------------------------%

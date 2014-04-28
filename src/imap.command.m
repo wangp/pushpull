@@ -20,17 +20,17 @@
 
     % Valid only in Authenticated or Selected state.
 :- type command_auth
-    --->    append
-    ;       create
-    ;       delete
-    ;       examine
-    ;       list
-    ;       lsub
-    ;       rename
-    ;       select
-    ;       status
-    ;       subscribe
-    ;       unsubscribe.
+    %--->   append
+    %;      create
+    %;      delete
+    --->    examine(command.mailbox).
+    %;      list
+    %;      lsub
+    %;      rename
+    %;      select
+    %;      status
+    %;      subscribe
+    %;      unsubscribe.
 
     % Valid only when in Not Authenticated state.
 :- type command_nonauth
@@ -49,6 +49,15 @@
     ;       uid
     ;       search.
 
+:- type mailbox
+    --->    inbox
+    ;       astring(astring). % not INBOX (case-insensitive)
+
+    % A crlf in the command stream means the client must wait for a
+    % continuation response from the server before continuing with the rest of
+    % the stream.  The final crlf that terminates the command is NOT in the
+    % command stream.
+    %
 :- pred make_command_stream(command::in, list(string)::out) is det.
 
 :- func crlf = string.
@@ -109,8 +118,8 @@ make_command_stream(Command, List) :-
         Command = command_any(X),
         add(X, !Acc)
     ;
-        Command = command_auth(_),
-        sorry($module, $pred, "command_auth")
+        Command = command_auth(X),
+        add(X, !Acc)
     ;
         Command = command_nonauth(X),
         add(X, !Acc)
@@ -132,6 +141,15 @@ make_command_stream(Command, List) :-
     add(noop, !Acc) :-
     (
         add("NOOP", !Acc)
+    )
+].
+
+:- instance add(command_auth) where [
+    add(examine(Mailbox), !Acc) :-
+    (
+        add("EXAMINE", !Acc),
+        add(sp, !Acc),
+        add(Mailbox, !Acc)
     )
 ].
 
@@ -170,6 +188,17 @@ make_command_stream(Command, List) :-
         add(BraceCount, !Acc),
         add(crlf, !Acc), % Need to wait for server response.
         add(L, !Acc)
+    )
+].
+
+:- instance add(command.mailbox) where [
+    add(Mailbox, !Acc) :-
+    (
+        Mailbox = inbox,
+        add("INBOX", !Acc)
+    ;
+        Mailbox = astring(S),
+        add(S, !Acc)
     )
 ].
 
