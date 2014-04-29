@@ -14,28 +14,41 @@
 
 :- type response_single
     --->    continue_req(continue_req)
-    ;       response_data(response_data)    % untagged, server data
-    ;       response_done(response_done).   % server completion result
+    ;       untagged(untagged_response_data)
+    ;       tagged(tag, cond, resp_text).
 
 :- type continue_req
     --->    continue_req_resp_text(resp_text).
     %;       continue_req_base64(base64).
 
-:- type response_data
-    --->    cond_state(cond, resp_text)
-    ;       bye(resp_text)
+:- type untagged_response_data
+    --->    cond_or_bye(cond_bye, resp_text)
+            % BYE is not final if part of LOGOUT.
     ;       mailbox_data(mailbox_data)
     %;      message_data(...)
     ;       capability_data(capability_data).
 
-:- type response_done
-    --->    response_tagged(tag, cond, resp_text).
-    %       response_fatal(resp_cond_bye).
+:- type complete_response
+    --->    complete_response(
+                untagged        :: list(untagged_response_data),
+                final_tag_cond  :: tagged_response_or_bye,
+                final_resp_text :: resp_text
+            ).
+
+:- type tagged_response_or_bye
+    --->    tagged(tag, cond)
+    ;       bye.
 
 :- type cond
     --->    ok
     ;       no
     ;       bad.
+
+:- type cond_bye
+    --->    ok
+    ;       no
+    ;       bad
+    ;       bye.
 
 :- type resp_text
     --->    resp_text(
@@ -130,6 +143,12 @@
 
 %-----------------------------------------------------------------------------%
 
+:- func cond_bye_1(tagged_response_or_bye) = cond_bye.
+
+:- func cond_bye_2(cond) = cond_bye.
+
+%-----------------------------------------------------------------------------%
+
 :- pred greeting(src::in, greeting::out, ps::in, ps::out) is semidet.
 
 :- pred response_single(src::in, response_single::out, ps::in, ps::out)
@@ -144,6 +163,15 @@
 :- import_module string.
 
 :- import_module imap.charclass.
+
+%-----------------------------------------------------------------------------%
+
+cond_bye_1(tagged(_Tag, Cond)) = cond_bye_2(Cond).
+cond_bye_1(bye) = bye.
+
+cond_bye_2(ok) = ok.
+cond_bye_2(no) = no.
+cond_bye_2(bad) = bad.
 
 %-----------------------------------------------------------------------------%
 
@@ -196,16 +224,17 @@ digit_nz(Src, C, !PS) :-
 greeting(Src, Greeting, !PS) :-
     next_char(Src, '*', !PS),
     sp(Src, !PS),
-    ( chars_ci("OK", Src, !PS) ->
-        sp(Src, !PS),
-        resp_text(Src, RespText, !PS),
+    atom(Src, Atom, !PS),
+    sp(Src, !PS),
+    resp_text(Src, RespText, !PS),
+    (
+        Atom = atom("OK"),
         Greeting = ok(RespText)
-    ; chars_ci("PREAUTH", Src, !PS) ->
-        sp(Src, !PS),
-        resp_text(Src, RespText, !PS),
+    ;
+        Atom = atom("PREAUTH"),
         Greeting = preauth(RespText)
     ;
-        resp_cond_bye(Src, RespText, !PS),
+        Atom = atom("BYE"),
         Greeting = bye(RespText)
     ).
 
@@ -216,11 +245,12 @@ response_single(Src, Response, !PS) :-
         continue_req(Src, ContinueReq, !PS),
         Response = continue_req(ContinueReq)
     ; next_char(Src, '*', !PS) ->
+        % This includes response-fatal.
         response_data(Src, ResponseData, !PS),
-        Response = response_data(ResponseData)
+        Response = untagged(ResponseData)
     ;
-        response_done(Src, ResponseDone, !PS),
-        Response = response_done(ResponseDone)
+        response_tagged(Src, Tag, Cond, RespText, !PS),
+        Response = tagged(Tag, Cond, RespText)
     ).
 
 :- pred continue_req(src::in, continue_req::out, ps::in, ps::out) is semidet.
@@ -234,14 +264,13 @@ continue_req(Src, ContinueReq, !PS) :-
         fail
     ).
 
-:- pred response_data(src::in, response_data::out, ps::in, ps::out) is semidet.
+:- pred response_data(src::in, untagged_response_data::out, ps::in, ps::out)
+    is semidet.
 
 response_data(Src, ResponseData, !PS) :-
     sp(Src, !PS),
-    ( resp_cond_state(Src, Cond, RespText, !PS) ->
-        ResponseData = cond_state(Cond, RespText)
-    ; resp_cond_bye(Src, RespText, !PS) ->
-        ResponseData = bye(RespText)
+    ( resp_cond_state_or_bye(Src, Cond, RespText, !PS) ->
+        ResponseData = cond_or_bye(Cond, RespText)
     ; mailbox_data(Src, MailboxData, !PS) ->
         ResponseData = mailbox_data(MailboxData)
     % message-data
@@ -251,32 +280,35 @@ response_data(Src, ResponseData, !PS) :-
         fail
     ).
 
-:- pred response_done(src::in, response_done::out, ps::in, ps::out) is semidet.
+:- pred response_tagged(src::in, tag::out, cond::out, resp_text::out,
+    ps::in, ps::out) is semidet.
 
-response_done(Src, response_tagged(Tag, Cond, RespText), !PS) :-
+response_tagged(Src, Tag, Cond, RespText, !PS) :-
     tag(Src, Tag, !PS),
     sp(Src, !PS),
     resp_cond_state(Src, Cond, RespText, !PS).
 
-:- pred resp_cond_bye(src::in, resp_text::out, ps::in, ps::out) is semidet.
+:- pred resp_cond_state(src::in, cond::out, resp_text::out,
+    ps::in, ps::out) is semidet.
 
-resp_cond_bye(Src, RespText, !PS) :-
-    chars_ci("BYE", Src, !PS),
+resp_cond_state(Src, Cond, RespText, !PS) :-
+    atom(Src, atom(Atom), !PS),
+    ( Atom = "OK", Cond = ok
+    ; Atom = "NO", Cond = no
+    ; Atom = "BAD", Cond = bad
+    ),
     sp(Src, !PS),
     resp_text(Src, RespText, !PS).
 
-:- pred resp_cond_state(src::in, cond::out, resp_text::out, ps::in, ps::out)
-    is semidet.
+:- pred resp_cond_state_or_bye(src::in, cond_bye::out, resp_text::out,
+    ps::in, ps::out) is semidet.
 
-resp_cond_state(Src, Cond, RespText, !PS) :-
-    ( chars_ci("OK", Src, !PS) ->
-        Cond = ok
-    ; chars_ci("NO", Src, !PS) ->
-        Cond = no
-    ; chars_ci("BAD", Src, !PS) ->
-        Cond = bad
-    ;
-        fail
+resp_cond_state_or_bye(Src, Cond, RespText, !PS) :-
+    atom(Src, atom(Atom), !PS),
+    ( Atom = "OK", Cond = ok
+    ; Atom = "NO", Cond = no
+    ; Atom = "BAD", Cond = bad
+    ; Atom = "BYE", Cond = bye
     ),
     sp(Src, !PS),
     resp_text(Src, RespText, !PS).

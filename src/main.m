@@ -14,7 +14,6 @@
 
 :- import_module list.
 :- import_module maybe.
-:- import_module string.
 
 :- import_module imap.
 
@@ -27,26 +26,21 @@ main(!IO) :-
         report_alerts(OpenAlerts, !IO),
         (
             ResOpen = ok(IMAP),
-            login(IMAP, username(UserName), password(Password), ResLogin,
-                LoginAlerts, !IO),
+            login(IMAP, username(UserName), password(Password),
+                result(ResLogin, LoginMessage, LoginAlerts), !IO),
             report_alerts(LoginAlerts, !IO),
             (
-                ResLogin = ok(RespText),
-                io.write(string(RespText), !IO),
+                ResLogin = ok,
+                io.write_string(LoginMessage, !IO),
                 io.nl(!IO),
                 logged_in(IMAP, !IO)
             ;
-                ResLogin = no(ResponseText),
-                report_error(string(ResponseText), !IO)
-            ;
-                ResLogin = bad(ResponseText),
-                report_error(string(ResponseText), !IO)
-            ;
-                ResLogin = fatal(ResponseText),
-                report_error(string(ResponseText), !IO)
-            ;
-                ResLogin = error(Error),
-                report_error(Error, !IO)
+                ( ResLogin = no
+                ; ResLogin = bad
+                ; ResLogin = bye
+                ; ResLogin = error
+                ),
+                report_error(LoginMessage, !IO)
             ),
             logout(IMAP, ResLogout, !IO),
             io.write(ResLogout, !IO),
@@ -62,24 +56,19 @@ main(!IO) :-
 :- pred logged_in(imap::in, io::di, io::uo) is det.
 
 logged_in(IMAP, !IO) :-
-    examine(IMAP, mailbox("INBOX"), ResExamine, Alerts, !IO),
+    examine(IMAP, mailbox("INBOX"), result(ResExamine, Text, Alerts), !IO),
     report_alerts(Alerts, !IO),
     (
-        ResExamine = ok(Text),
+        ResExamine = ok,
         io.write_string(Text, !IO),
         io.nl(!IO)
     ;
-        ResExamine = no(Text),
+        ( ResExamine = no
+        ; ResExamine = bad
+        ; ResExamine = bye
+        ; ResExamine = error
+        ),
         report_error(Text, !IO)
-    ;
-        ResExamine = bad(Text),
-        report_error(Text, !IO)
-    ;
-        ResExamine = fatal(Text),
-        report_error(Text, !IO)
-    ;
-        ResExamine = error(Error),
-        report_error(Error, !IO)
     ).
 
 :- pred report_error(string::in, io::di, io::uo) is det.
