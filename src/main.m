@@ -59,20 +59,21 @@ main(!IO) :-
 :- pred logged_in(imap::in, io::di, io::uo) is det.
 
 logged_in(IMAP, !IO) :-
-    examine(IMAP, mailbox("INBOX"), ResExamine, !IO),
+    examine(IMAP, mailbox("INBOX"), ResExamine, Alerts, !IO),
+    report_alerts(Alerts, !IO),
     (
-        ResExamine = ok(RespText),
-        io.write(string(RespText), !IO),
+        ResExamine = ok(Text),
+        io.write_string(Text, !IO),
         io.nl(!IO)
     ;
-        ResExamine = no(RespText),
-        report_error(string(RespText), !IO)
+        ResExamine = no(Text),
+        report_error(Text, !IO)
     ;
-        ResExamine = bad(RespText),
-        report_error(string(RespText), !IO)
+        ResExamine = bad(Text),
+        report_error(Text, !IO)
     ;
-        ResExamine = fatal(RespText),
-        report_error(string(RespText), !IO)
+        ResExamine = fatal(Text),
+        report_error(Text, !IO)
     ;
         ResExamine = error(Error),
         report_error(Error, !IO)
@@ -85,6 +86,18 @@ report_error(Error, !IO) :-
     io.write_string(Stream, Error, !IO),
     io.nl(Stream, !IO),
     io.set_exit_status(1, !IO).
+
+:- pred report_alerts(list(alert)::in, io::di, io::uo) is det.
+
+report_alerts(Alerts, !IO) :-
+    list.foldl(report_alert, Alerts, !IO).
+
+:- pred report_alert(alert::in, io::di, io::uo) is det.
+
+report_alert(alert(Alert), !IO) :-
+    io.write_string("ALERT: ", !IO),
+    io.write_string(Alert, !IO),
+    io.nl(!IO).
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

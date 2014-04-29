@@ -38,25 +38,40 @@
     ;       bad.
 
 :- type resp_text
-    --->    resp_text(maybe(resp_text_code), string).
+    --->    resp_text(
+                maybe_code :: maybe(resp_text_code),
+                human_text :: string
+            ).
 
-:- type resp_text_code
+:- type resp_text_code % really response_code
     --->    alert
     ;       badcharset(list(astring))
     ;       capability_data(capability_data)
     ;       parse
-    ;       permanent_flags(list(flag), can_create_keyword_flags)
+    ;       permanent_flags(permanent_flags)
     ;       read_only
     ;       read_write
     ;       trycreate
     ;       uidnext(uid)
     ;       uidvalidity(uidvalidity)
-    ;       unseen(integer)
+    ;       unseen(message_seq_nr)
     ;       other(atom, maybe(string)).
+
+:- inst mailbox_response_code
+    --->    unseen(ground)
+    ;       permanent_flags(ground)
+    ;       read_only
+    ;       read_write
+    ;       uidnext(ground)
+    ;       uidvalidity(ground)
+    ;       other(ground, ground).
 
 :- type capability_data == list(capability).
 
 :- type capability == atom.
+
+:- type permanent_flags
+    --->    permanent_flags(list(flag), can_create_keyword_flags).
 
 :- type can_create_keyword_flags
     --->    can_create_keyword_flags
@@ -309,8 +324,8 @@ standard_resp_text_code(Src, atom(Atom), Code, !PS) :-
         Code = parse
     ;
         Atom = "PERMANENTFLAGS",
-        permanent_flags(Src, Flags, CanCreateKeywordFlags, !PS),
-        Code = permanent_flags(Flags, CanCreateKeywordFlags)
+        permanent_flags(Src, PermanentFlags, !PS),
+        Code = permanent_flags(PermanentFlags)
     ;
         Atom = "READ-ONLY",
         Code = read_only
@@ -324,7 +339,7 @@ standard_resp_text_code(Src, atom(Atom), Code, !PS) :-
         Atom = "UNSEEN",
         sp(Src, !PS),
         nz_number(Src, Number, !PS),
-        Code = unseen(Number)
+        Code = unseen(message_seq_nr(Number))
     ;
         Atom = "UIDNEXT",
         sp(Src, !PS),
@@ -380,10 +395,10 @@ sp_capability(Src, Cap, !PS) :-
 capability(Src, Cap, !PS) :-
     atom(Src, Cap, !PS).
 
-:- pred permanent_flags(src::in, list(flag)::out,
-    can_create_keyword_flags::out, ps::in, ps::out) is semidet.
+:- pred permanent_flags(src::in, permanent_flags::out,
+    ps::in, ps::out) is semidet.
 
-permanent_flags(Src, Flags, CanCreateKeywordFlags, !PS) :-
+permanent_flags(Src, permanent_flags(Flags, CanCreateKeywordFlags), !PS) :-
     sp(Src, !PS),
     next_char(Src, '(', !PS),
     (
