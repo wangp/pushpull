@@ -40,9 +40,10 @@
 :- type alert
     --->    alert(string).
 
-    % open("host:port", Res)
+    % open("host:port", Res, Alerts)
     %
-:- pred open(string::in, maybe_error(imap)::out, io::di, io::uo) is det.
+:- pred open(string::in, maybe_error(imap)::out, list(alert)::out,
+    io::di, io::uo) is det.
 
 :- pred login(imap::in, username::in, imap.password::in, imap_result::out,
     list(alert)::out, io::di, io::uo) is det.
@@ -119,23 +120,27 @@
 
 %-----------------------------------------------------------------------------%
 
-open(HostPort, Res, !IO) :-
+open(HostPort, Res, Alerts, !IO) :-
     subprocess.spawn("/usr/bin/openssl",
         ["s_client", "-quiet", "-connect", HostPort], ResSpawn, !IO),
     (
         ResSpawn = ok(Proc),
-        make_imap(Proc, IMAP, !IO),
-        wait_for_greeting(IMAP, ResGreeting, !IO),
+        wait_for_greeting(Proc, ResGreeting, !IO),
         (
             ResGreeting = ok(Greeting),
             (
-                Greeting = ok(_RespText), % XXX use this
+                Greeting = ok(RespText),
+                handle_greeting_resp_text(RespText, MaybeCaps, Alerts),
+                make_imap(Proc, MaybeCaps, IMAP, !IO),
                 Res = ok(IMAP)
             ;
-                Greeting = preauth(_RespText), % XXX use this
+                Greeting = preauth(RespText),
+                handle_greeting_resp_text(RespText, MaybeCaps, Alerts),
+                make_imap(Proc, MaybeCaps, IMAP, !IO),
                 Res = ok(IMAP)
             ;
-                Greeting = bye(_RespText), % XXX use this
+                Greeting = bye(RespText),
+                handle_greeting_resp_text(RespText, _MaybeCaps, Alerts),
                 close_pipes(Proc, !IO),
                 wait_pid(Proc, blocking, _WaitRes, !IO),
                 Res = error("greeted with BYE")
@@ -144,26 +149,19 @@ open(HostPort, Res, !IO) :-
             ResGreeting = error(Error),
             close_pipes(Proc, !IO),
             wait_pid(Proc, blocking, _WaitRes, !IO),
-            Res = error(Error)
+            Res = error(Error),
+            Alerts = []
         )
     ;
         ResSpawn = error(Error),
-        Res = error(Error)
+        Res = error(Error),
+        Alerts = []
     ).
 
-:- pred make_imap(subprocess::in, imap::out, io::di, io::uo) is det.
+:- pred wait_for_greeting(subprocess::in, maybe_error(greeting)::out,
+    io::di, io::uo) is det.
 
-make_imap(Proc, IMAP, !IO) :-
-    store.new_mutvar(1, TagMutvar, !IO),
-    store.new_mutvar(no, CapsMutvar, !IO),
-    store.new_mutvar(no, SelMutvar, !IO),
-    IMAP = imap(Proc, TagMutvar, CapsMutvar, SelMutvar).
-
-:- pred wait_for_greeting(imap::in, maybe_error(greeting)::out, io::di, io::uo)
-    is det.
-
-wait_for_greeting(IMAP, Res, !IO) :-
-    IMAP = imap(Pipe, _TagMutvar, _CapsMutvar, _SelMutvar),
+wait_for_greeting(Pipe, Res, !IO) :-
     read_crlf_line_chop(Pipe, ResRead, !IO),
     (
         ResRead = ok(Bytes),
@@ -184,6 +182,51 @@ wait_for_greeting(IMAP, Res, !IO) :-
         ResRead = error(Error),
         Res = error(io.error_message(Error))
     ).
+
+:- pred handle_greeting_resp_text(resp_text::in, maybe(capability_data)::out,
+    list(alert)::out) is det.
+
+handle_greeting_resp_text(RespText, MaybeCaps, Alerts) :-
+    RespText = resp_text(MaybeResponseCode, Text),
+    (
+        MaybeResponseCode = yes(ResponseCode),
+        (
+            ResponseCode = alert,
+            Alerts = [alert(Text)],
+            MaybeCaps = no
+        ;
+            ResponseCode = capability_data(Caps),
+            MaybeCaps = yes(Caps),
+            Alerts = []
+        ;
+            ( ResponseCode = badcharset(_)
+            ; ResponseCode = parse
+            ; ResponseCode = permanent_flags(_)
+            ; ResponseCode = read_only
+            ; ResponseCode = read_write
+            ; ResponseCode = trycreate
+            ; ResponseCode = uidnext(_)
+            ; ResponseCode = uidvalidity(_)
+            ; ResponseCode = unseen(_)
+            ; ResponseCode = other(_, _)
+            ),
+            MaybeCaps = no,
+            Alerts = []
+        )
+    ;
+        MaybeResponseCode = no,
+        MaybeCaps = no,
+        Alerts = []
+    ).
+
+:- pred make_imap(subprocess::in, maybe(capability_data)::in, imap::out,
+    io::di, io::uo) is det.
+
+make_imap(Proc, MaybeCaps, IMAP, !IO) :-
+    store.new_mutvar(1, TagMutvar, !IO),
+    store.new_mutvar(MaybeCaps, CapsMutvar, !IO),
+    store.new_mutvar(no, SelMutvar, !IO),
+    IMAP = imap(Proc, TagMutvar, CapsMutvar, SelMutvar).
 
 %-----------------------------------------------------------------------------%
 

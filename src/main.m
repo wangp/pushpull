@@ -23,7 +23,8 @@
 main(!IO) :-
     io.command_line_arguments(Args, !IO),
     ( Args = [HostPort, UserName, Password] ->
-        imap.open(HostPort, ResOpen, !IO),
+        imap.open(HostPort, ResOpen, OpenAlerts, !IO),
+        report_alerts(OpenAlerts, !IO),
         (
             ResOpen = ok(IMAP),
             login(IMAP, username(UserName), password(Password), ResLogin,
