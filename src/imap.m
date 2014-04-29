@@ -76,8 +76,13 @@
     --->    imap(
                 pipe :: subprocess,
                 tag_counter :: io_mutvar(int),
-                capabilities :: io_mutvar(maybe(capability_data)),
-                selected :: io_mutvar(maybe(selected_mailbox))
+                imap_state :: io_mutvar(imap_state)
+            ).
+
+:- type imap_state
+    --->    imap_state(
+                capabilities :: maybe(capability_data),
+                selected :: maybe(selected_mailbox)
             ).
 
 :- type selected_mailbox
@@ -218,16 +223,15 @@ handle_greeting_resp_text(RespText, MaybeCaps, Alerts) :-
 
 make_imap(Proc, MaybeCaps, IMAP, !IO) :-
     store.new_mutvar(1, TagMutvar, !IO),
-    store.new_mutvar(MaybeCaps, CapsMutvar, !IO),
-    store.new_mutvar(no, SelMutvar, !IO),
-    IMAP = imap(Proc, TagMutvar, CapsMutvar, SelMutvar).
+    store.new_mutvar(imap_state(MaybeCaps, no), StateMutvar, !IO),
+    IMAP = imap(Proc, TagMutvar, StateMutvar).
 
 %-----------------------------------------------------------------------------%
 
 :- pred get_new_tag(imap::in, tag::out, io::di, io::uo) is det.
 
 get_new_tag(IMAP, tag(Tag), !IO) :-
-    IMAP = imap(_Proc, TagMutvar, _CapsMutvar, _SelMutvar),
+    IMAP = imap(_Proc, TagMutvar, _StateMutvar),
     get_mutvar(TagMutvar, N, !IO),
     set_mutvar(TagMutvar, N + 1, !IO),
     Tag = string.from_int(N).
@@ -255,7 +259,7 @@ make_result(MaybeTagCond, RespText, Alerts, Result) :-
 %-----------------------------------------------------------------------------%
 
 login(IMAP, username(UserName), password(Password), Res, !IO) :-
-    IMAP = imap(Pipe, _TagMutvar, _CapsMutvar, _SelMutvar),
+    IMAP = imap(Pipe, _TagMutvar, _StateMutvar),
     % XXX check capabilities first
     get_new_tag(IMAP, Tag, !IO),
     Login = login(make_astring(UserName), make_astring(Password)),
@@ -276,52 +280,48 @@ login(IMAP, username(UserName), password(Password), Res, !IO) :-
 handle_login_response(_IMAP, error(Error), Res, !IO) :-
     Res = result(error, Error, []).
 handle_login_response(IMAP, ok(Response), Res, !IO) :-
-    IMAP = imap(_Pipe, _TagMutvar, CapsMutvar, _SelMutvar),
-    get_mutvar(CapsMutvar, MaybeCaps0, !IO),
+    IMAP = imap(_Pipe, _TagMutvar, StateMutvar),
+    get_mutvar(StateMutvar, State0, !IO),
 
     Response = complete_response(UntaggedResponses, FinalMaybeTag,
         FinalRespText),
     list.foldl2(apply_login_untagged_responses, UntaggedResponses,
-        MaybeCaps0, MaybeCaps1, [], Alerts1),
+        State0, State1, [], Alerts1),
     apply_login_cond_or_bye(cond_bye_1(FinalMaybeTag), FinalRespText,
-        MaybeCaps1, MaybeCaps, Alerts1, Alerts),
+        State1, State, Alerts1, Alerts),
     make_result(FinalMaybeTag, FinalRespText, Alerts, Res),
 
-    set_mutvar(CapsMutvar, MaybeCaps, !IO).
+    set_mutvar(StateMutvar, State, !IO).
 
 :- pred apply_login_untagged_responses(untagged_response_data::in,
-    maybe(capability_data)::in, maybe(capability_data)::out,
-    list(alert)::in, list(alert)::out) is det.
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out) is det.
 
-apply_login_untagged_responses(ResponseData, !MaybeCaps, !Alerts) :-
+apply_login_untagged_responses(ResponseData, !State, !Alerts) :-
     (
         ResponseData = mailbox_data(_)
     ;
         ResponseData = cond_or_bye(Cond, RespText),
-        apply_login_cond_or_bye(Cond, RespText, !MaybeCaps, !Alerts)
+        apply_login_cond_or_bye(Cond, RespText, !State, !Alerts)
     ;
         ResponseData = capability_data(_),
         sorry($module, $pred, "capability_data")
     ).
 
 :- pred apply_login_cond_or_bye(cond_bye::in, resp_text::in,
-    maybe(capability_data)::in, maybe(capability_data)::out,
-    list(alert)::in, list(alert)::out) is det.
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out) is det.
 
-apply_login_cond_or_bye(Cond, RespText, !MaybeCaps, !Alerts) :-
+apply_login_cond_or_bye(Cond, RespText, !State, !Alerts) :-
     (
         RespText = resp_text(yes(ResponseCode), Text),
-        apply_login_cond_or_bye_2(Cond, ResponseCode, Text,
-            !MaybeCaps, !Alerts)
+        apply_login_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts)
     ;
         RespText = resp_text(no, _Text)
     ).
 
 :- pred apply_login_cond_or_bye_2(cond_bye::in, resp_text_code::in, string::in,
-    maybe(capability_data)::in, maybe(capability_data)::out,
-    list(alert)::in, list(alert)::out) is det.
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out) is det.
 
-apply_login_cond_or_bye_2(Cond, ResponseCode, Text, !MaybeCaps, !Alerts) :-
+apply_login_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts) :-
     (
         ResponseCode = alert,
         cons(alert(Text), !Alerts)
@@ -329,7 +329,7 @@ apply_login_cond_or_bye_2(Cond, ResponseCode, Text, !MaybeCaps, !Alerts) :-
         ResponseCode = capability_data(Caps),
         (
             Cond = ok,
-            !:MaybeCaps = yes(Caps)
+            !State ^ capabilities := yes(Caps)
         ;
             Cond = no
         ;
@@ -354,7 +354,7 @@ apply_login_cond_or_bye_2(Cond, ResponseCode, Text, !MaybeCaps, !Alerts) :-
 %-----------------------------------------------------------------------------%
 
 logout(IMAP, Res, !IO) :-
-    IMAP = imap(Pipe, _TagMutvar, _CapsMutvar, _SelMutvar),
+    IMAP = imap(Pipe, _TagMutvar, _StateMutvar),
     get_new_tag(IMAP, Tag, !IO),
     make_command_stream(Tag - command_any(logout), CommandStream),
     write_command_stream(Pipe, CommandStream, Res0, !IO),
@@ -385,7 +385,7 @@ mailbox(S) =
     ).
 
 examine(IMAP, Mailbox, Res, !IO) :-
-    IMAP = imap(Pipe, _TagMutvar, _CapsMutvar, _SelMutvar),
+    IMAP = imap(Pipe, _TagMutvar, _StateMutvar),
     get_new_tag(IMAP, Tag, !IO),
     make_command_stream(Tag - command_auth(examine(Mailbox)), CommandStream),
     write_command_stream(Pipe, CommandStream, Res0, !IO),
@@ -405,29 +405,28 @@ examine(IMAP, Mailbox, Res, !IO) :-
 handle_examine_response(_IMAP, _Mailbox, error(Error), Res, !IO) :-
     Res = result(error, Error, []).
 handle_examine_response(IMAP, Mailbox, ok(Response), Res, !IO) :-
-    IMAP = imap(_Pipe, _TagMutvar, _CapsMutvar, SelMutvar),
-    get_mutvar(SelMutvar, MaybeSel0, !IO),
-
-    Response = complete_response(UntaggedResponses, FinalMaybeTag,
-        FinalRespText),
-    (
-        ( FinalMaybeTag = tagged(_, ok)
-        ; FinalMaybeTag = tagged(_, no)
+    IMAP = imap(_Pipe, _TagMutvar, StateMutvar),
+    some [!State] (
+        get_mutvar(StateMutvar, !:State, !IO),
+        Response = complete_response(UntaggedResponses, FinalMaybeTag,
+            FinalRespText),
+        (
+            ( FinalMaybeTag = tagged(_, ok)
+            ; FinalMaybeTag = tagged(_, no)
+            ),
+            !State ^ selected := yes(new_selected_mailbox(Mailbox))
+        ;
+            ( FinalMaybeTag = tagged(_, bad)
+            ; FinalMaybeTag = bye
+            )
         ),
-        MaybeSel1 = yes(new_selected_mailbox(Mailbox))
-    ;
-        ( FinalMaybeTag = tagged(_, bad)
-        ; FinalMaybeTag = bye
-        ),
-        MaybeSel1 = MaybeSel0
-    ),
-    list.foldl2(apply_examine_untagged_response, UntaggedResponses,
-        MaybeSel1, MaybeSel2, [], Alerts1),
-    apply_examine_cond_or_bye(cond_bye_1(FinalMaybeTag), FinalRespText,
-        MaybeSel2, MaybeSel, Alerts1, Alerts),
-    make_result(FinalMaybeTag, FinalRespText, Alerts, Res),
-
-    set_mutvar(SelMutvar, MaybeSel, !IO).
+        list.foldl2(apply_examine_untagged_response, UntaggedResponses,
+            !State, [], Alerts1),
+        apply_examine_cond_or_bye(cond_bye_1(FinalMaybeTag), FinalRespText,
+            !State, Alerts1, Alerts),
+        make_result(FinalMaybeTag, FinalRespText, Alerts, Res),
+        set_mutvar(StateMutvar, !.State, !IO)
+    ).
 
 :- func new_selected_mailbox(command.mailbox) = selected_mailbox.
 
@@ -435,16 +434,15 @@ new_selected_mailbox(Mailbox) =
     selected_mailbox(Mailbox, read_only, [], zero, zero, no, no, no, no).
 
 :- pred apply_examine_untagged_response(untagged_response_data::in,
-    maybe(selected_mailbox)::in, maybe(selected_mailbox)::out,
-    list(alert)::in, list(alert)::out) is det.
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out) is det.
 
-apply_examine_untagged_response(ResponseData, !MaybeSel, !Alerts) :-
+apply_examine_untagged_response(ResponseData, !State, !Alerts) :-
     (
         ResponseData = cond_or_bye(Cond, RespText),
-        apply_examine_cond_or_bye(Cond, RespText, !MaybeSel, !Alerts)
+        apply_examine_cond_or_bye(Cond, RespText, !State, !Alerts)
     ;
         ResponseData = mailbox_data(MailboxData),
-        !.MaybeSel = yes(Sel0),
+        !.State ^ selected = yes(Sel0),
         (
             MailboxData = flags(Flags),
             Sel = Sel0 ^ flags := Flags
@@ -463,34 +461,32 @@ apply_examine_untagged_response(ResponseData, !MaybeSel, !Alerts) :-
             ),
             sorry($module, $pred, "MailboxData=" ++ string(MailboxData))
         ),
-        !:MaybeSel = yes(Sel)
+        !State ^ selected := yes(Sel)
     ;
         ResponseData = mailbox_data(_),
-        !.MaybeSel = no
+        !.State ^ selected = no
     ;
         ResponseData = capability_data(_),
         sorry($module, $pred, "capability_data")
     ).
 
 :- pred apply_examine_cond_or_bye(cond_bye::in, resp_text::in,
-    maybe(selected_mailbox)::in, maybe(selected_mailbox)::out,
-    list(alert)::in, list(alert)::out) is det.
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out) is det.
 
-apply_examine_cond_or_bye(Cond, RespText, !MaybeSel, !Alerts) :-
+apply_examine_cond_or_bye(Cond, RespText, !State, !Alerts) :-
     RespText = resp_text(MaybeResponseCode, Text),
     (
         MaybeResponseCode = yes(ResponseCode),
-        apply_examine_cond_or_bye_2(Cond, ResponseCode, Text,
-            !MaybeSel, !Alerts)
+        apply_examine_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts)
     ;
         MaybeResponseCode = no
     ).
 
 :- pred apply_examine_cond_or_bye_2(cond_bye::in, resp_text_code::in,
-    string::in, maybe(selected_mailbox)::in, maybe(selected_mailbox)::out,
+    string::in, imap_state::in, imap_state::out,
     list(alert)::in, list(alert)::out) is det.
 
-apply_examine_cond_or_bye_2(Cond, ResponseCode, Text, !MaybeSel, !Alerts) :-
+apply_examine_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts) :-
     (
         ResponseCode = alert,
         cons(alert(Text), !Alerts)
@@ -505,12 +501,12 @@ apply_examine_cond_or_bye_2(Cond, ResponseCode, Text, !MaybeSel, !Alerts) :-
         ),
         (
             Cond = ok,
-            !.MaybeSel = yes(Sel0),
+            !.State ^ selected = yes(Sel0),
             apply_selected_mailbox_response_code(ResponseCode, Sel0, Sel),
-            !:MaybeSel = yes(Sel)
+            !State ^ selected := yes(Sel)
         ;
             Cond = ok,
-            !.MaybeSel = no
+            !.State ^ selected = no
         ;
             Cond = no
         ;
@@ -566,7 +562,7 @@ apply_selected_mailbox_response_code(ResponseCode, !Sel) :-
     maybe_error(complete_response)::out, io::di, io::uo) is det.
 
 wait_for_complete_response(IMAP, Tag, Res, !IO) :-
-    IMAP = imap(Pipe, _TagMutvar, _CapsMutvar, _SelMutvar),
+    IMAP = imap(Pipe, _TagMutvar, _StateMutvar),
     wait_for_complete_response_2(Pipe, Tag, [], Res, !IO).
 
 :- pred wait_for_complete_response_2(subprocess::in, tag::in,
