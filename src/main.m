@@ -26,7 +26,9 @@ main(!IO) :-
         imap.open(HostPort, ResOpen, !IO),
         (
             ResOpen = ok(IMAP),
-            login(IMAP, username(UserName), password(Password), ResLogin, !IO),
+            login(IMAP, username(UserName), password(Password), ResLogin,
+                LoginAlerts, !IO),
+            report_alerts(LoginAlerts, !IO),
             (
                 ResLogin = ok(RespText),
                 io.write(string(RespText), !IO),

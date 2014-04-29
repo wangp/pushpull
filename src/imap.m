@@ -44,8 +44,8 @@
     %
 :- pred open(string::in, maybe_error(imap)::out, io::di, io::uo) is det.
 
-:- pred login(imap::in, username::in, imap.password::in, imap_result_ll::out,
-    io::di, io::uo) is det.
+:- pred login(imap::in, username::in, imap.password::in, imap_result::out,
+    list(alert)::out, io::di, io::uo) is det.
 
 :- pred logout(imap::in, imap_result_ll::out, io::di, io::uo) is det.
 
@@ -81,6 +81,7 @@
     --->    imap(
                 pipe :: subprocess,
                 tag_counter :: io_mutvar(int),
+                capabilities :: io_mutvar(maybe(capability_data)),
                 selected :: io_mutvar(maybe(selected_mailbox))
             ).
 
@@ -150,44 +151,19 @@ open(HostPort, Res, !IO) :-
         Res = error(Error)
     ).
 
-%-----------------------------------------------------------------------------%
-
 :- pred make_imap(subprocess::in, imap::out, io::di, io::uo) is det.
 
-make_imap(Proc, imap(Proc, TagMutvar, SelMutvar), !IO) :-
+make_imap(Proc, IMAP, !IO) :-
     store.new_mutvar(1, TagMutvar, !IO),
-    store.new_mutvar(no, SelMutvar, !IO).
-
-:- pred get_new_tag(imap::in, tag::out, io::di, io::uo) is det.
-
-get_new_tag(imap(_Proc, TagMutvar, _SelMutvar), tag(Tag), !IO) :-
-    get_mutvar(TagMutvar, N, !IO),
-    set_mutvar(TagMutvar, N + 1, !IO),
-    Tag = string.from_int(N).
-
-%-----------------------------------------------------------------------------%
-
-login(IMAP, username(UserName), password(Password), Res, !IO) :-
-    IMAP = imap(Pipe, _TagMutvar, _SelMutvar),
-    % XXX check capabilities first
-    get_new_tag(IMAP, Tag, !IO),
-    Login = login(make_astring(UserName), make_astring(Password)),
-    make_command_stream(Tag - command_nonauth(Login), CommandStream),
-    write_command_stream(Pipe, CommandStream, Res0, !IO),
-    (
-        Res0 = ok,
-        % XXX handle ServerData
-        wait_for_response_done(IMAP, Tag, _ServerData, Res, !IO)
-    ;
-        Res0 = error(Error),
-        Res = error(Error)
-    ).
+    store.new_mutvar(no, CapsMutvar, !IO),
+    store.new_mutvar(no, SelMutvar, !IO),
+    IMAP = imap(Proc, TagMutvar, CapsMutvar, SelMutvar).
 
 :- pred wait_for_greeting(imap::in, maybe_error(greeting)::out, io::di, io::uo)
     is det.
 
 wait_for_greeting(IMAP, Res, !IO) :-
-    IMAP = imap(Pipe, _TagMutvar, _SelMutvar),
+    IMAP = imap(Pipe, _TagMutvar, _CapsMutvar, _SelMutvar),
     read_crlf_line_chop(Pipe, ResRead, !IO),
     (
         ResRead = ok(Bytes),
@@ -211,8 +187,135 @@ wait_for_greeting(IMAP, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
+:- pred get_new_tag(imap::in, tag::out, io::di, io::uo) is det.
+
+get_new_tag(IMAP, tag(Tag), !IO) :-
+    IMAP = imap(_Proc, TagMutvar, _CapsMutvar, _SelMutvar),
+    get_mutvar(TagMutvar, N, !IO),
+    set_mutvar(TagMutvar, N + 1, !IO),
+    Tag = string.from_int(N).
+
+%-----------------------------------------------------------------------------%
+
+login(IMAP, username(UserName), password(Password), Res, Alerts, !IO) :-
+    IMAP = imap(Pipe, _TagMutvar, _CapsMutvar, _SelMutvar),
+    % XXX check capabilities first
+    get_new_tag(IMAP, Tag, !IO),
+    Login = login(make_astring(UserName), make_astring(Password)),
+    make_command_stream(Tag - command_nonauth(Login), CommandStream),
+    write_command_stream(Pipe, CommandStream, Res0, !IO),
+    (
+        Res0 = ok,
+        wait_for_response_done(IMAP, Tag, ServerData, Res1, !IO),
+        handle_login_response(IMAP, ServerData, Res1, Res, Alerts, !IO)
+    ;
+        Res0 = error(Error),
+        Res = error(Error),
+        Alerts = []
+    ).
+
+:- pred handle_login_response(imap::in, list(response_data)::in,
+    imap_result_ll::in, imap_result::out, list(alert)::out, io::di, io::uo)
+    is det.
+
+handle_login_response(IMAP, ServerData, Res0, Res, Alerts, !IO) :-
+    IMAP = imap(_Pipe, _TagMutvar, CapsMutvar, _SelMutvar),
+    get_mutvar(CapsMutvar, MaybeCaps0, !IO),
+    list.foldl2(apply_login_response_data, ServerData, MaybeCaps0, MaybeCaps1,
+        [], Alerts1),
+    (
+        Res0 = ok(RespText),
+        apply_login_resp_text(ok, RespText, MaybeCaps1, MaybeCaps,
+            Alerts1, Alerts),
+        Res = ok(RespText ^ human_text)
+    ;
+        Res0 = no(RespText),
+        apply_login_resp_text(no, RespText, MaybeCaps1, MaybeCaps,
+            Alerts1, Alerts),
+        Res = no(RespText ^ human_text)
+    ;
+        Res0 = bad(RespText),
+        apply_login_resp_text(bad, RespText, MaybeCaps1, MaybeCaps,
+            Alerts1, Alerts),
+        Res = bad(RespText ^ human_text)
+    ;
+        Res0 = fatal(_RespText),
+        sorry($module, $pred, "fatal")
+    ;
+        Res0 = error(Error),
+        Res = error(Error),
+        MaybeCaps = MaybeCaps1,
+        Alerts = []
+    ),
+    set_mutvar(CapsMutvar, MaybeCaps, !IO).
+
+:- pred apply_login_response_data(response_data::in,
+    maybe(capability_data)::in, maybe(capability_data)::out,
+    list(alert)::in, list(alert)::out) is det.
+
+apply_login_response_data(ResponseData, !MaybeCaps, !Alerts) :-
+    (
+        ResponseData = mailbox_data(_)
+    ;
+        ResponseData = cond_state(Cond, RespText),
+        apply_login_resp_text(Cond, RespText, !MaybeCaps, !Alerts)
+    ;
+        ResponseData = bye(_RespText),
+        sorry($module, $pred, "bye")
+    ;
+        ResponseData = capability_data(_),
+        sorry($module, $pred, "capability_data")
+    ).
+
+:- pred apply_login_resp_text(cond::in, resp_text::in,
+    maybe(capability_data)::in, maybe(capability_data)::out,
+    list(alert)::in, list(alert)::out) is det.
+
+apply_login_resp_text(Cond, RespText, !MaybeCaps, !Alerts) :-
+    RespText = resp_text(MaybeResponseCode, Text),
+    (
+        MaybeResponseCode = yes(ResponseCode),
+        apply_login_resp_text(Cond, ResponseCode, Text, !MaybeCaps, !Alerts)
+    ;
+        MaybeResponseCode = no
+    ).
+
+:- pred apply_login_resp_text(cond::in, resp_text_code::in, string::in,
+    maybe(capability_data)::in, maybe(capability_data)::out,
+    list(alert)::in, list(alert)::out) is det.
+
+apply_login_resp_text(Cond, ResponseCode, Text, !MaybeCaps, !Alerts) :-
+    (
+        ResponseCode = alert,
+        cons(alert(Text), !Alerts)
+    ;
+        ResponseCode = capability_data(Caps),
+        (
+            Cond = ok,
+            !:MaybeCaps = yes(Caps)
+        ;
+            Cond = no
+        ;
+            Cond = bad
+        )
+    ;
+        ( ResponseCode = badcharset(_)
+        ; ResponseCode = other(_, _)
+        ; ResponseCode = parse
+        ; ResponseCode = permanent_flags(_)
+        ; ResponseCode = read_only
+        ; ResponseCode = read_write
+        ; ResponseCode = trycreate
+        ; ResponseCode = uidnext(_)
+        ; ResponseCode = uidvalidity(_)
+        ; ResponseCode = unseen(_)
+        )
+    ).
+
+%-----------------------------------------------------------------------------%
+
 logout(IMAP, Res, !IO) :-
-    IMAP = imap(Pipe, _TagMutvar, _SelMutvar),
+    IMAP = imap(Pipe, _TagMutvar, _CapsMutvar, _SelMutvar),
     get_new_tag(IMAP, Tag, !IO),
     make_command_stream(Tag - command_any(logout), CommandStream),
     write_command_stream(Pipe, CommandStream, Res0, !IO),
@@ -235,7 +338,7 @@ mailbox(S) =
     ).
 
 examine(IMAP, Mailbox, Res, Alerts, !IO) :-
-    IMAP = imap(Pipe, _TagMutvar, _SelMutvar),
+    IMAP = imap(Pipe, _TagMutvar, _CapsMutvar, _SelMutvar),
     get_new_tag(IMAP, Tag, !IO),
     make_command_stream(Tag - command_auth(examine(Mailbox)), CommandStream),
     write_command_stream(Pipe, CommandStream, Res0, !IO),
@@ -255,7 +358,7 @@ examine(IMAP, Mailbox, Res, Alerts, !IO) :-
     list(alert)::out, io::di, io::uo) is det.
 
 handle_examine_response(IMAP, Mailbox, ServerData, Res0, Res, Alerts, !IO) :-
-    IMAP = imap(_Pipe, _TagMutvar, SelMutvar),
+    IMAP = imap(_Pipe, _TagMutvar, _CapsMutvar, SelMutvar),
     get_mutvar(SelMutvar, MaybeSel0, !IO),
     (
         Res0 = ok(RespText),
@@ -424,7 +527,7 @@ apply_selected_mailbox_response_code(ResponseCode, !Sel) :-
     imap_result_ll::out, io::di, io::uo) is det.
 
 wait_for_response_done(IMAP, Tag, ServerData, Res, !IO) :-
-    IMAP = imap(Pipe, _TagMutvar, _SelMutvar),
+    IMAP = imap(Pipe, _TagMutvar, _CapsMutvar, _SelMutvar),
     read_crlf_line_chop(Pipe, ResRead, !IO),
     (
         ResRead = ok(Bytes),
