@@ -295,6 +295,14 @@ get_new_tag(IMAP, Pipe, tag(Tag), !IO) :-
     set_mutvar(TagMutvar, N + 1, !IO),
     Tag = string.from_int(N).
 
+:- pred get_capabilities(imap::in, maybe(capability_data)::out, io::di, io::uo)
+    is det.
+
+get_capabilities(IMAP, MaybeCaps, !IO) :-
+    IMAP = imap(_Pipe, _TagMutvar, StateMutvar),
+    get_mutvar(StateMutvar, State, !IO),
+    MaybeCaps = State ^ capabilities.
+
 :- pred update_state(pred(T, imap_state, imap_state, A, A, io, io),
     imap, T, A, A, io, io).
 :- mode update_state(in(pred(in, in, out, in, out, di, uo) is det),
@@ -343,15 +351,81 @@ wrong_state_result(logout) =
 
 %-----------------------------------------------------------------------------%
 
-login(IMAP, UserName, Password, Res, !IO) :-
-    command_wrapper(do_login(UserName, Password), [not_authenticated],
+:- pred capability(imap::in, imap_result::out, io::di, io::uo) is det.
+
+capability(IMAP, Res, !IO) :-
+    command_wrapper(do_capability,
+        [not_authenticated, authenticated, selected, logout],
         IMAP, Res, !IO).
+
+:- pred do_capability(imap::in, imap_result::out, io::di, io::uo) is det.
+
+do_capability(IMAP, Res, !IO) :-
+    get_new_tag(IMAP, Pipe, Tag, !IO),
+    make_command_stream(Tag - command_any(capability), CommandStream),
+    write_command_stream(Pipe, CommandStream, Res0, !IO),
+    (
+        Res0 = ok,
+        wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
+        (
+            MaybeResponse = ok(Response),
+            update_state(apply_complete_response, IMAP, Response, [], Alerts,
+                !IO),
+            Response = complete_response(_, FinalMaybeTag, FinalRespText),
+            make_result(FinalMaybeTag, FinalRespText, Alerts, Res)
+        ;
+            MaybeResponse = error(Error),
+            Res = result(error, Error, [])
+        )
+    ;
+        Res0 = error(Error),
+        Res = result(error, Error, [])
+    ).
+
+%-----------------------------------------------------------------------------%
+
+login(IMAP, UserName, Password, Res, !IO) :-
+    get_capabilities(IMAP, MaybeCaps0, !IO),
+    (
+        MaybeCaps0 = yes(Caps),
+        check_login(IMAP, Caps, UserName, Password, Res, !IO)
+    ;
+        MaybeCaps0 = no,
+        capability(IMAP, Res0, !IO),
+        (
+            % I guess we should try to preserve Alerts0 through to the login.
+            Res0 = result(ok, _Text, _Alerts0)
+        ->
+            get_capabilities(IMAP, MaybeCaps, !IO),
+            (
+                MaybeCaps = yes(Caps)
+            ;
+                MaybeCaps = no,
+                Caps = []
+            ),
+            check_login(IMAP, Caps, UserName, Password, Res, !IO)
+        ;
+            Res = Res0
+        )
+    ).
+
+:- pred check_login(imap::in, capability_data::in, username::in, password::in,
+    imap_result::out, io::di, io::uo) is det.
+
+check_login(IMAP, Caps, UserName, Password, Res, !IO) :-
+    (
+        list.member(atom("AUTH=PLAIN"), Caps),
+        not list.member(atom("LOGINDISABLED"), Caps)
+    ->
+        do_login(UserName, Password, IMAP, Res, !IO)
+    ;
+        Res = error_result("cannot login due to capabilities")
+    ).
 
 :- pred do_login(username::in, password::in, imap::in, imap_result::out,
     io::di, io::uo) is det.
 
 do_login(username(UserName), password(Password), IMAP, Res, !IO) :-
-    % XXX check capabilities first
     get_new_tag(IMAP, Pipe, Tag, !IO),
     Login = login(make_astring(UserName), make_astring(Password)),
     make_command_stream(Tag - command_nonauth(Login), CommandStream),
