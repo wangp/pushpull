@@ -81,9 +81,16 @@
 
 :- type imap_state
     --->    imap_state(
+                connection_state :: connection_state,
                 capabilities :: maybe(capability_data),
                 selected :: maybe(selected_mailbox)
             ).
+
+:- type connection_state
+    --->    not_authenticated
+    ;       authenticated
+    ;       selected
+    ;       logout.
 
 :- type selected_mailbox
     --->    selected_mailbox(
@@ -130,12 +137,12 @@ open(HostPort, Res, Alerts, !IO) :-
             (
                 Greeting = ok(RespText),
                 handle_greeting_resp_text(RespText, MaybeCaps, Alerts),
-                make_imap(Proc, MaybeCaps, IMAP, !IO),
+                make_imap(Proc, not_authenticated, MaybeCaps, IMAP, !IO),
                 Res = ok(IMAP)
             ;
                 Greeting = preauth(RespText),
                 handle_greeting_resp_text(RespText, MaybeCaps, Alerts),
-                make_imap(Proc, MaybeCaps, IMAP, !IO),
+                make_imap(Proc, authenticated, MaybeCaps, IMAP, !IO),
                 Res = ok(IMAP)
             ;
                 Greeting = bye(RespText),
@@ -218,15 +225,23 @@ handle_greeting_resp_text(RespText, MaybeCaps, Alerts) :-
         Alerts = []
     ).
 
-:- pred make_imap(subprocess::in, maybe(capability_data)::in, imap::out,
-    io::di, io::uo) is det.
+:- pred make_imap(subprocess::in, connection_state::in,
+    maybe(capability_data)::in, imap::out, io::di, io::uo) is det.
 
-make_imap(Proc, MaybeCaps, IMAP, !IO) :-
+make_imap(Proc, ConnState, MaybeCaps, IMAP, !IO) :-
     store.new_mutvar(1, TagMutvar, !IO),
-    store.new_mutvar(imap_state(MaybeCaps, no), StateMutvar, !IO),
+    store.new_mutvar(imap_state(ConnState, MaybeCaps, no), StateMutvar, !IO),
     IMAP = imap(Proc, TagMutvar, StateMutvar).
 
 %-----------------------------------------------------------------------------%
+
+:- pred get_connection_state(imap::in, connection_state::out, io::di, io::uo)
+    is det.
+
+get_connection_state(IMAP, ConnState, !IO) :-
+    IMAP = imap(_Proc, _TagMutvar, StateMutvar),
+    get_mutvar(StateMutvar, State, !IO),
+    ConnState = State ^ connection_state.
 
 :- pred get_new_tag(imap::in, tag::out, io::di, io::uo) is det.
 
@@ -267,9 +282,40 @@ make_result(MaybeTagCond, RespText, Alerts, Result) :-
     RespText = resp_text(_MaybeResponseCode, Text),
     Result = result(Res, Text, Alerts).
 
+:- func error_result(string) = imap_result.
+
+error_result(Text) = result(error, Text, []).
+
+:- func wrong_state_result(connection_state) = imap_result.
+
+wrong_state_result(not_authenticated) =
+    error_result("command invalid in Not Authenticated state").
+wrong_state_result(authenticated) =
+    error_result("command invalid in Authenticated state").
+wrong_state_result(selected) =
+    error_result("command invalid in Selected state").
+wrong_state_result(logout) =
+    error_result("command invalid in Logout state").
+
 %-----------------------------------------------------------------------------%
 
-login(IMAP, username(UserName), password(Password), Res, !IO) :-
+login(IMAP, UserName, Password, Res, !IO) :-
+    get_connection_state(IMAP, ConnState, !IO),
+    (
+        ConnState = not_authenticated,
+        do_login(IMAP, UserName, Password, Res, !IO)
+    ;
+        ( ConnState = authenticated
+        ; ConnState = selected
+        ; ConnState = logout
+        ),
+        Res = wrong_state_result(ConnState)
+    ).
+
+:- pred do_login(imap::in, username::in, password::in, imap_result::out,
+    io::di, io::uo) is det.
+
+do_login(IMAP, username(UserName), password(Password), Res, !IO) :-
     IMAP = imap(Pipe, _TagMutvar, _StateMutvar),
     % XXX check capabilities first
     get_new_tag(IMAP, Tag, !IO),
@@ -281,7 +327,7 @@ login(IMAP, username(UserName), password(Password), Res, !IO) :-
         wait_for_complete_response(IMAP, Tag, MaybeResponse, !IO),
         (
             MaybeResponse = ok(Response),
-            update_state(apply_complete_response, IMAP, Response, [], Alerts,
+            update_state(apply_login_response, IMAP, Response, [], Alerts,
                 !IO),
             Response = complete_response(_, FinalMaybeTag, FinalRespText),
             make_result(FinalMaybeTag, FinalRespText, Alerts, Res)
@@ -294,9 +340,43 @@ login(IMAP, username(UserName), password(Password), Res, !IO) :-
         Res = result(error, Error, [])
     ).
 
+:- pred apply_login_response(complete_response::in,
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
+    io::di, io::uo) is det.
+
+apply_login_response(Response, !State, !Alerts, !IO) :-
+    apply_complete_response(Response, !State, !Alerts, !IO),
+    Response = complete_response(_, FinalMaybeTag, _),
+    (
+        FinalMaybeTag = tagged(_, ok),
+        !State ^ connection_state := authenticated
+    ;
+        FinalMaybeTag = tagged(_, no)
+    ;
+        FinalMaybeTag = tagged(_, bad)
+    ;
+        FinalMaybeTag = bye,
+        !State ^ connection_state := logout
+    ).
+
 %-----------------------------------------------------------------------------%
 
 logout(IMAP, Res, !IO) :-
+    get_connection_state(IMAP, ConnState, !IO),
+    (
+        ( ConnState = not_authenticated
+        ; ConnState = authenticated
+        ; ConnState = selected
+        ),
+        do_logout(IMAP, Res, !IO)
+    ;
+        ConnState = logout,
+        Res = wrong_state_result(ConnState)
+    ).
+
+:- pred do_logout(imap::in, imap_result::out, io::di, io::uo) is det.
+
+do_logout(IMAP, Res, !IO) :-
     IMAP = imap(Pipe, _TagMutvar, _StateMutvar),
     get_new_tag(IMAP, Tag, !IO),
     make_command_stream(Tag - command_any(logout), CommandStream),
@@ -327,15 +407,15 @@ apply_logout_response(Response, !State, !Alerts, !IO) :-
     apply_complete_response(Response, !State, !Alerts, !IO),
     Response = complete_response(_, FinalMaybeTag, _),
     (
-        FinalMaybeTag = tagged(_, ok)
-        % XXX enter logout state
+        FinalMaybeTag = tagged(_, ok),
+        !State ^ connection_state := logout
     ;
         FinalMaybeTag = tagged(_, no)
     ;
         FinalMaybeTag = tagged(_, bad)
     ;
-        FinalMaybeTag = bye
-        % XXX enter logout state, but this should be done for all commands
+        FinalMaybeTag = bye,
+        !State ^ connection_state := logout
     ).
 
 %-----------------------------------------------------------------------------%
@@ -348,6 +428,23 @@ mailbox(S) =
     ).
 
 examine(IMAP, Mailbox, Res, !IO) :-
+    get_connection_state(IMAP, ConnState, !IO),
+    (
+        ( ConnState = authenticated
+        ; ConnState = selected
+        ),
+        do_examine(IMAP, Mailbox, Res, !IO)
+    ;
+        ( ConnState = not_authenticated
+        ; ConnState = logout
+        ),
+        Res = wrong_state_result(ConnState)
+    ).
+
+:- pred do_examine(imap::in, command.mailbox::in, imap_result::out,
+    io::di, io::uo) is det.
+
+do_examine(IMAP, Mailbox, Res, !IO) :-
     IMAP = imap(Pipe, _TagMutvar, _StateMutvar),
     get_new_tag(IMAP, Tag, !IO),
     make_command_stream(Tag - command_auth(examine(Mailbox)), CommandStream),
@@ -377,14 +474,18 @@ examine(IMAP, Mailbox, Res, !IO) :-
 apply_examine_response(Mailbox, Response, !State, !Alerts, !IO) :-
     Response = complete_response(_, FinalMaybeTag, _FinalRespText),
     (
-        ( FinalMaybeTag = tagged(_, ok)
-        ; FinalMaybeTag = tagged(_, no)
-        ),
+        FinalMaybeTag = tagged(_, ok),
+        !State ^ connection_state := selected,
         !State ^ selected := yes(new_selected_mailbox(Mailbox))
     ;
-        ( FinalMaybeTag = tagged(_, bad)
-        ; FinalMaybeTag = bye
-        )
+        FinalMaybeTag = tagged(_, no),
+        !State ^ connection_state := authenticated,
+        !State ^ selected := no
+    ;
+        FinalMaybeTag = tagged(_, bad)
+    ;
+        FinalMaybeTag = bye,
+        !State ^ connection_state := logout
     ),
     apply_complete_response(Response, !State, !Alerts, !IO).
 
@@ -510,6 +611,15 @@ apply_cond_or_bye(Cond, RespText, !State, !Alerts) :-
         apply_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts)
     ;
         RespText = resp_text(no, _Text)
+    ),
+    (
+        ( Cond = ok
+        ; Cond = no
+        ; Cond = bad
+        )
+    ;
+        Cond = bye,
+        !State ^ connection_state := logout
     ).
 
 :- pred apply_cond_or_bye_2(cond_bye::in, resp_text_code::in, string::in,
