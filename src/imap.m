@@ -704,8 +704,8 @@ apply_untagged_response(ResponseData, !State, !Alerts) :-
         ResponseData = mailbox_data(MailboxData),
         apply_mailbox_data(MailboxData, !State)
     ;
-        ResponseData = capability_data(_),
-        sorry($module, $pred, "capability_data")
+        ResponseData = capability_data(Caps),
+        !State ^ capabilities := yes(Caps)
     ).
 
 :- pred apply_cond_or_bye(cond_bye::in, resp_text::in,
