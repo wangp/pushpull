@@ -3,12 +3,10 @@
 :- module imap.io.
 :- interface.
 
-:- import_module subprocess.
-
-:- pred read_crlf_line_chop(subprocess::in, io.result(list(int))::out,
+:- pred read_crlf_line_chop(pipe::in, io.result(list(int))::out,
     io::di, io::uo) is det.
 
-:- pred write_command_stream(subprocess::in, list(string)::in,
+:- pred write_command_stream(pipe::in, list(string)::in,
     maybe_error::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
@@ -20,7 +18,7 @@
 
 %-----------------------------------------------------------------------------%
 
-read_crlf_line_chop(Pipe, Res, !IO) :-
+read_crlf_line_chop(open(Pipe), Res, !IO) :-
     read_crlf_line(Pipe, Res0, [], RevBytes0, !IO),
     (
         Res0 = ok,
@@ -38,6 +36,9 @@ read_crlf_line_chop(Pipe, Res, !IO) :-
         Res = error(Error)
         % RevBytes ignored.
     ).
+
+read_crlf_line_chop(closed, Res, !IO) :-
+    Res = error(io.make_io_error("session closed")).
 
 :- pred read_crlf_line(subprocess::in, io.result::out,
     list(int)::in, list(int)::out, io::di, io::uo) is det.
@@ -76,7 +77,7 @@ cr = 13.
 
 %-----------------------------------------------------------------------------%
 
-write_command_stream(Pipe, Xs, Res, !IO) :-
+write_command_stream(open(Pipe), Xs, Res, !IO) :-
     trace [runtime(env("DEBUG_IMAP")), io(!IO2)] (
         Stream = io.stderr_stream,
         io.write(Stream, Xs, !IO2),
@@ -84,6 +85,9 @@ write_command_stream(Pipe, Xs, Res, !IO) :-
     ),
     write_command_stream_2(Pipe, Xs, Res, !IO),
     flush_output(Pipe, !IO).
+
+write_command_stream(closed, _, Res, !IO) :-
+    Res = error("session closed").
 
 :- pred write_command_stream_2(subprocess::in, list(string)::in,
     maybe_error::out, io::di, io::uo) is det.

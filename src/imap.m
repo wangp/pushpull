@@ -74,10 +74,14 @@
 
 :- type imap
     --->    imap(
-                pipe :: subprocess,
+                pipe :: io_mutvar(pipe),
                 tag_counter :: io_mutvar(int),
                 imap_state :: io_mutvar(imap_state)
             ).
+
+:- type pipe
+    --->    open(subprocess)
+    ;       closed.
 
 :- type imap_state
     --->    imap_state(
@@ -131,7 +135,8 @@ open(HostPort, Res, Alerts, !IO) :-
         ["s_client", "-quiet", "-connect", HostPort], ResSpawn, !IO),
     (
         ResSpawn = ok(Proc),
-        wait_for_greeting(Proc, ResGreeting, !IO),
+        Pipe = open(Proc),
+        wait_for_greeting(Pipe, ResGreeting, !IO),
         (
             ResGreeting = ok(Greeting),
             (
@@ -164,7 +169,7 @@ open(HostPort, Res, Alerts, !IO) :-
         Alerts = []
     ).
 
-:- pred wait_for_greeting(subprocess::in, maybe_error(greeting)::out,
+:- pred wait_for_greeting(pipe::in, maybe_error(greeting)::out,
     io::di, io::uo) is det.
 
 wait_for_greeting(Pipe, Res, !IO) :-
@@ -229,24 +234,63 @@ handle_greeting_resp_text(RespText, MaybeCaps, Alerts) :-
     maybe(capability_data)::in, imap::out, io::di, io::uo) is det.
 
 make_imap(Proc, ConnState, MaybeCaps, IMAP, !IO) :-
+    store.new_mutvar(open(Proc), PipeMutvar, !IO),
     store.new_mutvar(1, TagMutvar, !IO),
     store.new_mutvar(imap_state(ConnState, MaybeCaps, no), StateMutvar, !IO),
-    IMAP = imap(Proc, TagMutvar, StateMutvar).
+    IMAP = imap(PipeMutvar, TagMutvar, StateMutvar).
 
 %-----------------------------------------------------------------------------%
+
+:- pred command_wrapper(pred(imap, imap_result, io, io),
+    list(connection_state), imap, imap_result, io, io).
+:- mode command_wrapper(in(pred(in, out, di, uo) is det),
+    in, in, out, di, uo) is det.
+
+command_wrapper(Pred, ValidConnectionStates, IMAP, Res, !IO) :-
+    get_connection_state(IMAP, ConnState, !IO),
+    ( list.member(ConnState, ValidConnectionStates) ->
+        Pred(IMAP, Res, !IO),
+        close_pipe_on_logout(IMAP, !IO)
+    ;
+        Res = wrong_state_result(ConnState)
+    ).
+
+:- pred close_pipe_on_logout(imap::in, io::di, io::uo) is det.
+
+close_pipe_on_logout(IMAP, !IO) :-
+    get_connection_state(IMAP, ConnStateAfter, !IO),
+    (
+        ConnStateAfter = logout,
+        IMAP = imap(PipeMutvar, _TagMutvar, _StateMutvar),
+        get_mutvar(PipeMutvar, MaybePipe, !IO),
+        (
+            MaybePipe = open(Proc),
+            close_pipes(Proc, !IO),
+            wait_pid(Proc, blocking, _WaitRes, !IO),
+            set_mutvar(PipeMutvar, closed, !IO)
+        ;
+            MaybePipe = closed
+        )
+    ;
+        ( ConnStateAfter = not_authenticated
+        ; ConnStateAfter = authenticated
+        ; ConnStateAfter = selected
+        )
+    ).
 
 :- pred get_connection_state(imap::in, connection_state::out, io::di, io::uo)
     is det.
 
 get_connection_state(IMAP, ConnState, !IO) :-
-    IMAP = imap(_Proc, _TagMutvar, StateMutvar),
+    IMAP = imap(_PipeMutvar, _TagMutvar, StateMutvar),
     get_mutvar(StateMutvar, State, !IO),
     ConnState = State ^ connection_state.
 
-:- pred get_new_tag(imap::in, tag::out, io::di, io::uo) is det.
+:- pred get_new_tag(imap::in, pipe::out, tag::out, io::di, io::uo) is det.
 
-get_new_tag(IMAP, tag(Tag), !IO) :-
-    IMAP = imap(_Proc, TagMutvar, _StateMutvar),
+get_new_tag(IMAP, Pipe, tag(Tag), !IO) :-
+    IMAP = imap(PipeMutvar, TagMutvar, _StateMutvar),
+    get_mutvar(PipeMutvar, Pipe, !IO),
     get_mutvar(TagMutvar, N, !IO),
     set_mutvar(TagMutvar, N + 1, !IO),
     Tag = string.from_int(N).
@@ -300,31 +344,21 @@ wrong_state_result(logout) =
 %-----------------------------------------------------------------------------%
 
 login(IMAP, UserName, Password, Res, !IO) :-
-    get_connection_state(IMAP, ConnState, !IO),
-    (
-        ConnState = not_authenticated,
-        do_login(IMAP, UserName, Password, Res, !IO)
-    ;
-        ( ConnState = authenticated
-        ; ConnState = selected
-        ; ConnState = logout
-        ),
-        Res = wrong_state_result(ConnState)
-    ).
+    command_wrapper(do_login(UserName, Password), [not_authenticated],
+        IMAP, Res, !IO).
 
-:- pred do_login(imap::in, username::in, password::in, imap_result::out,
+:- pred do_login(username::in, password::in, imap::in, imap_result::out,
     io::di, io::uo) is det.
 
-do_login(IMAP, username(UserName), password(Password), Res, !IO) :-
-    IMAP = imap(Pipe, _TagMutvar, _StateMutvar),
+do_login(username(UserName), password(Password), IMAP, Res, !IO) :-
     % XXX check capabilities first
-    get_new_tag(IMAP, Tag, !IO),
+    get_new_tag(IMAP, Pipe, Tag, !IO),
     Login = login(make_astring(UserName), make_astring(Password)),
     make_command_stream(Tag - command_nonauth(Login), CommandStream),
     write_command_stream(Pipe, CommandStream, Res0, !IO),
     (
         Res0 = ok,
-        wait_for_complete_response(IMAP, Tag, MaybeResponse, !IO),
+        wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
         (
             MaybeResponse = ok(Response),
             update_state(apply_login_response, IMAP, Response, [], Alerts,
@@ -362,28 +396,18 @@ apply_login_response(Response, !State, !Alerts, !IO) :-
 %-----------------------------------------------------------------------------%
 
 logout(IMAP, Res, !IO) :-
-    get_connection_state(IMAP, ConnState, !IO),
-    (
-        ( ConnState = not_authenticated
-        ; ConnState = authenticated
-        ; ConnState = selected
-        ),
-        do_logout(IMAP, Res, !IO)
-    ;
-        ConnState = logout,
-        Res = wrong_state_result(ConnState)
-    ).
+    command_wrapper(do_logout, [not_authenticated, authenticated, selected],
+        IMAP, Res, !IO).
 
 :- pred do_logout(imap::in, imap_result::out, io::di, io::uo) is det.
 
 do_logout(IMAP, Res, !IO) :-
-    IMAP = imap(Pipe, _TagMutvar, _StateMutvar),
-    get_new_tag(IMAP, Tag, !IO),
+    get_new_tag(IMAP, Pipe, Tag, !IO),
     make_command_stream(Tag - command_any(logout), CommandStream),
     write_command_stream(Pipe, CommandStream, Res0, !IO),
     (
         Res0 = ok,
-        wait_for_complete_response(IMAP, Tag, MaybeResponse, !IO),
+        wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
         (
             MaybeResponse = ok(Response),
             update_state(apply_logout_response, IMAP, Response, [], Alerts,
@@ -428,30 +452,19 @@ mailbox(S) =
     ).
 
 examine(IMAP, Mailbox, Res, !IO) :-
-    get_connection_state(IMAP, ConnState, !IO),
-    (
-        ( ConnState = authenticated
-        ; ConnState = selected
-        ),
-        do_examine(IMAP, Mailbox, Res, !IO)
-    ;
-        ( ConnState = not_authenticated
-        ; ConnState = logout
-        ),
-        Res = wrong_state_result(ConnState)
-    ).
+    command_wrapper(do_examine(Mailbox), [authenticated, selected],
+        IMAP, Res, !IO).
 
-:- pred do_examine(imap::in, command.mailbox::in, imap_result::out,
+:- pred do_examine(command.mailbox::in, imap::in, imap_result::out,
     io::di, io::uo) is det.
 
-do_examine(IMAP, Mailbox, Res, !IO) :-
-    IMAP = imap(Pipe, _TagMutvar, _StateMutvar),
-    get_new_tag(IMAP, Tag, !IO),
+do_examine(Mailbox, IMAP, Res, !IO) :-
+    get_new_tag(IMAP, Pipe, Tag, !IO),
     make_command_stream(Tag - command_auth(examine(Mailbox)), CommandStream),
     write_command_stream(Pipe, CommandStream, Res0, !IO),
     (
         Res0 = ok,
-        wait_for_complete_response(IMAP, Tag, MaybeResponse, !IO),
+        wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
         (
             MaybeResponse = ok(Response),
             update_state(apply_examine_response(Mailbox), IMAP, Response,
@@ -496,14 +509,13 @@ new_selected_mailbox(Mailbox) =
 
 %-----------------------------------------------------------------------------%
 
-:- pred wait_for_complete_response(imap::in, tag::in,
+:- pred wait_for_complete_response(pipe::in, tag::in,
     maybe_error(complete_response)::out, io::di, io::uo) is det.
 
-wait_for_complete_response(IMAP, Tag, Res, !IO) :-
-    IMAP = imap(Pipe, _TagMutvar, _StateMutvar),
+wait_for_complete_response(Pipe, Tag, Res, !IO) :-
     wait_for_complete_response_2(Pipe, Tag, [], Res, !IO).
 
-:- pred wait_for_complete_response_2(subprocess::in, tag::in,
+:- pred wait_for_complete_response_2(pipe::in, tag::in,
     list(untagged_response_data)::in, maybe_error(complete_response)::out,
     io::di, io::uo) is det.
 
