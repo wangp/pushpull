@@ -623,6 +623,9 @@ wait_for_complete_response_2(Pipe, Tag, RevUntagged0, Res, !IO) :-
                 Res = ok(Response)
             ;
                 % XXX handle mismatched tagged response
+                % Note that if we stopped reading at a parse error then there
+                % will server responses due to a preceding command in the
+                % buffer, which is a source of mismatching tags.
                 sorry($module, $pred, "mismatching tagged response")
             )
         ;
