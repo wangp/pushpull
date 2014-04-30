@@ -5,6 +5,7 @@ MAIN_TARGET = main
 MCFLAGS += --optimise-constructor-last-call
 
 # Module-specific options.
+MCFLAGS-signal += --no-ansi-c
 MCFLAGS-subprocess += --no-ansi-c
 
 # Add workspace-specific options here.

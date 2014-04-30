@@ -12,14 +12,17 @@
 
 :- implementation.
 
+:- import_module bool.
 :- import_module list.
 :- import_module maybe.
 
 :- import_module imap.
+:- import_module signal.
 
 %-----------------------------------------------------------------------------%
 
 main(!IO) :-
+    ignore_sigpipe(yes, !IO),
     io.command_line_arguments(Args, !IO),
     ( Args = [HostPort, UserName, Password] ->
         imap.open(HostPort, ResOpen, OpenAlerts, !IO),
