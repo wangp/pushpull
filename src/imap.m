@@ -236,6 +236,17 @@ get_new_tag(IMAP, tag(Tag), !IO) :-
     set_mutvar(TagMutvar, N + 1, !IO),
     Tag = string.from_int(N).
 
+:- pred update_state(pred(T, imap_state, imap_state, A, A, io, io),
+    imap, T, A, A, io, io).
+:- mode update_state(in(pred(in, in, out, in, out, di, uo) is det),
+    in, in, in, out, di, uo) is det.
+
+update_state(Pred, IMAP, X, !Acc, !IO) :-
+    IMAP = imap(_Pipe, _TagMutvar, StateMutvar),
+    get_mutvar(StateMutvar, State0, !IO),
+    Pred(X, State0, State, !Acc, !IO),
+    set_mutvar(StateMutvar, State, !IO).
+
 :- pred make_result(tagged_response_or_bye::in, resp_text::in, list(alert)::in,
     imap_result::out) is det.
 
@@ -268,87 +279,19 @@ login(IMAP, username(UserName), password(Password), Res, !IO) :-
     (
         Res0 = ok,
         wait_for_complete_response(IMAP, Tag, MaybeResponse, !IO),
-        handle_login_response(IMAP, MaybeResponse, Res, !IO)
+        (
+            MaybeResponse = ok(Response),
+            update_state(apply_complete_response, IMAP, Response, [], Alerts,
+                !IO),
+            Response = complete_response(_, FinalMaybeTag, FinalRespText),
+            make_result(FinalMaybeTag, FinalRespText, Alerts, Res)
+        ;
+            MaybeResponse = error(Error),
+            Res = result(error, Error, [])
+        )
     ;
         Res0 = error(Error),
         Res = result(error, Error, [])
-    ).
-
-:- pred handle_login_response(imap::in, maybe_error(complete_response)::in,
-    imap_result::out, io::di, io::uo) is det.
-
-handle_login_response(_IMAP, error(Error), Res, !IO) :-
-    Res = result(error, Error, []).
-handle_login_response(IMAP, ok(Response), Res, !IO) :-
-    IMAP = imap(_Pipe, _TagMutvar, StateMutvar),
-    get_mutvar(StateMutvar, State0, !IO),
-
-    Response = complete_response(UntaggedResponses, FinalMaybeTag,
-        FinalRespText),
-    list.foldl2(apply_login_untagged_responses, UntaggedResponses,
-        State0, State1, [], Alerts1),
-    apply_login_cond_or_bye(cond_bye_1(FinalMaybeTag), FinalRespText,
-        State1, State, Alerts1, Alerts),
-    make_result(FinalMaybeTag, FinalRespText, Alerts, Res),
-
-    set_mutvar(StateMutvar, State, !IO).
-
-:- pred apply_login_untagged_responses(untagged_response_data::in,
-    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out) is det.
-
-apply_login_untagged_responses(ResponseData, !State, !Alerts) :-
-    (
-        ResponseData = mailbox_data(_)
-    ;
-        ResponseData = cond_or_bye(Cond, RespText),
-        apply_login_cond_or_bye(Cond, RespText, !State, !Alerts)
-    ;
-        ResponseData = capability_data(_),
-        sorry($module, $pred, "capability_data")
-    ).
-
-:- pred apply_login_cond_or_bye(cond_bye::in, resp_text::in,
-    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out) is det.
-
-apply_login_cond_or_bye(Cond, RespText, !State, !Alerts) :-
-    (
-        RespText = resp_text(yes(ResponseCode), Text),
-        apply_login_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts)
-    ;
-        RespText = resp_text(no, _Text)
-    ).
-
-:- pred apply_login_cond_or_bye_2(cond_bye::in, resp_text_code::in, string::in,
-    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out) is det.
-
-apply_login_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts) :-
-    (
-        ResponseCode = alert,
-        cons(alert(Text), !Alerts)
-    ;
-        ResponseCode = capability_data(Caps),
-        (
-            Cond = ok,
-            !State ^ capabilities := yes(Caps)
-        ;
-            Cond = no
-        ;
-            Cond = bad
-        ;
-            Cond = bye
-        )
-    ;
-        ( ResponseCode = badcharset(_)
-        ; ResponseCode = other(_, _)
-        ; ResponseCode = parse
-        ; ResponseCode = permanent_flags(_)
-        ; ResponseCode = read_only
-        ; ResponseCode = read_write
-        ; ResponseCode = trycreate
-        ; ResponseCode = uidnext(_)
-        ; ResponseCode = uidvalidity(_)
-        ; ResponseCode = unseen(_)
-        )
     ).
 
 %-----------------------------------------------------------------------------%
@@ -360,12 +303,13 @@ logout(IMAP, Res, !IO) :-
     write_command_stream(Pipe, CommandStream, Res0, !IO),
     (
         Res0 = ok,
-        % XXX handle UntaggedResponses and FinalRespText
         wait_for_complete_response(IMAP, Tag, MaybeResponse, !IO),
         (
-            MaybeResponse = ok(complete_response(_UntaggedResponses,
-                FinalMaybeTag, FinalRespText)),
-            make_result(FinalMaybeTag, FinalRespText, [], Res)
+            MaybeResponse = ok(Response),
+            update_state(apply_logout_response, IMAP, Response, [], Alerts,
+                !IO),
+            Response = complete_response(_, FinalMaybeTag, FinalRespText),
+            make_result(FinalMaybeTag, FinalRespText, Alerts, Res)
         ;
             MaybeResponse = error(Error),
             Res = result(error, Error, [])
@@ -373,6 +317,25 @@ logout(IMAP, Res, !IO) :-
     ;
         Res0 = error(Error),
         Res = result(error, Error, [])
+    ).
+
+:- pred apply_logout_response(complete_response::in,
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
+    io::di, io::uo) is det.
+
+apply_logout_response(Response, !State, !Alerts, !IO) :-
+    apply_complete_response(Response, !State, !Alerts, !IO),
+    Response = complete_response(_, FinalMaybeTag, _),
+    (
+        FinalMaybeTag = tagged(_, ok)
+        % XXX enter logout state
+    ;
+        FinalMaybeTag = tagged(_, no)
+    ;
+        FinalMaybeTag = tagged(_, bad)
+    ;
+        FinalMaybeTag = bye
+        % XXX enter logout state, but this should be done for all commands
     ).
 
 %-----------------------------------------------------------------------------%
@@ -392,169 +355,43 @@ examine(IMAP, Mailbox, Res, !IO) :-
     (
         Res0 = ok,
         wait_for_complete_response(IMAP, Tag, MaybeResponse, !IO),
-        handle_examine_response(IMAP, Mailbox, MaybeResponse, Res, !IO)
+        (
+            MaybeResponse = ok(Response),
+            update_state(apply_examine_response(Mailbox), IMAP, Response,
+                [], Alerts, !IO),
+            Response = complete_response(_, FinalMaybeTag, FinalRespText),
+            make_result(FinalMaybeTag, FinalRespText, Alerts, Res)
+        ;
+            MaybeResponse = error(Error),
+            Res = result(error, Error, [])
+        )
     ;
         Res0 = error(Error),
         Res = result(error, Error, [])
     ).
 
-:- pred handle_examine_response(imap::in, command.mailbox::in,
-    maybe_error(complete_response)::in, imap_result::out, io::di, io::uo)
-    is det.
+:- pred apply_examine_response(command.mailbox::in, complete_response::in,
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
+    io::di, io::uo) is det.
 
-handle_examine_response(_IMAP, _Mailbox, error(Error), Res, !IO) :-
-    Res = result(error, Error, []).
-handle_examine_response(IMAP, Mailbox, ok(Response), Res, !IO) :-
-    IMAP = imap(_Pipe, _TagMutvar, StateMutvar),
-    some [!State] (
-        get_mutvar(StateMutvar, !:State, !IO),
-        Response = complete_response(UntaggedResponses, FinalMaybeTag,
-            FinalRespText),
-        (
-            ( FinalMaybeTag = tagged(_, ok)
-            ; FinalMaybeTag = tagged(_, no)
-            ),
-            !State ^ selected := yes(new_selected_mailbox(Mailbox))
-        ;
-            ( FinalMaybeTag = tagged(_, bad)
-            ; FinalMaybeTag = bye
-            )
+apply_examine_response(Mailbox, Response, !State, !Alerts, !IO) :-
+    Response = complete_response(_, FinalMaybeTag, _FinalRespText),
+    (
+        ( FinalMaybeTag = tagged(_, ok)
+        ; FinalMaybeTag = tagged(_, no)
         ),
-        list.foldl2(apply_examine_untagged_response, UntaggedResponses,
-            !State, [], Alerts1),
-        apply_examine_cond_or_bye(cond_bye_1(FinalMaybeTag), FinalRespText,
-            !State, Alerts1, Alerts),
-        make_result(FinalMaybeTag, FinalRespText, Alerts, Res),
-        set_mutvar(StateMutvar, !.State, !IO)
-    ).
+        !State ^ selected := yes(new_selected_mailbox(Mailbox))
+    ;
+        ( FinalMaybeTag = tagged(_, bad)
+        ; FinalMaybeTag = bye
+        )
+    ),
+    apply_complete_response(Response, !State, !Alerts, !IO).
 
 :- func new_selected_mailbox(command.mailbox) = selected_mailbox.
 
 new_selected_mailbox(Mailbox) =
     selected_mailbox(Mailbox, read_only, [], zero, zero, no, no, no, no).
-
-:- pred apply_examine_untagged_response(untagged_response_data::in,
-    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out) is det.
-
-apply_examine_untagged_response(ResponseData, !State, !Alerts) :-
-    (
-        ResponseData = cond_or_bye(Cond, RespText),
-        apply_examine_cond_or_bye(Cond, RespText, !State, !Alerts)
-    ;
-        ResponseData = mailbox_data(MailboxData),
-        !.State ^ selected = yes(Sel0),
-        (
-            MailboxData = flags(Flags),
-            Sel = Sel0 ^ flags := Flags
-        ;
-            MailboxData = exists(Exists),
-            % This is not supposed to decrease except after EXPUNGE.
-            Sel = Sel0 ^ exists := Exists
-        ;
-            MailboxData = recent(Recent),
-            Sel = Sel0 ^ recent := Recent
-        ;
-            ( MailboxData = list(_)
-            ; MailboxData = lsub(_)
-            ; MailboxData = search(_)
-            ; MailboxData = status(_, _)
-            ),
-            sorry($module, $pred, "MailboxData=" ++ string(MailboxData))
-        ),
-        !State ^ selected := yes(Sel)
-    ;
-        ResponseData = mailbox_data(_),
-        !.State ^ selected = no
-    ;
-        ResponseData = capability_data(_),
-        sorry($module, $pred, "capability_data")
-    ).
-
-:- pred apply_examine_cond_or_bye(cond_bye::in, resp_text::in,
-    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out) is det.
-
-apply_examine_cond_or_bye(Cond, RespText, !State, !Alerts) :-
-    RespText = resp_text(MaybeResponseCode, Text),
-    (
-        MaybeResponseCode = yes(ResponseCode),
-        apply_examine_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts)
-    ;
-        MaybeResponseCode = no
-    ).
-
-:- pred apply_examine_cond_or_bye_2(cond_bye::in, resp_text_code::in,
-    string::in, imap_state::in, imap_state::out,
-    list(alert)::in, list(alert)::out) is det.
-
-apply_examine_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts) :-
-    (
-        ResponseCode = alert,
-        cons(alert(Text), !Alerts)
-    ;
-        ( ResponseCode = unseen(_)
-        ; ResponseCode = permanent_flags(_)
-        ; ResponseCode = read_only
-        ; ResponseCode = read_write
-        ; ResponseCode = uidnext(_)
-        ; ResponseCode = uidvalidity(_)
-        ; ResponseCode = other(_, _)
-        ),
-        (
-            Cond = ok,
-            !.State ^ selected = yes(Sel0),
-            apply_selected_mailbox_response_code(ResponseCode, Sel0, Sel),
-            !State ^ selected := yes(Sel)
-        ;
-            Cond = ok,
-            !.State ^ selected = no
-        ;
-            Cond = no
-        ;
-            Cond = bad
-        ;
-            Cond = bye
-        )
-    ;
-        ( ResponseCode = badcharset(_)
-        ; ResponseCode = capability_data(_)
-        ; ResponseCode = parse
-        ; ResponseCode = trycreate
-        ),
-        sorry($module, $pred, "ResponseCode=" ++ string(ResponseCode))
-    ).
-
-:- pred apply_selected_mailbox_response_code(
-    resp_text_code::in(mailbox_response_code),
-    selected_mailbox::in, selected_mailbox::out) is det.
-
-apply_selected_mailbox_response_code(ResponseCode, !Sel) :-
-    (
-        ResponseCode = unseen(Unseen),
-        !Sel ^ unseen := yes(Unseen)
-    ;
-        ResponseCode = permanent_flags(PermanentFlags),
-        !Sel ^ permanent_flags := yes(PermanentFlags)
-    ;
-        ResponseCode = read_only,
-        !Sel ^ access := read_only
-    ;
-        ResponseCode = read_write,
-        !Sel ^ access := read_write
-    ;
-        ResponseCode = uidnext(UID),
-        !Sel ^ uidnext := yes(UID)
-    ;
-        ResponseCode = uidvalidity(UIDValidity),
-        !Sel ^ uidvalidity := yes(UIDValidity)
-    ;
-        ResponseCode = other(Atom, _MaybeString),
-        ( Atom = atom("HIGHESTMODSEQ") ->
-            % TODO
-            true
-        ;
-            true
-        )
-    ).
 
 %-----------------------------------------------------------------------------%
 
@@ -627,6 +464,161 @@ parse_response_single(Input, Res) :-
             ;
                 true
             )
+        )
+    ).
+
+%-----------------------------------------------------------------------------%
+
+:- pred apply_complete_response(complete_response::in,
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
+    io::di, io::uo) is det.
+
+apply_complete_response(Response, !State, !Alerts, !IO) :-
+    Response = complete_response(UntaggedResponses, FinalMaybeTag,
+        FinalRespText),
+    apply_untagged_responses(UntaggedResponses, !State, !Alerts),
+    apply_cond_or_bye(cond_bye_1(FinalMaybeTag), FinalRespText,
+        !State, !Alerts).
+
+:- pred apply_untagged_responses(list(untagged_response_data)::in,
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out) is det.
+
+apply_untagged_responses(ResponseData, !State, !Alerts) :-
+    list.foldl2(apply_untagged_response, ResponseData, !State, !Alerts).
+
+:- pred apply_untagged_response(untagged_response_data::in,
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out) is det.
+
+apply_untagged_response(ResponseData, !State, !Alerts) :-
+    (
+        ResponseData = cond_or_bye(Cond, RespText),
+        apply_cond_or_bye(Cond, RespText, !State, !Alerts)
+    ;
+        ResponseData = mailbox_data(MailboxData),
+        apply_mailbox_data(MailboxData, !State)
+    ;
+        ResponseData = capability_data(_),
+        sorry($module, $pred, "capability_data")
+    ).
+
+:- pred apply_cond_or_bye(cond_bye::in, resp_text::in,
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out) is det.
+
+apply_cond_or_bye(Cond, RespText, !State, !Alerts) :-
+    (
+        RespText = resp_text(yes(ResponseCode), Text),
+        apply_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts)
+    ;
+        RespText = resp_text(no, _Text)
+    ).
+
+:- pred apply_cond_or_bye_2(cond_bye::in, resp_text_code::in, string::in,
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out) is det.
+
+apply_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts) :-
+    (
+        ResponseCode = alert,
+        cons(alert(Text), !Alerts)
+    ;
+        ResponseCode = capability_data(Caps),
+        (
+            Cond = ok,
+            !State ^ capabilities := yes(Caps)
+        ;
+            Cond = no
+        ;
+            Cond = bad
+        ;
+            Cond = bye
+        )
+    ;
+        ( ResponseCode = unseen(_)
+        ; ResponseCode = permanent_flags(_)
+        ; ResponseCode = read_only
+        ; ResponseCode = read_write
+        ; ResponseCode = uidnext(_)
+        ; ResponseCode = uidvalidity(_)
+        ; ResponseCode = other(_, _)
+        ),
+        (
+            Cond = ok,
+            !.State ^ selected = yes(Sel0),
+            apply_selected_mailbox_response_code(ResponseCode, Sel0, Sel),
+            !State ^ selected := yes(Sel)
+        ;
+            Cond = ok,
+            !.State ^ selected = no
+        ;
+            Cond = no
+        ;
+            Cond = bad
+        ;
+            Cond = bye
+        )
+    ;
+        ( ResponseCode = badcharset(_)
+        ; ResponseCode = parse
+        ; ResponseCode = trycreate
+        )
+    ).
+
+:- pred apply_mailbox_data(mailbox_data::in, imap_state::in, imap_state::out)
+    is det.
+
+apply_mailbox_data(_MailboxData, State, State) :-
+    State ^ selected = no.
+apply_mailbox_data(MailboxData, State0, State) :-
+    State0 ^ selected = yes(Sel0),
+    (
+        MailboxData = flags(Flags),
+        Sel = Sel0 ^ flags := Flags
+    ;
+        MailboxData = exists(Exists),
+        % This is not supposed to decrease except after EXPUNGE.
+        Sel = Sel0 ^ exists := Exists
+    ;
+        MailboxData = recent(Recent),
+        Sel = Sel0 ^ recent := Recent
+    ;
+        ( MailboxData = list(_)
+        ; MailboxData = lsub(_)
+        ; MailboxData = search(_)
+        ; MailboxData = status(_, _)
+        ),
+        sorry($module, $pred, "MailboxData=" ++ string(MailboxData))
+    ),
+    State = State0 ^ selected := yes(Sel).
+
+:- pred apply_selected_mailbox_response_code(
+    resp_text_code::in(mailbox_response_code),
+    selected_mailbox::in, selected_mailbox::out) is det.
+
+apply_selected_mailbox_response_code(ResponseCode, !Sel) :-
+    (
+        ResponseCode = unseen(Unseen),
+        !Sel ^ unseen := yes(Unseen)
+    ;
+        ResponseCode = permanent_flags(PermanentFlags),
+        !Sel ^ permanent_flags := yes(PermanentFlags)
+    ;
+        ResponseCode = read_only,
+        !Sel ^ access := read_only
+    ;
+        ResponseCode = read_write,
+        !Sel ^ access := read_write
+    ;
+        ResponseCode = uidnext(UID),
+        !Sel ^ uidnext := yes(UID)
+    ;
+        ResponseCode = uidvalidity(UIDValidity),
+        !Sel ^ uidvalidity := yes(UIDValidity)
+    ;
+        ResponseCode = other(Atom, _MaybeString),
+        ( Atom = atom("HIGHESTMODSEQ") ->
+            % TODO
+            true
+        ;
+            true
         )
     ).
 
