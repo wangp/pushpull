@@ -523,6 +523,15 @@ wait_for_complete_response_2(Pipe, Tag, RevUntagged0, Res, !IO) :-
     read_crlf_line_chop(Pipe, ResRead, !IO),
     (
         ResRead = ok(Bytes),
+        trace [runtime(env("DEBUG_IMAP")), io(!IO2)] (
+            ( string.from_code_unit_list(Bytes, String) ->
+                Stream = io.stderr_stream,
+                io.write_string(Stream, String, !IO2),
+                io.nl(Stream, !IO2)
+            ;
+                true
+            )
+        ),
         parse_response_single(Bytes, ParseResult),
         (
             ParseResult = ok(continue_req(_)),
@@ -548,11 +557,19 @@ wait_for_complete_response_2(Pipe, Tag, RevUntagged0, Res, !IO) :-
         )
     ;
         ResRead = eof,
-        % XXX for logout we should read until the connection is closed
-        Res = error("unexpected eof")
+        % Should we check for BYE in non-last position?
+        (
+            RevUntagged0 = [Last | RevUntagged1],
+            Last = cond_or_bye(bye, ByeRespText)
+        ->
+            list.reverse(RevUntagged1, Untagged),
+            Res = ok(complete_response(Untagged, bye, ByeRespText))
+        ;
+            Res = error("unexpected eof")
+        )
     ;
         ResRead = error(Error),
-        % XXX for logout we should read until the connection is closed
+        % XXX do we need to do anything with the RevUntagged0?
         Res = error(io.error_message(Error))
     ).
 
