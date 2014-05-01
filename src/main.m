@@ -13,10 +13,12 @@
 :- implementation.
 
 :- import_module bool.
+:- import_module integer.
 :- import_module list.
 :- import_module maybe.
 
 :- import_module imap.
+:- import_module imap.types.
 :- import_module signal.
 
 %-----------------------------------------------------------------------------%
@@ -64,12 +66,33 @@ logged_in(IMAP, !IO) :-
     (
         ResExamine = ok,
         io.write_string(Text, !IO),
-        io.nl(!IO)
+        io.nl(!IO),
+        do_uid_search(IMAP, !IO)
     ;
         ( ResExamine = no
         ; ResExamine = bad
         ; ResExamine = bye
         ; ResExamine = error
+        ),
+        report_error(Text, !IO)
+    ).
+
+:- pred do_uid_search(imap::in, io::di, io::uo) is det.
+
+do_uid_search(IMAP, !IO) :-
+    uid_search(IMAP, (all), result(ResSearch, Text, Alerts), !IO),
+    report_alerts(Alerts, !IO),
+    (
+        ResSearch = ok_with_data(UIDs),
+        io.write_string(Text, !IO),
+        io.nl(!IO),
+        io.write_list(UIDs, ", ", write_uid, !IO),
+        io.nl(!IO)
+    ;
+        ( ResSearch = no
+        ; ResSearch = bad
+        ; ResSearch = bye
+        ; ResSearch = error
         ),
         report_error(Text, !IO)
     ).
@@ -93,6 +116,11 @@ report_alert(alert(Alert), !IO) :-
     io.write_string("ALERT: ", !IO),
     io.write_string(Alert, !IO),
     io.nl(!IO).
+
+:- pred write_uid(uid::in, io::di, io::uo) is det.
+
+write_uid(uid(N), !IO) :-
+    io.write_string(to_string(N), !IO).
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

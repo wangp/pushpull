@@ -28,6 +28,50 @@
 :- type message_seq_nr
     --->    message_seq_nr(integer). % (0 <= n < 4,294,967,296)
 
+:- type search
+    --->    search(maybe(charset), search_key).
+
+:- type charset
+    --->    charset(astring).
+
+:- type search_key
+    --->    (all)
+    ;       answered
+    ;       bcc(astring)
+    %;      before(date)
+    ;       body(astring)
+    ;       cc(astring)
+    ;       deleted
+    ;       flagged
+    ;       from(astring)
+    %;      keyword(flag_keyword)
+    ;       new
+    ;       old
+    %;      on(date)
+    ;       recent
+    ;       seen
+    %;      since(date)
+    ;       subject(astring)
+    ;       text(astring)
+    ;       to(astring)
+    ;       unanswered
+    ;       undeleted
+    ;       unflagged
+    %;      unkeyword(flag_keyword)
+    ;       unseen
+    ;       draft
+    %;      header(header_field_name, astring)
+    %;      larger(number)
+    ;       not(search_key)
+    ;       or(search_key, search_key)
+    %;      sentbefore(date)
+    %;      senton(date)
+    %;      sentsince(date)
+    %;      smaller(number)
+    %;      uid(sequence_set)
+    %;      undraft(sequence_set)
+    ;       and(search_key, list(search_key)).
+
 :- func make_astring(string) = astring.
 
 %-----------------------------------------------------------------------------%

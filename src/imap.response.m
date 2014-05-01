@@ -107,7 +107,7 @@
     --->    flags(list(flag))
     ;       list(mailbox_list)
     ;       lsub(mailbox_list)
-    ;       search(list(message_seq_nr))
+    ;       search(list(integer))
     ;       status(command.mailbox, status_att_list)
     ;       exists(integer)
     ;       recent(integer).
@@ -218,6 +218,14 @@ digit_nz(Src, C, !PS) :-
     ( C = '1' ; C = '2' ; C = '3' ; C = '4' ; C = '5'
     ; C = '6' ; C = '7' ; C = '8' ; C = '9'
     ).
+
+:- pred sp_then(pred(src, T, ps, ps), src, T, ps, ps).
+:- mode sp_then(in(pred(in, out, in, out) is semidet), in, out, in, out)
+    is semidet.
+
+sp_then(P, Src, X, !PS) :-
+    sp(Src, !PS),
+    P(Src, X, !PS).
 
 %-----------------------------------------------------------------------------%
 
@@ -414,13 +422,7 @@ capability_data(Src, Caps, !PS) :-
 
 sp_capabilities(Src, Caps, !PS) :-
     % At least one of the Caps must be "IMAP4rev1".
-    one_or_more(sp_capability, Src, Caps, !PS).
-
-:- pred sp_capability(src::in, capability::out, ps::in, ps::out) is semidet.
-
-sp_capability(Src, Cap, !PS) :-
-    sp(Src, !PS),
-    capability(Src, Cap, !PS).
+    one_or_more(sp_then(capability), Src, Caps, !PS).
 
 :- pred capability(src::in, capability::out, ps::in, ps::out) is semidet.
 
@@ -524,7 +526,8 @@ mailbox_data(Src, MailboxData, !PS) :-
             sorry($module, $pred, "LSUB")
         ;
             Atom = atom("SEARCH"),
-            sorry($module, $pred, "SEARCH")
+            zero_or_more(sp_then(nz_number), Src, Numbers, !PS),
+            MailboxData = search(Numbers)
         ;
             Atom = atom("STATUS"),
             sorry($module, $pred, "STATUS")
@@ -537,18 +540,12 @@ flag_list(Src, Flags, !PS) :-
     next_char(Src, '(', !PS),
     % XXX should have a helper for space-separated lists
     ( flag(Src, Flag, !PS) ->
-        zero_or_more(sp_flag, Src, FlagsTail, !PS),
+        zero_or_more(sp_then(flag), Src, FlagsTail, !PS),
         Flags = [Flag | FlagsTail]
     ;
         Flags = []
     ),
     next_char(Src, ')', !PS).
-
-:- pred sp_flag(src::in, flag::out, ps::in, ps::out) is semidet.
-
-sp_flag(Src, Flag, !PS) :-
-    sp(Src, !PS),
-    flag(Src, Flag, !PS).
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

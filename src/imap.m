@@ -7,6 +7,10 @@
 :- import_module list.
 :- import_module maybe.
 
+:- include_module imap.types.
+
+:- import_module imap.types.
+
 %-----------------------------------------------------------------------------%
 
 :- type imap.
@@ -24,6 +28,16 @@
 
 :- type imap_res
     --->    ok
+    ;       no
+    ;       bad
+    ;       bye
+    ;       error.
+
+:- type imap_result(T)
+    --->    result(imap_res(T), string, list(alert)).
+
+:- type imap_res(T)
+    --->    ok_with_data(T)
     ;       no
     ;       bad
     ;       bye
@@ -47,6 +61,9 @@
 :- pred examine(imap::in, mailbox::in, imap_result::out, io::di, io::uo)
     is det.
 
+:- pred uid_search(imap::in, search_key::in, imap_result(list(uid))::out,
+    io::di, io::uo) is det.
+
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
@@ -57,20 +74,21 @@
 :- import_module require.
 :- import_module store.
 :- import_module string.
+:- import_module unit.
 
 :- include_module imap.charclass.
 :- include_module imap.command.
 :- include_module imap.io.
 :- include_module imap.parsing.
 :- include_module imap.response.
-:- include_module imap.types.
 
 :- import_module imap.command.
 :- import_module imap.io.
 :- import_module imap.parsing.
 :- import_module imap.response.
-:- import_module imap.types.
 :- import_module subprocess.
+
+:- type mailbox == command.mailbox.
 
 :- type imap
     --->    imap(
@@ -126,7 +144,9 @@
     --->    read_only
     ;       read_write.
 
-:- type mailbox == command.mailbox.
+:- typeclass handle_search_results(T) where [
+    pred handle_search_results(list(integer)::in, T::in, T::out) is det
+].
 
 %-----------------------------------------------------------------------------%
 
@@ -241,6 +261,21 @@ make_imap(Proc, ConnState, MaybeCaps, IMAP, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
+:- pred command_wrapper_low(pred(imap, T, io, io),
+    list(connection_state), imap, maybe_error(T), io, io).
+:- mode command_wrapper_low(in(pred(in, out, di, uo) is det),
+    in, in, out, di, uo) is det.
+
+command_wrapper_low(Pred, ValidConnectionStates, IMAP, MaybeRes, !IO) :-
+    get_connection_state(IMAP, ConnState, !IO),
+    ( list.member(ConnState, ValidConnectionStates) ->
+        Pred(IMAP, Res, !IO),
+        MaybeRes = ok(Res),
+        close_pipe_on_logout(IMAP, !IO)
+    ;
+        MaybeRes = error(wrong_state_message(ConnState))
+    ).
+
 :- pred command_wrapper(pred(imap, imap_result, io, io),
     list(connection_state), imap, imap_result, io, io).
 :- mode command_wrapper(in(pred(in, out, di, uo) is det),
@@ -252,7 +287,7 @@ command_wrapper(Pred, ValidConnectionStates, IMAP, Res, !IO) :-
         Pred(IMAP, Res, !IO),
         close_pipe_on_logout(IMAP, !IO)
     ;
-        Res = wrong_state_result(ConnState)
+        Res = error_result(wrong_state_message(ConnState))
     ).
 
 :- pred close_pipe_on_logout(imap::in, io::di, io::uo) is det.
@@ -303,15 +338,15 @@ get_capabilities(IMAP, MaybeCaps, !IO) :-
     get_mutvar(StateMutvar, State, !IO),
     MaybeCaps = State ^ capabilities.
 
-:- pred update_state(pred(T, imap_state, imap_state, A, A, io, io),
-    imap, T, A, A, io, io).
-:- mode update_state(in(pred(in, in, out, in, out, di, uo) is det),
-    in, in, in, out, di, uo) is det.
+:- pred update_state(pred(T, U, imap_state, imap_state, A, A, io, io),
+    imap, T, U, A, A, io, io).
+:- mode update_state(in(pred(in, out, in, out, in, out, di, uo) is det),
+    in, in, out, in, out, di, uo) is det.
 
-update_state(Pred, IMAP, X, !Acc, !IO) :-
+update_state(Pred, IMAP, X, Y, !A, !IO) :-
     IMAP = imap(_Pipe, _TagMutvar, StateMutvar),
     get_mutvar(StateMutvar, State0, !IO),
-    Pred(X, State0, State, !Acc, !IO),
+    Pred(X, Y, State0, State, !A, !IO),
     set_mutvar(StateMutvar, State, !IO).
 
 :- pred make_result(tagged_response_or_bye::in, resp_text::in, list(alert)::in,
@@ -338,16 +373,16 @@ make_result(MaybeTagCond, RespText, Alerts, Result) :-
 
 error_result(Text) = result(error, Text, []).
 
-:- func wrong_state_result(connection_state) = imap_result.
+:- func wrong_state_message(connection_state) = string.
 
-wrong_state_result(not_authenticated) =
-    error_result("command invalid in Not Authenticated state").
-wrong_state_result(authenticated) =
-    error_result("command invalid in Authenticated state").
-wrong_state_result(selected) =
-    error_result("command invalid in Selected state").
-wrong_state_result(logout) =
-    error_result("command invalid in Logout state").
+wrong_state_message(not_authenticated) =
+    "command invalid in Not Authenticated state".
+wrong_state_message(authenticated) =
+    "command invalid in Authenticated state".
+wrong_state_message(selected) =
+    "command invalid in Selected state".
+wrong_state_message(logout) =
+    "command invalid in Logout state".
 
 %-----------------------------------------------------------------------------%
 
@@ -369,8 +404,8 @@ do_capability(IMAP, Res, !IO) :-
         wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
         (
             MaybeResponse = ok(Response),
-            update_state(apply_complete_response, IMAP, Response, [], Alerts,
-                !IO),
+            update_state(apply_capability_response, IMAP, Response, _ : unit,
+                [], Alerts, !IO),
             Response = complete_response(_, FinalMaybeTag, FinalRespText),
             make_result(FinalMaybeTag, FinalRespText, Alerts, Res)
         ;
@@ -381,6 +416,13 @@ do_capability(IMAP, Res, !IO) :-
         Res0 = error(Error),
         Res = result(error, Error, [])
     ).
+
+:- pred apply_capability_response(complete_response::in, unit::out,
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
+    io::di, io::uo) is det.
+
+apply_capability_response(Response, unit, !State, !Alerts, !IO) :-
+    apply_complete_response(Response, !State, !Alerts, !IO).
 
 %-----------------------------------------------------------------------------%
 
@@ -435,8 +477,8 @@ do_login(username(UserName), password(Password), IMAP, Res, !IO) :-
         wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
         (
             MaybeResponse = ok(Response),
-            update_state(apply_login_response, IMAP, Response, [], Alerts,
-                !IO),
+            update_state(apply_login_response, IMAP, Response, _ : unit,
+                [], Alerts, !IO),
             Response = complete_response(_, FinalMaybeTag, FinalRespText),
             make_result(FinalMaybeTag, FinalRespText, Alerts, Res)
         ;
@@ -448,11 +490,11 @@ do_login(username(UserName), password(Password), IMAP, Res, !IO) :-
         Res = result(error, Error, [])
     ).
 
-:- pred apply_login_response(complete_response::in,
+:- pred apply_login_response(complete_response::in, unit::out,
     imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
     io::di, io::uo) is det.
 
-apply_login_response(Response, !State, !Alerts, !IO) :-
+apply_login_response(Response, unit, !State, !Alerts, !IO) :-
     apply_complete_response(Response, !State, !Alerts, !IO),
     Response = complete_response(_, FinalMaybeTag, _),
     (
@@ -484,8 +526,8 @@ do_logout(IMAP, Res, !IO) :-
         wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
         (
             MaybeResponse = ok(Response),
-            update_state(apply_logout_response, IMAP, Response, [], Alerts,
-                !IO),
+            update_state(apply_logout_response, IMAP, Response, _ : unit,
+                [], Alerts, !IO),
             Response = complete_response(_, FinalMaybeTag, FinalRespText),
             make_result(FinalMaybeTag, FinalRespText, Alerts, Res)
         ;
@@ -497,11 +539,11 @@ do_logout(IMAP, Res, !IO) :-
         Res = result(error, Error, [])
     ).
 
-:- pred apply_logout_response(complete_response::in,
+:- pred apply_logout_response(complete_response::in, unit::out,
     imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
     io::di, io::uo) is det.
 
-apply_logout_response(Response, !State, !Alerts, !IO) :-
+apply_logout_response(Response, unit, !State, !Alerts, !IO) :-
     apply_complete_response(Response, !State, !Alerts, !IO),
     Response = complete_response(_, FinalMaybeTag, _),
     (
@@ -542,7 +584,7 @@ do_examine(Mailbox, IMAP, Res, !IO) :-
         (
             MaybeResponse = ok(Response),
             update_state(apply_examine_response(Mailbox), IMAP, Response,
-                [], Alerts, !IO),
+                _ : unit, [], Alerts, !IO),
             Response = complete_response(_, FinalMaybeTag, FinalRespText),
             make_result(FinalMaybeTag, FinalRespText, Alerts, Res)
         ;
@@ -555,10 +597,10 @@ do_examine(Mailbox, IMAP, Res, !IO) :-
     ).
 
 :- pred apply_examine_response(command.mailbox::in, complete_response::in,
-    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
-    io::di, io::uo) is det.
+    unit::out, imap_state::in, imap_state::out,
+    list(alert)::in, list(alert)::out, io::di, io::uo) is det.
 
-apply_examine_response(Mailbox, Response, !State, !Alerts, !IO) :-
+apply_examine_response(Mailbox, Response, unit, !State, !Alerts, !IO) :-
     Response = complete_response(_, FinalMaybeTag, _FinalRespText),
     (
         FinalMaybeTag = tagged(_, ok),
@@ -580,6 +622,71 @@ apply_examine_response(Mailbox, Response, !State, !Alerts, !IO) :-
 
 new_selected_mailbox(Mailbox) =
     selected_mailbox(Mailbox, read_only, [], zero, zero, no, no, no, no).
+
+%-----------------------------------------------------------------------------%
+
+uid_search(IMAP, SearchKey, Res, !IO) :-
+    command_wrapper_low(do_uid_search(SearchKey), [selected], IMAP, MaybeRes,
+        !IO),
+    (
+        MaybeRes = ok(Res)
+    ;
+        MaybeRes = error(Error),
+        Res = result(error, Error, [])
+    ).
+
+:- pred do_uid_search(search_key::in, imap::in, imap_result(list(uid))::out,
+    io::di, io::uo) is det.
+
+do_uid_search(SearchKey, IMAP, Res, !IO) :-
+    get_new_tag(IMAP, Pipe, Tag, !IO),
+    Command = command_select(uid_search(search(no, SearchKey))),
+    make_command_stream(Tag - Command, CommandStream),
+    write_command_stream(Pipe, CommandStream, Res0, !IO),
+    (
+        Res0 = ok,
+        wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
+        (
+            MaybeResponse = ok(Response),
+            update_state(apply_uid_search_response, IMAP, Response, Res,
+                unit, _ : unit, !IO)
+        ;
+            MaybeResponse = error(Error),
+            Res = result(error, Error, [])
+        )
+    ;
+        Res0 = error(Error),
+        Res = result(error, Error, [])
+    ).
+
+:- pred apply_uid_search_response(complete_response::in,
+    imap_result(list(uid))::out, imap_state::in, imap_state::out,
+    unit::in, unit::out, io::di, io::uo) is det.
+
+apply_uid_search_response(Response, Result, !State, unit, unit, !IO) :-
+    apply_complete_response(Response, !State, [], Alerts,
+        accept_search_results([]), accept_search_results(SR), !IO),
+    Response = complete_response(_, FinalMaybeTag, FinalRespText),
+    (
+        FinalMaybeTag = tagged(_, ok),
+        UIDs = list.map(to_uid, SR),
+        Res = ok_with_data(UIDs)
+    ;
+        FinalMaybeTag = tagged(_, no),
+        Res = no
+    ;
+        FinalMaybeTag = tagged(_, bad),
+        Res = bad
+    ;
+        FinalMaybeTag = bye,
+        Res = bye
+    ),
+    FinalRespText = resp_text(_MaybeResponseCode, Text),
+    Result = result(Res, Text, Alerts).
+
+:- func to_uid(integer) = uid.
+
+to_uid(N) = uid(N).
 
 %-----------------------------------------------------------------------------%
 
@@ -681,40 +788,50 @@ parse_response_single(Input, Res) :-
     io::di, io::uo) is det.
 
 apply_complete_response(Response, !State, !Alerts, !IO) :-
+    apply_complete_response(Response, !State, !Alerts, unit, _ : unit, !IO).
+
+:- pred apply_complete_response(complete_response::in,
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
+    SR::in, SR::out, io::di, io::uo) is det <= handle_search_results(SR).
+
+apply_complete_response(Response, !State, !Alerts, !SR, !IO) :-
     Response = complete_response(UntaggedResponses, FinalMaybeTag,
         FinalRespText),
-    apply_untagged_responses(UntaggedResponses, !State, !Alerts),
+    apply_untagged_responses(UntaggedResponses, !State, !Alerts, !SR),
     apply_cond_or_bye(cond_bye_1(FinalMaybeTag), FinalRespText,
-        !State, !Alerts).
+        !State, !Alerts, !SR).
 
 :- pred apply_untagged_responses(list(untagged_response_data)::in,
-    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out) is det.
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
+    SR::in, SR::out) is det <= handle_search_results(SR).
 
-apply_untagged_responses(ResponseData, !State, !Alerts) :-
-    list.foldl2(apply_untagged_response, ResponseData, !State, !Alerts).
+apply_untagged_responses(ResponseData, !State, !Alerts, !SR) :-
+    list.foldl3(apply_untagged_response, ResponseData, !State, !Alerts, !SR).
 
 :- pred apply_untagged_response(untagged_response_data::in,
-    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out) is det.
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
+    SR::in, SR::out) is det <= handle_search_results(SR).
 
-apply_untagged_response(ResponseData, !State, !Alerts) :-
+apply_untagged_response(ResponseData, !State, !Alerts, !SR) :-
     (
         ResponseData = cond_or_bye(Cond, RespText),
-        apply_cond_or_bye(Cond, RespText, !State, !Alerts)
+        apply_cond_or_bye(Cond, RespText, !State, !Alerts, !SR)
     ;
         ResponseData = mailbox_data(MailboxData),
-        apply_mailbox_data(MailboxData, !State)
+        apply_mailbox_data(MailboxData, !State, !SR)
     ;
         ResponseData = capability_data(Caps),
         !State ^ capabilities := yes(Caps)
     ).
 
 :- pred apply_cond_or_bye(cond_bye::in, resp_text::in,
-    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out) is det.
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
+    SR::in, SR::out) is det <= handle_search_results(SR).
 
-apply_cond_or_bye(Cond, RespText, !State, !Alerts) :-
+apply_cond_or_bye(Cond, RespText, !State, !Alerts, !SR) :-
     (
         RespText = resp_text(yes(ResponseCode), Text),
-        apply_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts)
+        apply_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts, !SR)
     ;
         RespText = resp_text(no, _Text)
     ),
@@ -729,9 +846,10 @@ apply_cond_or_bye(Cond, RespText, !State, !Alerts) :-
     ).
 
 :- pred apply_cond_or_bye_2(cond_bye::in, resp_text_code::in, string::in,
-    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out) is det.
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
+    SR::in, SR::out) is det <= handle_search_results(SR).
 
-apply_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts) :-
+apply_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts, !SR) :-
     (
         ResponseCode = alert,
         cons(alert(Text), !Alerts)
@@ -778,12 +896,12 @@ apply_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts) :-
         )
     ).
 
-:- pred apply_mailbox_data(mailbox_data::in, imap_state::in, imap_state::out)
-    is det.
+:- pred apply_mailbox_data(mailbox_data::in, imap_state::in, imap_state::out,
+    SR::in, SR::out) is det <= handle_search_results(SR).
 
-apply_mailbox_data(_MailboxData, State, State) :-
+apply_mailbox_data(_MailboxData, State, State, !SR) :-
     State ^ selected = no.
-apply_mailbox_data(MailboxData, State0, State) :-
+apply_mailbox_data(MailboxData, State0, State, !SR) :-
     State0 ^ selected = yes(Sel0),
     (
         MailboxData = flags(Flags),
@@ -796,9 +914,12 @@ apply_mailbox_data(MailboxData, State0, State) :-
         MailboxData = recent(Recent),
         Sel = Sel0 ^ recent := Recent
     ;
+        MailboxData = search(Numbers),
+        handle_search_results(Numbers, !SR),
+        Sel = Sel0
+    ;
         ( MailboxData = list(_)
         ; MailboxData = lsub(_)
-        ; MailboxData = search(_)
         ; MailboxData = status(_, _)
         ),
         sorry($module, $pred, "MailboxData=" ++ string(MailboxData))
@@ -837,6 +958,19 @@ apply_selected_mailbox_response_code(ResponseCode, !Sel) :-
             true
         )
     ).
+
+%-----------------------------------------------------------------------------%
+
+:- type accept_search_results
+    --->    accept_search_results(list(integer)).
+
+:- instance handle_search_results(accept_search_results) where [
+    handle_search_results(Numbers, _, accept_search_results(Numbers))
+].
+
+:- instance handle_search_results(unit) where [
+    handle_search_results(_, unit, unit)
+].
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

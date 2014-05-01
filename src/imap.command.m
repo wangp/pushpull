@@ -43,11 +43,12 @@
     --->    check
     ;       close
     ;       expunge
-    ;       copy
-    ;       fetch
-    ;       store
-    ;       uid
-    ;       search.
+    %;      copy(sequence_set, mailbox)
+    %;      fetch(sequence_set, ...)
+    %;      uid_fetch(sequence_set, ...)
+    %;      store(sequence_set, ...)
+    ;       search(search)
+    ;       uid_search(search).
 
 :- type mailbox
     --->    inbox
@@ -87,6 +88,12 @@ make_command_stream(Command, List) :-
     add(Command, init, Acc),
     List = list(Acc).
 
+:- pred add_sp_then(T::in, acc::in, acc::out) is det <= add(T).
+
+add_sp_then(X, !Acc) :-
+    add(sp, !Acc),
+    add(X, !Acc).
+
 :- instance add(string) where [
     add(S, A, snoc(A, S))
 ].
@@ -124,8 +131,8 @@ make_command_stream(Command, List) :-
         Command = command_nonauth(X),
         add(X, !Acc)
     ;
-        Command = command_select(_),
-        sorry($module, $pred, "command_select")
+        Command = command_select(X),
+        add(X, !Acc)
     )
 ].
 
@@ -161,6 +168,131 @@ make_command_stream(Command, List) :-
         add(UserId, !Acc),
         add(sp, !Acc),
         add(Password, !Acc)
+    )
+].
+
+:- instance add(command_select) where [
+    add(Command, !Acc) :-
+    (
+        Command = check,
+        add("CHECK", !Acc)
+    ;
+        Command = close,
+        add("CLOSE", !Acc)
+    ;
+        Command = expunge,
+        add("EXPUNGE", !Acc)
+    ;
+        (
+            Command = search(search(MaybeCharset, SearchKey)),
+            add("SEARCH", !Acc)
+        ;
+            Command = uid_search(search(MaybeCharset, SearchKey)),
+            add("UID SEARCH", !Acc)
+        ),
+        (
+            MaybeCharset = yes(CharSet),
+            add(" CHARSET ", !Acc),
+            add(CharSet, !Acc)
+        ;
+            MaybeCharset = no
+        ),
+        add(sp, !Acc),
+        % Could raise the conjunction but don't need to.
+        add(SearchKey, !Acc)
+    )
+].
+
+:- instance add(charset) where [
+    add(charset(CharSet), !Acc) :-
+        add(CharSet, !Acc)
+].
+
+:- instance add(search_key) where [
+    add(SearchKey, !Acc) :-
+    (
+        SearchKey = (all),
+        add("ALL", !Acc)
+    ;
+        SearchKey = answered,
+        add("ANSWERED", !Acc)
+    ;
+        SearchKey = bcc(X),
+        add("BCC ", !Acc),
+        add(X, !Acc)
+    ;
+        SearchKey = body(X),
+        add("BODY ", !Acc),
+        add(X, !Acc)
+    ;
+        SearchKey = cc(X),
+        add("CC ", !Acc),
+        add(X, !Acc)
+    ;
+        SearchKey = deleted,
+        add("DELETED", !Acc)
+    ;
+        SearchKey = flagged,
+        add("FLAGGED", !Acc)
+    ;
+        SearchKey = from(X),
+        add("FROM ", !Acc),
+        add(X, !Acc)
+    ;
+        SearchKey = new,
+        add("NEW", !Acc)
+    ;
+        SearchKey = old,
+        add("OLD", !Acc)
+    ;
+        SearchKey = recent,
+        add("RECENT", !Acc)
+    ;
+        SearchKey = seen,
+        add("SEEN", !Acc)
+    ;
+        SearchKey = subject(X),
+        add("SUBJECT ", !Acc),
+        add(X, !Acc)
+    ;
+        SearchKey = text(X),
+        add("TEXT ", !Acc),
+        add(X, !Acc)
+    ;
+        SearchKey = to(X),
+        add("TO ", !Acc),
+        add(X, !Acc)
+    ;
+        SearchKey = unanswered,
+        add("UNANSWERED", !Acc)
+    ;
+        SearchKey = undeleted,
+        add("UNDELETED", !Acc)
+    ;
+        SearchKey = unflagged,
+        add("UNFLAGGED", !Acc)
+    ;
+        SearchKey = unseen,
+        add("UNSEEN", !Acc)
+    ;
+        SearchKey = draft,
+        add("DRAFT", !Acc)
+    ;
+        SearchKey = not(Key),
+        add("NOT ", !Acc),
+        add(Key, !Acc)
+    ;
+        SearchKey = or(KeyA, KeyB),
+        add("OR ", !Acc),
+        add(KeyA, !Acc),
+        add(sp, !Acc),
+        add(KeyB, !Acc)
+    ;
+        SearchKey = and(KeyA, Keys),
+        add("(", !Acc),
+        add(KeyA, !Acc),
+        list.foldl(add_sp_then, Keys, !Acc),
+        add(")", !Acc)
     )
 ].
 
