@@ -68,6 +68,8 @@
     ;       uidnext(uid)
     ;       uidvalidity(uidvalidity)
     ;       unseen(message_seq_nr)
+    ;       highestmodseq(mod_seq_value)
+    ;       nomodseq
     ;       other(atom, maybe(string)).
 
 :- inst mailbox_response_code
@@ -77,7 +79,8 @@
     ;       read_write
     ;       uidnext(ground)
     ;       uidvalidity(ground)
-    ;       other(ground, ground).
+    ;       highestmodseq(ground)
+    ;       nomodseq.
 
 :- type capability_data == list(capability).
 
@@ -218,6 +221,14 @@ digit_nz(Src, C, !PS) :-
     ( C = '1' ; C = '2' ; C = '3' ; C = '4' ; C = '5'
     ; C = '6' ; C = '7' ; C = '8' ; C = '9'
     ).
+
+:- pred mod_seq_valzer(src::in, integer::out, ps::in, ps::out) is semidet.
+
+mod_seq_valzer(Src, Integer, !PS) :-
+    one_or_more_chars(char.is_digit, Src, Chars, !PS),
+    string.from_char_list(Chars, String),
+    integer.from_string(String) = Integer,
+    zero =< Integer, Integer < det_from_string("18446744073709551615").
 
 :- pred sp_then(pred(src, T, ps, ps), src, T, ps, ps).
 :- mode sp_then(in(pred(in, out, in, out) is semidet), in, out, in, out)
@@ -390,6 +401,20 @@ standard_resp_text_code(Src, atom(Atom), Code, !PS) :-
         sp(Src, !PS),
         nz_number(Src, Number, !PS),
         Code = uidvalidity(uidvalidity(Number))
+    ;
+        % RFC 4551
+        Atom = "HIGHESTMODSEQ",
+        sp(Src, !PS),
+        mod_seq_valzer(Src, Number, !PS),
+        ( Number = zero ->
+            Code = nomodseq
+        ;
+            Code = highestmodseq(mod_seq_value(Number))
+        )
+    ;
+        % RFC 4551
+        Atom = "NOMODSEQ",
+        Code = nomodseq
     ).
 
 :- pred other_resp_text_code(src::in, atom::in, resp_text_code::out,

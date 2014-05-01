@@ -28,6 +28,9 @@
 :- type message_seq_nr
     --->    message_seq_nr(integer). % (0 <= n < 4,294,967,296)
 
+:- type mod_seq_value
+    --->    mod_seq_value(integer).  % (0 < n < 18,446,744,073,709,551,615)
+
 :- type search
     --->    search(maybe(charset), search_key).
 

@@ -135,14 +135,20 @@
                 % If this is missing, the client can not make any
                 % assumptions about the next unique identifier
                 % value.
-                uidvalidity :: maybe(uidvalidity)
+                uidvalidity :: maybe(uidvalidity),
                 % If this is missing, the server does not support
                 % unique identifiers.
+                highestmodseq :: highestmodseq
             ).
 
 :- type access
     --->    read_only
     ;       read_write.
+
+:- type highestmodseq
+    --->    unknown
+    ;       nomodseq
+    ;       highestmodseq(mod_seq_value).
 
 :- typeclass handle_search_results(T) where [
     pred handle_search_results(list(integer)::in, T::in, T::out) is det
@@ -239,6 +245,8 @@ handle_greeting_resp_text(RespText, MaybeCaps, Alerts) :-
             ; ResponseCode = uidnext(_)
             ; ResponseCode = uidvalidity(_)
             ; ResponseCode = unseen(_)
+            ; ResponseCode = highestmodseq(_)
+            ; ResponseCode = nomodseq
             ; ResponseCode = other(_, _)
             ),
             MaybeCaps = no,
@@ -621,7 +629,8 @@ apply_examine_response(Mailbox, Response, unit, !State, !Alerts, !IO) :-
 :- func new_selected_mailbox(command.mailbox) = selected_mailbox.
 
 new_selected_mailbox(Mailbox) =
-    selected_mailbox(Mailbox, read_only, [], zero, zero, no, no, no, no).
+    selected_mailbox(Mailbox, read_only, [], zero, zero, no, no, no, no,
+        unknown).
 
 %-----------------------------------------------------------------------------%
 
@@ -872,7 +881,8 @@ apply_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts, !SR) :-
         ; ResponseCode = read_write
         ; ResponseCode = uidnext(_)
         ; ResponseCode = uidvalidity(_)
-        ; ResponseCode = other(_, _)
+        ; ResponseCode = highestmodseq(_)
+        ; ResponseCode = nomodseq
         ),
         (
             Cond = ok,
@@ -893,6 +903,7 @@ apply_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts, !SR) :-
         ( ResponseCode = badcharset(_)
         ; ResponseCode = parse
         ; ResponseCode = trycreate
+        ; ResponseCode = other(_, _)
         )
     ).
 
@@ -950,13 +961,11 @@ apply_selected_mailbox_response_code(ResponseCode, !Sel) :-
         ResponseCode = uidvalidity(UIDValidity),
         !Sel ^ uidvalidity := yes(UIDValidity)
     ;
-        ResponseCode = other(Atom, _MaybeString),
-        ( Atom = atom("HIGHESTMODSEQ") ->
-            % TODO
-            true
-        ;
-            true
-        )
+        ResponseCode = highestmodseq(ModSeqValue),
+        !Sel ^ highestmodseq := highestmodseq(ModSeqValue)
+    ;
+        ResponseCode = nomodseq,
+        !Sel ^ highestmodseq := nomodseq
     ).
 
 %-----------------------------------------------------------------------------%
