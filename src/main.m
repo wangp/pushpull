@@ -16,6 +16,7 @@
 :- import_module integer.
 :- import_module list.
 :- import_module maybe.
+:- import_module pair.
 
 :- import_module imap.
 :- import_module imap.types.
@@ -80,13 +81,22 @@ logged_in(IMAP, !IO) :-
 :- pred do_uid_search(imap::in, io::di, io::uo) is det.
 
 do_uid_search(IMAP, !IO) :-
-    uid_search(IMAP, (all), result(ResSearch, Text, Alerts), !IO),
+    uid_search(IMAP, modseq(mod_seq_valzer(det_from_string("10"))),
+        result(ResSearch, Text, Alerts), !IO),
     report_alerts(Alerts, !IO),
     (
-        ResSearch = ok_with_data(UIDs),
+        ResSearch = ok_with_data(UIDs - MaybeModSeqValue),
         io.write_string(Text, !IO),
         io.nl(!IO),
         io.write_list(UIDs, ", ", write_uid, !IO),
+        (
+            MaybeModSeqValue = yes(mod_seq_value(ModSeqValue)),
+            io.write_string(" (MODSEQ ", !IO),
+            io.write_string(to_string(ModSeqValue), !IO),
+            io.write_string(")", !IO)
+        ;
+            MaybeModSeqValue = no
+        ),
         io.nl(!IO)
     ;
         ( ResSearch = no

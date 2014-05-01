@@ -6,6 +6,7 @@
 :- import_module io.
 :- import_module list.
 :- import_module maybe.
+:- import_module pair.
 
 :- include_module imap.types.
 
@@ -61,8 +62,9 @@
 :- pred examine(imap::in, mailbox::in, imap_result::out, io::di, io::uo)
     is det.
 
-:- pred uid_search(imap::in, search_key::in, imap_result(list(uid))::out,
-    io::di, io::uo) is det.
+:- pred uid_search(imap::in, search_key::in,
+    imap_result(pair(list(uid), maybe(mod_seq_value)))::out, io::di, io::uo)
+    is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -151,7 +153,8 @@
     ;       highestmodseq(mod_seq_value).
 
 :- typeclass handle_search_results(T) where [
-    pred handle_search_results(list(integer)::in, T::in, T::out) is det
+    pred handle_search_results(list(integer)::in, maybe(mod_seq_value)::in,
+        T::in, T::out) is det
 ].
 
 %-----------------------------------------------------------------------------%
@@ -644,8 +647,9 @@ uid_search(IMAP, SearchKey, Res, !IO) :-
         Res = result(error, Error, [])
     ).
 
-:- pred do_uid_search(search_key::in, imap::in, imap_result(list(uid))::out,
-    io::di, io::uo) is det.
+:- pred do_uid_search(search_key::in, imap::in,
+    imap_result(pair(list(uid), maybe(mod_seq_value)))::out, io::di, io::uo)
+    is det.
 
 do_uid_search(SearchKey, IMAP, Res, !IO) :-
     get_new_tag(IMAP, Pipe, Tag, !IO),
@@ -669,17 +673,19 @@ do_uid_search(SearchKey, IMAP, Res, !IO) :-
     ).
 
 :- pred apply_uid_search_response(complete_response::in,
-    imap_result(list(uid))::out, imap_state::in, imap_state::out,
-    unit::in, unit::out, io::di, io::uo) is det.
+    imap_result(pair(list(uid), maybe(mod_seq_value)))::out,
+    imap_state::in, imap_state::out, unit::in, unit::out, io::di, io::uo)
+    is det.
 
 apply_uid_search_response(Response, Result, !State, unit, unit, !IO) :-
     apply_complete_response(Response, !State, [], Alerts,
-        accept_search_results([]), accept_search_results(SR), !IO),
+        accept_search_results([], no),
+        accept_search_results(SR, MaybeModSeqValue), !IO),
     Response = complete_response(_, FinalMaybeTag, FinalRespText),
     (
         FinalMaybeTag = tagged(_, ok),
         UIDs = list.map(to_uid, SR),
-        Res = ok_with_data(UIDs)
+        Res = ok_with_data(UIDs - MaybeModSeqValue)
     ;
         FinalMaybeTag = tagged(_, no),
         Res = no
@@ -925,8 +931,8 @@ apply_mailbox_data(MailboxData, State0, State, !SR) :-
         MailboxData = recent(Recent),
         Sel = Sel0 ^ recent := Recent
     ;
-        MailboxData = search(Numbers),
-        handle_search_results(Numbers, !SR),
+        MailboxData = search(Numbers, MaybeModSeqValue),
+        handle_search_results(Numbers, MaybeModSeqValue, !SR),
         Sel = Sel0
     ;
         ( MailboxData = list(_)
@@ -971,14 +977,15 @@ apply_selected_mailbox_response_code(ResponseCode, !Sel) :-
 %-----------------------------------------------------------------------------%
 
 :- type accept_search_results
-    --->    accept_search_results(list(integer)).
+    --->    accept_search_results(list(integer), maybe(mod_seq_value)).
 
 :- instance handle_search_results(accept_search_results) where [
-    handle_search_results(Numbers, _, accept_search_results(Numbers))
+    handle_search_results(Numbers, MaybeModSeqValue,
+        _, accept_search_results(Numbers, MaybeModSeqValue))
 ].
 
 :- instance handle_search_results(unit) where [
-    handle_search_results(_, unit, unit)
+    handle_search_results(_, _, unit, unit)
 ].
 
 %-----------------------------------------------------------------------------%

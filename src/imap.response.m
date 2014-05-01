@@ -110,7 +110,7 @@
     --->    flags(list(flag))
     ;       list(mailbox_list)
     ;       lsub(mailbox_list)
-    ;       search(list(integer))
+    ;       search(list(integer), maybe(mod_seq_value))
     ;       status(command.mailbox, status_att_list)
     ;       exists(integer)
     ;       recent(integer).
@@ -221,6 +221,12 @@ digit_nz(Src, C, !PS) :-
     ( C = '1' ; C = '2' ; C = '3' ; C = '4' ; C = '5'
     ; C = '6' ; C = '7' ; C = '8' ; C = '9'
     ).
+
+:- pred mod_seq_value(src::in, mod_seq_value::out, ps::in, ps::out) is semidet.
+
+mod_seq_value(Src, mod_seq_value(N), !PS) :-
+    mod_seq_valzer(Src, N, !PS),
+    not N = zero.
 
 :- pred mod_seq_valzer(src::in, integer::out, ps::in, ps::out) is semidet.
 
@@ -552,7 +558,20 @@ mailbox_data(Src, MailboxData, !PS) :-
         ;
             Atom = atom("SEARCH"),
             zero_or_more(sp_then(nz_number), Src, Numbers, !PS),
-            MailboxData = search(Numbers)
+            % RFC 4551
+            (
+                sp(Src, !PS),
+                next_char(Src, '(', !PS),
+                atom(Src, atom("MODSEQ"), !PS)
+            ->
+                sp(Src, !PS),
+                mod_seq_value(Src, ModSeqValue, !PS),
+                next_char(Src, ')', !PS),
+                MaybeModSeqValue = yes(ModSeqValue)
+            ;
+                MaybeModSeqValue = no
+            ),
+            MailboxData = search(Numbers, MaybeModSeqValue)
         ;
             Atom = atom("STATUS"),
             sorry($module, $pred, "STATUS")

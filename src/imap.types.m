@@ -31,6 +31,9 @@
 :- type mod_seq_value
     --->    mod_seq_value(integer).  % (0 < n < 18,446,744,073,709,551,615)
 
+:- type mod_seq_valzer
+    --->    mod_seq_valzer(integer). % (0 =< n < 18,446,744,073,709,551,615)
+
 :- type search
     --->    search(maybe(charset), search_key).
 
@@ -73,7 +76,8 @@
     %;      smaller(number)
     %;      uid(sequence_set)
     %;      undraft(sequence_set)
-    ;       and(search_key, list(search_key)).
+    ;       and(search_key, list(search_key))
+    ;       modseq(/* [entry_name, entry_type_req] */ mod_seq_valzer).
 
 :- func make_astring(string) = astring.
 

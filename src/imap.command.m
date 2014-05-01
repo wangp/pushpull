@@ -106,6 +106,14 @@ add_sp_then(X, !Acc) :-
     add(dquote, !Acc) :- add("\"", !Acc)
 ].
 
+:- instance add(integer) where [
+    add(N, !Acc) :- add(integer.to_string(N), !Acc)
+].
+
+:- instance add(mod_seq_valzer) where [
+    add(mod_seq_valzer(N), !Acc) :- add(N, !Acc)
+].
+
 :- instance add(command) where [
     add(Tag - Command, !Acc) :-
     (
@@ -293,6 +301,11 @@ add_sp_then(X, !Acc) :-
         add(KeyA, !Acc),
         list.foldl(add_sp_then, Keys, !Acc),
         add(")", !Acc)
+    ;
+        % RFC 4551
+        SearchKey = modseq(ModSeqValzer),
+        add("MODSEQ ", !Acc),
+        add(ModSeqValzer, !Acc)
     )
 ].
 
