@@ -802,6 +802,13 @@ msg_att_semi(Src, Atom, Att, !PS) :-
         Atom = atom("UID"),
         uniqueid(Src, UID, !PS),
         Att = uid(UID)
+    ;
+        % RFC 4551
+        Atom = atom("MODSEQ"),
+        next_char(Src, '(', !PS),
+        mod_seq_value(Src, ModSeqValue, !PS),
+        next_char(Src, ')', !PS),
+        Att = modseq(ModSeqValue)
     ).
 
 :- pred msg_att_io(src::in, atom::in, msg_att::out, ps::in, ps::out,

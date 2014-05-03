@@ -113,7 +113,8 @@
     ;       rfc822_header
     ;       rfc822_size
     ;       rfc822_text
-    ;       uid.
+    ;       uid
+    ;       modseq.
 
 :- type section_spec
     --->    msgtext(section_msgtext).
@@ -127,6 +128,9 @@
 
 :- type partial
     --->    partial(int, int). % number, nz-number
+
+:- type fetch_modifier
+    --->    changedsince(mod_seq_value).
 
 :- type msg_atts == list(msg_att).
 
@@ -143,7 +147,8 @@
     %;      body(body)
     %;      bodystructure(body)
     %;      body(section, optional(number), nstring)
-    ;       uid(uid).
+    ;       uid(uid)
+    ;       modseq(mod_seq_value).
 
 :- type flag_fetch
     --->    flag(flag)

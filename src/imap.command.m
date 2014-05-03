@@ -487,6 +487,10 @@ escape_for_quoted_string(S0) = S :-
         add(SectionSpec, !Acc),
         add("]", !Acc),
         add(MaybePartial, !Acc)
+    ;
+        % RFC 4551
+        Att = modseq,
+        add("MODSEQ", !Acc)
     )
 ].
 
