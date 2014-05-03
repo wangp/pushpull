@@ -38,7 +38,8 @@
 
 :- type tagged_response_or_bye
     --->    tagged(tag, cond)
-    ;       bye.
+    ;       bye
+    ;       continue.
 
 :- type cond
     --->    ok
@@ -49,7 +50,8 @@
     --->    ok
     ;       no
     ;       bad
-    ;       bye.
+    ;       bye
+    ;       continue.
 
 :- type resp_text
     --->    resp_text(
@@ -177,6 +179,7 @@
 
 cond_bye_1(tagged(_Tag, Cond)) = cond_bye_2(Cond).
 cond_bye_1(bye) = bye.
+cond_bye_1(continue) = continue.
 
 cond_bye_2(ok) = ok.
 cond_bye_2(no) = no.

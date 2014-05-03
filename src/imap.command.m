@@ -23,7 +23,7 @@
     %--->   append
     %;      create
     %;      delete
-    --->    examine(command.mailbox).
+    --->    examine(command.mailbox)
     %;      list
     %;      lsub
     %;      rename
@@ -31,6 +31,7 @@
     %;      status
     %;      subscribe
     %;      unsubscribe.
+    ;       idle.
 
     % Valid only when in Not Authenticated state.
 :- type command_nonauth
@@ -65,6 +66,8 @@
     %
 :- pred make_command_stream(command::in, list(string)::out) is det.
 
+:- func idle_done_command_stream = list(string).
+
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
@@ -91,6 +94,8 @@ crlf = "\r\n".
 make_command_stream(Command, List) :-
     add(Command, init, Acc),
     List = list(Acc).
+
+idle_done_command_stream = ["DONE"].
 
 :- pred add_sp_then(T::in, acc::in, acc::out) is det <= add(T).
 
@@ -231,6 +236,11 @@ escape_for_quoted_string(S0) = S :-
         add("EXAMINE"),
         add(sp),
         add(Mailbox)
+    ),
+    add(idle) -->
+    (
+        % RFC 2177
+        add("IDLE")
     )
 ].
 

@@ -33,6 +33,7 @@
     ;       no
     ;       bad
     ;       bye
+    ;       continue
     ;       error.
 
 :- type imap_result(T)
@@ -43,6 +44,7 @@
     ;       no
     ;       bad
     ;       bye
+    ;       continue
     ;       error.
 
 :- type alert
@@ -70,6 +72,23 @@
 :- pred uid_fetch(imap::in, sequence_set(uid)::in, fetch_items::in,
     maybe(fetch_modifier)::in,
     imap_result(assoc_list(message_seq_nr, msg_atts))::out, io::di, io::uo)
+    is det.
+
+    % Expected result is continue, not ok.
+    %
+:- pred idle(imap::in, imap_result::out, io::di, io::uo) is det.
+
+    % Must call this after successful idle,
+    % before issuing another command.
+    %
+:- pred idle_done(imap::in, imap_result::out, io::di, io::uo) is det.
+
+:- type select_result
+    --->    ready
+    ;       timeout
+    ;       error.
+
+:- pred select_read(imap::in, int::in, select_result::out, io::di, io::uo)
     is det.
 
 %-----------------------------------------------------------------------------%
@@ -120,7 +139,9 @@
     --->    not_authenticated
     ;       authenticated
     ;       selected
-    ;       logout.
+    ;       logout
+    ;       idle_authenticated(tag)
+    ;       idle_selected(tag).
 
 :- type selected_mailbox
     --->    selected_mailbox(
@@ -329,6 +350,8 @@ close_pipe_on_logout(IMAP, !IO) :-
         ( ConnStateAfter = not_authenticated
         ; ConnStateAfter = authenticated
         ; ConnStateAfter = selected
+        ; ConnStateAfter = idle_authenticated(_)
+        ; ConnStateAfter = idle_selected(_)
         )
     ).
 
@@ -339,6 +362,12 @@ get_connection_state(IMAP, ConnState, !IO) :-
     IMAP = imap(_PipeMutvar, _TagMutvar, StateMutvar),
     get_mutvar(StateMutvar, State, !IO),
     ConnState = State ^ connection_state.
+
+:- pred get_pipe(imap::in, pipe::out, io::di, io::uo) is det.
+
+get_pipe(IMAP, Pipe, !IO) :-
+    IMAP = imap(PipeMutvar, _TagMutvar, _StateMutvar),
+    get_mutvar(PipeMutvar, Pipe, !IO).
 
 :- pred get_new_tag(imap::in, pipe::out, tag::out, io::di, io::uo) is det.
 
@@ -384,6 +413,9 @@ make_result(MaybeTagCond, RespText, Alerts, Result) :-
     ;
         MaybeTagCond = bye,
         Res = bye
+    ;
+        MaybeTagCond = continue,
+        Res = continue
     ),
     RespText = resp_text(_MaybeResponseCode, Text),
     Result = result(Res, Text, Alerts).
@@ -396,12 +428,11 @@ error_result(Text) = result(error, Text, []).
 
 wrong_state_message(not_authenticated) =
     "command invalid in Not Authenticated state".
-wrong_state_message(authenticated) =
-    "command invalid in Authenticated state".
-wrong_state_message(selected) =
-    "command invalid in Selected state".
-wrong_state_message(logout) =
-    "command invalid in Logout state".
+wrong_state_message(authenticated) = "command invalid in Authenticated state".
+wrong_state_message(selected) = "command invalid in Selected state".
+wrong_state_message(logout) = "command invalid in Logout state".
+wrong_state_message(idle_authenticated(_)) = "command invalid while idling".
+wrong_state_message(idle_selected(_)) = "command invalid while idling".
 
 %-----------------------------------------------------------------------------%
 
@@ -524,7 +555,9 @@ apply_login_response(Response, unit, !State, !Alerts, !IO) :-
     ;
         FinalMaybeTag = tagged(_, bad)
     ;
-        FinalMaybeTag = bye,
+        ( FinalMaybeTag = bye
+        ; FinalMaybeTag = continue % unexpected
+        ),
         !State ^ connection_state := logout
     ).
 
@@ -573,7 +606,9 @@ apply_logout_response(Response, unit, !State, !Alerts, !IO) :-
     ;
         FinalMaybeTag = tagged(_, bad)
     ;
-        FinalMaybeTag = bye,
+        ( FinalMaybeTag = bye
+        ; FinalMaybeTag = continue % unexpected
+        ),
         !State ^ connection_state := logout
     ).
 
@@ -632,7 +667,9 @@ apply_examine_response(Mailbox, Response, unit, !State, !Alerts, !IO) :-
     ;
         FinalMaybeTag = tagged(_, bad)
     ;
-        FinalMaybeTag = bye,
+        ( FinalMaybeTag = bye
+        ; FinalMaybeTag = continue % unexpected
+        ),
         !State ^ connection_state := logout
     ),
     apply_complete_response(Response, !State, !Alerts, !IO).
@@ -703,6 +740,9 @@ apply_uid_search_response(Response, Result, !State, unit, unit, !IO) :-
     ;
         FinalMaybeTag = bye,
         Res = bye
+    ;
+        FinalMaybeTag = continue,
+        Res = continue
     ),
     FinalRespText = resp_text(_MaybeResponseCode, Text),
     Result = result(Res, Text, Alerts).
@@ -771,9 +811,179 @@ apply_uid_fetch_response(Response, Result, !State, unit, unit, !IO) :-
     ;
         FinalMaybeTag = bye,
         Res = bye
+    ;
+        FinalMaybeTag = continue,
+        Res = continue
     ),
     FinalRespText = resp_text(_MaybeResponseCode, Text),
     Result = result(Res, Text, Alerts).
+
+%-----------------------------------------------------------------------------%
+
+idle(IMAP, Res, !IO) :-
+    command_wrapper_low(do_idle, [authenticated, selected], IMAP, Res0, !IO),
+    (
+        Res0 = ok(Res)
+    ;
+        Res0 = error(Error),
+        Res = error_result(Error)
+    ).
+
+:- pred do_idle(imap::in, imap_result::out, io::di, io::uo) is det.
+
+do_idle(IMAP, Res, !IO) :-
+    get_new_tag(IMAP, Pipe, Tag, !IO),
+    make_command_stream(Tag - command_auth(idle), CommandStream),
+    write_command_stream(Pipe, CommandStream, Res0, !IO),
+    (
+        Res0 = ok,
+        wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
+        (
+            MaybeResponse = ok(Response),
+            update_state(apply_idle_response(Tag), IMAP, Response, Res,
+                unit, _ : unit, !IO)
+        ;
+            MaybeResponse = error(Error),
+            Res = error_result(Error)
+        )
+    ;
+        Res0 = error(Error),
+        Res = error_result(Error)
+    ).
+
+:- pred apply_idle_response(tag::in, complete_response::in, imap_result::out,
+    imap_state::in, imap_state::out, unit::in, unit::out, io::di, io::uo)
+    is det.
+
+apply_idle_response(Tag, Response, Result, !State, unit, unit, !IO) :-
+    apply_complete_response(Response, !State, [], Alerts, !IO),
+    Response = complete_response(_, FinalMaybeTag, FinalRespText),
+    (
+        % Unexpected response.
+        FinalMaybeTag = tagged(_, ok),
+        Res = ok
+    ;
+        FinalMaybeTag = tagged(_, no),
+        Res = no
+    ;
+        FinalMaybeTag = tagged(_, bad),
+        Res = bad
+    ;
+        FinalMaybeTag = bye,
+        Res = bye
+    ;
+        % Expected response.
+        FinalMaybeTag = continue,
+        Res = continue,
+        ConnState = !.State ^ connection_state,
+        (
+            ConnState = authenticated,
+            !State ^ connection_state := idle_authenticated(Tag)
+        ;
+            ConnState = selected,
+            !State ^ connection_state := idle_selected(Tag)
+        ;
+            ( ConnState = not_authenticated
+            ; ConnState = logout
+            ; ConnState = idle_authenticated(_)
+            ; ConnState = idle_selected(_)
+            ),
+            unexpected($module, $pred, "unexpected connection state")
+        )
+    ),
+    FinalRespText = resp_text(_MaybeResponseCode, Text),
+    Result = result(Res, Text, Alerts).
+
+%-----------------------------------------------------------------------------%
+
+idle_done(IMAP, Res, !IO) :-
+    get_connection_state(IMAP, ConnState, !IO),
+    (
+        (
+            ConnState = idle_authenticated(Tag),
+            ResumeConnState = authenticated
+        ;
+            ConnState = idle_selected(Tag),
+            ResumeConnState = selected
+        ),
+        do_idle_done(IMAP, Tag, ResumeConnState, Res, !IO),
+        close_pipe_on_logout(IMAP, !IO)
+    ;
+        ( ConnState = not_authenticated
+        ; ConnState = authenticated
+        ; ConnState = selected
+        ; ConnState = logout
+        ),
+        Res = error_result(wrong_state_message(ConnState))
+    ).
+
+:- pred do_idle_done(imap::in, tag::in, connection_state::in,
+    imap_result::out, io::di, io::uo) is det.
+
+do_idle_done(IMAP, Tag, ResumeConnState, Res, !IO) :-
+    get_pipe(IMAP, Pipe, !IO),
+    write_command_stream(Pipe, idle_done_command_stream, Res0, !IO),
+    (
+        Res0 = ok,
+        wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
+        (
+            MaybeResponse = ok(Response),
+            update_state(apply_idle_done_response(ResumeConnState),
+                IMAP, Response, Res, unit, _ : unit, !IO)
+        ;
+            MaybeResponse = error(Error),
+            Res = error_result(Error)
+        )
+    ;
+        Res0 = error(Error),
+        Res = error_result(Error)
+    ).
+
+:- pred apply_idle_done_response(connection_state::in, complete_response::in,
+    imap_result::out, imap_state::in, imap_state::out, unit::in, unit::out,
+    io::di, io::uo) is det.
+
+apply_idle_done_response(ResumeConnState, Response, Result, !State, unit, unit,
+        !IO) :-
+    apply_complete_response(Response, !State, [], Alerts, !IO),
+    Response = complete_response(_, FinalMaybeTag, FinalRespText),
+    (
+        (
+            FinalMaybeTag = tagged(_, ok),
+            Res = ok
+        ;
+            FinalMaybeTag = tagged(_, no),
+            Res = no
+        ;
+            FinalMaybeTag = tagged(_, bad),
+            Res = bad
+        ),
+        !State ^ connection_state := ResumeConnState
+    ;
+        FinalMaybeTag = bye,
+        Res = bye
+    ;
+        FinalMaybeTag = continue, % unexpected
+        Res = continue
+    ),
+    FinalRespText = resp_text(_MaybeResponseCode, Text),
+    Result = result(Res, Text, Alerts).
+
+%-----------------------------------------------------------------------------%
+
+select_read(IMAP, TimeoutSeconds, Res, !IO) :-
+    get_pipe(IMAP, Pipe, !IO),
+    (
+        Pipe = open(Proc),
+        select_read(Proc, TimeoutSeconds, Res0, !IO),
+        ( Res0 = ready, Res = ready
+        ; Res0 = timeout, Res = timeout
+        ; Res0 = error, Res = error
+        )
+    ;
+        Pipe = closed,
+        Res = error
+    ).
 
 %-----------------------------------------------------------------------------%
 
@@ -802,8 +1012,11 @@ wait_for_complete_response_2(Pipe, Tag, RevUntagged0, Res, !IO) :-
         ),
         parse_response_single(Pipe, Bytes, ParseResult, !IO),
         (
-            ParseResult = yes(continue_req(_)),
-            Res = error("unexpected continue request")
+            ParseResult = yes(continue_req(ContinueReq)),
+            list.reverse(RevUntagged0, Untagged),
+            ContinueReq = continue_req_resp_text(RespText),
+            Response = complete_response(Untagged, continue, RespText),
+            Res = ok(Response)
         ;
             ParseResult = yes(untagged(ResponseData)),
             RevUntagged = [ResponseData | RevUntagged0],
@@ -905,6 +1118,7 @@ apply_cond_or_bye(Cond, RespText, !State, !Alerts, !R) :-
         ( Cond = ok
         ; Cond = no
         ; Cond = bad
+        ; Cond = continue
         )
     ;
         Cond = bye,
@@ -925,11 +1139,11 @@ apply_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts, !R) :-
             Cond = ok,
             !State ^ capabilities := yes(Caps)
         ;
-            Cond = no
-        ;
-            Cond = bad
-        ;
-            Cond = bye
+            ( Cond = no
+            ; Cond = bad
+            ; Cond = bye
+            ; Cond = continue
+            )
         )
     ;
         ( ResponseCode = unseen(_)
@@ -950,11 +1164,11 @@ apply_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts, !R) :-
             Cond = ok,
             !.State ^ selected = no
         ;
-            Cond = no
-        ;
-            Cond = bad
-        ;
-            Cond = bye
+            ( Cond = no
+            ; Cond = bad
+            ; Cond = bye
+            ; Cond = continue
+            )
         )
     ;
         ( ResponseCode = badcharset(_)
