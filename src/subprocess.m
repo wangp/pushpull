@@ -32,6 +32,9 @@
 
 :- pred read_byte(subprocess::in, io.result(int)::out, io::di, io::uo) is det.
 
+:- pred read_bytes(subprocess::in, int::in, io.res(list(int))::out,
+    io::di, io::uo) is det.
+
 :- pred write_byte(subprocess::in, int::in, maybe_error::out, io::di, io::uo)
     is det.
 
@@ -314,6 +317,36 @@ read_byte(subprocess(_Pid, Rd, _Wr), Res, !IO) :-
         RC = -2;
     }
 ").
+
+%-----------------------------------------------------------------------------%
+
+read_bytes(subprocess(_Pid, Rd, _Wr), NumOctets, Res, !IO) :-
+    read_bytes_loop(Rd, NumOctets, Res0, [], RevBytes, !IO),
+    (
+        Res0 = ok,
+        Res = ok(reverse(RevBytes))
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred read_bytes_loop(int::in, int::in, io.res::out,
+    list(int)::in, list(int)::out, io::di, io::uo) is det.
+
+read_bytes_loop(Rd, NumOctets, Res, !Acc, !IO) :-
+    ( NumOctets =< 0 ->
+        Res = ok
+    ;
+        read_byte_2(Rd, RC, !IO),
+        ( RC = -1 ->
+            Res = error(io.make_io_error("unexpected eof"))
+        ; RC = -2 ->
+            Res = error(io.make_io_error("read failed"))
+        ;
+            cons(RC, !Acc),
+            read_bytes_loop(Rd, NumOctets - 1, Res, !Acc, !IO)
+        )
+    ).
 
 %-----------------------------------------------------------------------------%
 

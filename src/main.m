@@ -17,6 +17,7 @@
 :- import_module list.
 :- import_module maybe.
 :- import_module pair.
+:- import_module pretty_printer.
 
 :- import_module imap.
 :- import_module imap.types.
@@ -68,7 +69,8 @@ logged_in(IMAP, !IO) :-
         ResExamine = ok,
         io.write_string(Text, !IO),
         io.nl(!IO),
-        do_uid_search(IMAP, !IO)
+        do_uid_search(IMAP, UIDs, !IO),
+        do_uid_fetch(IMAP, UIDs, !IO)
     ;
         ( ResExamine = no
         ; ResExamine = bad
@@ -78,9 +80,9 @@ logged_in(IMAP, !IO) :-
         report_error(Text, !IO)
     ).
 
-:- pred do_uid_search(imap::in, io::di, io::uo) is det.
+:- pred do_uid_search(imap::in, list(uid)::out, io::di, io::uo) is det.
 
-do_uid_search(IMAP, !IO) :-
+do_uid_search(IMAP, UIDs, !IO) :-
     uid_search(IMAP, modseq(mod_seq_valzer(det_from_string("10"))),
         result(ResSearch, Text, Alerts), !IO),
     report_alerts(Alerts, !IO),
@@ -103,6 +105,30 @@ do_uid_search(IMAP, !IO) :-
         ; ResSearch = bad
         ; ResSearch = bye
         ; ResSearch = error
+        ),
+        report_error(Text, !IO),
+        UIDs = []
+    ).
+
+:- pred do_uid_fetch(imap::in, list(uid)::in, io::di, io::uo) is det.
+
+do_uid_fetch(IMAP, UIDs, !IO) :-
+    ( make_sequence_set(UIDs, Set) ->
+        Items = atts(rfc822, [flags, envelope]),
+        uid_fetch(IMAP, Set, Items, result(ResFetch, Text, Alerts), !IO),
+        report_alerts(Alerts, !IO)
+    ;
+        ResFetch = ok_with_data([]),
+        Text = ""
+    ),
+    (
+        ResFetch = ok_with_data(FetchResults),
+        list.foldl(write_fetch_result, FetchResults, !IO)
+    ;
+        ( ResFetch = no
+        ; ResFetch = bad
+        ; ResFetch = bye
+        ; ResFetch = error
         ),
         report_error(Text, !IO)
     ).
@@ -131,6 +157,22 @@ report_alert(alert(Alert), !IO) :-
 
 write_uid(uid(N), !IO) :-
     io.write_string(to_string(N), !IO).
+
+:- pred write_fetch_result(pair(uid, msg_atts)::in, io::di, io::uo) is det.
+
+write_fetch_result(UID - Atts, !IO) :-
+    io.write_string("Fetched UID ", !IO),
+    write_uid(UID, !IO),
+    io.write_string(":\n", !IO),
+    list.foldl(write_msg_att, Atts, !IO),
+    io.nl(!IO).
+
+:- pred write_msg_att(msg_att::in, io::di, io::uo) is det.
+
+write_msg_att(Att, !IO) :-
+    io.write_string("- ", !IO),
+    pretty_printer.write_doc(format(Att), !IO),
+    io.nl(!IO).
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

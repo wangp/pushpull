@@ -5,6 +5,7 @@
 
 :- import_module char.
 :- import_module integer.
+:- import_module io.
 :- import_module map.
 
 :- type greeting
@@ -25,7 +26,7 @@
     --->    cond_or_bye(cond_bye, resp_text)
             % BYE is not final if part of LOGOUT.
     ;       mailbox_data(mailbox_data)
-    %;      message_data(...)
+    ;       message_data(message_data)
     ;       capability_data(capability_data).
 
 :- type complete_response
@@ -144,6 +145,10 @@
     ;       uidvalidity
     ;       unseen.
 
+:- type message_data
+    --->    expunge(integer)
+    ;       fetch(integer, msg_atts). % non-empty
+
 %-----------------------------------------------------------------------------%
 
 :- func cond_bye_1(tagged_response_or_bye) = cond_bye.
@@ -154,14 +159,15 @@
 
 :- pred greeting(src::in, greeting::out, ps::in, ps::out) is semidet.
 
-:- pred response_single(src::in, response_single::out, ps::in, ps::out)
-    is semidet.
+:- pred parse_response_single(pipe::in, list(int)::in,
+    maybe(response_single)::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
 :- implementation.
 
+:- import_module exception.
 :- import_module require.
 :- import_module string.
 
@@ -196,6 +202,14 @@ tag(Src, tag(Tag), !PS) :-
 text(Src, Text, !PS) :-
     one_or_more_chars('TEXT-CHAR', Src, Chars, !PS),
     string.from_char_list(Chars, Text).
+
+:- pred number_int(src::in, int::out, ps::in, ps::out) is semidet.
+
+number_int(Src, Int, !PS) :-
+    one_or_more_chars(char.is_digit, Src, Chars, !PS),
+    string.from_char_list(Chars, String),
+    string.to_int(String, Int),
+    Int >= 0.
 
 :- pred number(src::in, integer::out, ps::in, ps::out) is semidet.
 
@@ -236,13 +250,95 @@ mod_seq_valzer(Src, Integer, !PS) :-
     integer.from_string(String) = Integer,
     zero =< Integer, Integer < det_from_string("18446744073709551615").
 
-:- pred sp_then(pred(src, T, ps, ps), src, T, ps, ps).
-:- mode sp_then(in(pred(in, out, in, out) is semidet), in, out, in, out)
-    is semidet.
+:- pred imap_string(src::in, imap_string::out, ps::in, ps::out, io::di, io::uo)
+    is det.
 
-sp_then(P, Src, X, !PS) :-
-    sp(Src, !PS),
-    P(Src, X, !PS).
+imap_string(Src, String, !PS, !IO) :-
+    (
+        quoted_string(Src, QS, !PS)
+    ->
+        String = QS
+    ;
+        literal_octet_count(Src, NumOctets, !PS),
+        eof(Src, !.PS)
+    ->
+        literal(Src, NumOctets, String, !:PS, !IO)
+    ;
+        throw(fail_exception)
+    ).
+
+:- pred quoted_string(src::in, imap_string::out, ps::in, ps::out) is semidet.
+
+quoted_string(Src, quoted(QS), !PS) :-
+    next_char(Src, '"', !PS),
+    zero_or_more(quoted_char, Src, Chars, !PS),
+    next_char(Src, '"', !PS),
+    string.from_char_list(Chars, QS).
+
+:- pred quoted_char(src::in, char::out, ps::in, ps::out) is semidet.
+
+quoted_char(Src, C, !PS) :-
+    next_char(Src, C0, !PS),
+    ( C0 = ('"') ->
+        fail
+    ; C0 = ('\\') ->
+        next_char(Src, C, !PS),
+        ( C = ('"')
+        ; C = ('\\')
+        )
+    ;
+        'TEXT-CHAR'(C0),
+        C = C0
+    ).
+
+:- pred literal_octet_count(src::in, int::out, ps::in, ps::out) is semidet.
+
+literal_octet_count(Src, NumOctets, !PS) :-
+    next_char(Src, '{', !PS),
+    number_int(Src, NumOctets, !PS),
+    next_char(Src, '}', !PS).
+
+:- pred literal(src::in, int::in, imap_string::out, ps::out, io::di, io::uo)
+    is det.
+
+literal(src(Pipe), NumOctets, literal(String), NewPS, !IO) :-
+    read_bytes(Pipe, NumOctets, ResBytes, !IO),
+    (
+        ResBytes = ok(Bytes),
+        % XXX support other encodings and binaries
+        ( string.from_code_unit_list(Bytes, StringPrime) ->
+            String = StringPrime
+        ;
+            throw(fail_exception)
+        ),
+        read_crlf_line_chop(Pipe, ResLine, !IO),
+        (
+            ResLine = ok(NewPS)
+        ;
+            ResLine = eof,
+            throw(fail_exception)
+        ;
+            ResLine = error(_),
+            throw(fail_exception)
+        )
+    ;
+        ResBytes = error(_),
+        throw(fail_exception)
+    ).
+
+:- pred nstring(src::in, nstring::out, ps::in, ps::out, io::di, io::uo) is det.
+
+nstring(Src, NString, !PS, !IO) :-
+    ( atom(Src, Atom, !PS) ->
+        ( Atom = atom("NIL") ->
+            NString = no
+        ;
+            throw(fail_exception)
+        )
+    ;
+        imap_string(Src, String, !PS, !IO),
+        NString = yes(String)
+    ).
 
 %-----------------------------------------------------------------------------%
 
@@ -265,17 +361,43 @@ greeting(Src, Greeting, !PS) :-
 
 %-----------------------------------------------------------------------------%
 
-response_single(Src, Response, !PS) :-
+parse_response_single(Pipe, Input, Res, !IO) :-
+    promise_equivalent_solutions [Res, !:IO] (
+    try [io(!IO)]
+        (
+            Src = src(Pipe),
+            PS0 = Input,
+            response_single(Src, Response, PS0, PS, !IO),
+            ( eof(Src, PS) ->
+                ResPrime = yes(Response)
+            ;
+                ResPrime = no
+            )
+        )
+    then
+        Res = ResPrime
+    catch fail_exception ->
+        Res = no
+    ).
+
+:- pred response_single(src::in, response_single::out, ps::in, ps::out,
+    io::di, io::uo) is det.
+
+response_single(Src, Response, !PS, !IO) :-
     ( next_char(Src, '+', !PS) ->
-        continue_req(Src, ContinueReq, !PS),
-        Response = continue_req(ContinueReq)
+        ( continue_req(Src, ContinueReq, !PS) ->
+            Response = continue_req(ContinueReq)
+        ;
+            throw(fail_exception)
+        )
     ; next_char(Src, '*', !PS) ->
         % This includes response-fatal.
-        response_data(Src, ResponseData, !PS),
+        sp_response_data(Src, ResponseData, !PS, !IO),
         Response = untagged(ResponseData)
-    ;
-        response_tagged(Src, Tag, Cond, RespText, !PS),
+    ; response_tagged(Src, Tag, Cond, RespText, !PS) ->
         Response = tagged(Tag, Cond, RespText)
+    ;
+        throw(fail_exception)
     ).
 
 :- pred continue_req(src::in, continue_req::out, ps::in, ps::out) is semidet.
@@ -289,20 +411,29 @@ continue_req(Src, ContinueReq, !PS) :-
         fail
     ).
 
-:- pred response_data(src::in, untagged_response_data::out, ps::in, ps::out)
-    is semidet.
+:- pred sp_response_data(src::in, untagged_response_data::out, ps::in, ps::out,
+    io::di, io::uo) is det.
 
-response_data(Src, ResponseData, !PS) :-
-    sp(Src, !PS),
+sp_response_data(Src, ResponseData, !PS, !IO) :-
+    ( sp(Src, !PS) ->
+        response_data(Src, ResponseData, !PS, !IO)
+    ;
+        throw(fail_exception)
+    ).
+
+:- pred response_data(src::in, untagged_response_data::out, ps::in, ps::out,
+    io::di, io::uo) is det.
+
+response_data(Src, ResponseData, !PS, !IO) :-
     ( resp_cond_state_or_bye(Src, Cond, RespText, !PS) ->
         ResponseData = cond_or_bye(Cond, RespText)
     ; mailbox_data(Src, MailboxData, !PS) ->
         ResponseData = mailbox_data(MailboxData)
-    % message-data
     ; capability_data(Src, Caps, !PS) ->
         ResponseData = capability_data(Caps)
     ;
-        fail
+        message_data(Src, MessageData, !PS, !IO),
+        ResponseData = message_data(MessageData)
     ).
 
 :- pred response_tagged(src::in, tag::out, cond::out, resp_text::out,
@@ -590,6 +721,315 @@ flag_list(Src, Flags, !PS) :-
         Flags = []
     ),
     next_char(Src, ')', !PS).
+
+:- pred message_data(src::in, message_data::out, ps::in, ps::out,
+    io::di, io::uo) is det.
+
+message_data(Src, MessageData, !PS, !IO) :-
+    (
+        nz_number(Src, Number, !PS),
+        sp(Src, !PS),
+        atom(Src, Atom, !PS)
+    ->
+        ( Atom = atom("EXPUNGE") ->
+            MessageData = expunge(Number)
+        ; Atom = atom("FETCH") ->
+            message_data_fetch(Src, Number, MessageData, !PS, !IO)
+        ;
+            throw(fail_exception)
+        )
+    ;
+        throw(fail_exception)
+    ).
+
+:- pred message_data_fetch(src::in, integer::in, message_data::out,
+    ps::in, ps::out, io::di, io::uo) is det.
+
+message_data_fetch(Src, Number, MessageData, !PS, !IO) :-
+    det_sp(Src, !PS),
+    det_next_char(Src, '(', !PS),
+    msg_att(Src, Att, !PS, !IO),
+    sp_then_msg_atts(Src, Atts, !PS, !IO),
+    det_next_char(Src, ')', !PS),
+    MessageData = fetch(Number, [Att | Atts]).
+
+:- pred sp_then_msg_atts(src::in, list(msg_att)::out,
+    ps::in, ps::out, io::di, io::uo) is det.
+
+sp_then_msg_atts(Src, Atts, !PS, !IO) :-
+    ( sp(Src, !PS) ->
+        msg_att(Src, Att, !PS, !IO),
+        sp_then_msg_atts(Src, AttsTail, !PS, !IO),
+        Atts = [Att | AttsTail] % lcmc
+    ;
+        Atts = []
+    ).
+
+:- pred msg_att(src::in, msg_att::out, ps::in, ps::out, io::di, io::uo) is det.
+
+msg_att(Src, Att, !PS, !IO) :-
+    (
+        atom(Src, Atom, !PS),
+        sp(Src, !PS)
+    ->
+        ( msg_att_semi(Src, Atom, AttPrime, !PS) ->
+            Att = AttPrime
+        ;
+            msg_att_io(Src, Atom, Att, !PS, !IO)
+        )
+    ;
+        throw(fail_exception)
+    ).
+
+:- pred msg_att_semi(src::in, atom::in, msg_att::out, ps::in, ps::out)
+    is semidet.
+
+msg_att_semi(Src, Atom, Att, !PS) :-
+    (
+        Atom = atom("FLAGS"),
+        flag_fetches(Src, Flags, !PS),
+        Att = flags(Flags)
+    ;
+        Atom = atom("INTERNALDATE"),
+        date_time(Src, InternalDate, !PS),
+        Att = internaldate(InternalDate)
+    ;
+        Atom = atom("RFC822.SIZE"),
+        number(Src, Number, !PS),
+        Att = rfc822_size(Number)
+    ;
+        Atom = atom("UID"),
+        uniqueid(Src, UID, !PS),
+        Att = uid(UID)
+    ).
+
+:- pred msg_att_io(src::in, atom::in, msg_att::out, ps::in, ps::out,
+    io::di, io::uo) is det.
+
+msg_att_io(Src, Atom, Att, !PS, !IO) :-
+    ( Atom = atom("ENVELOPE") ->
+        envelope(Src, Env, !PS, !IO),
+        Att = envelope(Env)
+    ; Atom = atom("RFC822") ->
+        nstring(Src, NString, !PS, !IO),
+        Att = rfc822(NString)
+    ; Atom = atom("RFC822.HEADER") ->
+        nstring(Src, NString, !PS, !IO),
+        Att = rfc822_header(NString)
+    ; Atom = atom("RFC822.TEXT") ->
+        nstring(Src, NString, !PS, !IO),
+        Att = rfc822_text(NString)
+    ; Atom = atom("BODY") ->
+        sorry($module, $pred, "BODY")
+    ; Atom = atom("BODYSTRUCTURE") ->
+        sorry($module, $pred, "BODYSTRUCTURE")
+    ;
+        throw(fail_exception)
+    ).
+
+:- pred flag_fetches(src::in, list(flag_fetch)::out, ps::in, ps::out)
+    is semidet.
+
+flag_fetches(Src, Flags, !PS) :-
+    next_char(Src, '(', !PS),
+    % XXX should be abstracted
+    ( flag_fetch(Src, Flag, !PS) ->
+        zero_or_more(sp_then(flag_fetch), Src, RestFlags, !PS),
+        Flags = [Flag | RestFlags]
+    ;
+        Flags = []
+    ),
+    next_char(Src, ')', !PS).
+
+:- pred flag_fetch(src::in, flag_fetch::out, ps::in, ps::out) is semidet.
+
+flag_fetch(Src, Flag, !PS) :-
+    (
+        next_char(Src, '\\', !PS),
+        atom(Src, atom("RECENT"), !PS)
+    ->
+        Flag = recent
+    ;
+        flag(Src, Flag0, !PS),
+        Flag = flag(Flag0)
+    ).
+
+:- pred envelope(src::in, envelope::out, ps::in, ps::out, io::di, io::uo)
+    is det.
+
+envelope(Src, Env, !PS, !IO) :-
+    det_next_char(Src, '(', !PS),
+    nstring(Src, Env ^ date, !PS, !IO),
+    det_sp(Src, !PS),
+
+    nstring(Src, Env ^ subject, !PS, !IO),
+    det_sp(Src, !PS),
+
+    address_list(Src, Env ^ from, !PS, !IO),
+    det_sp(Src, !PS),
+
+    address_list(Src, Env ^ sender, !PS, !IO),
+    det_sp(Src, !PS),
+
+    address_list(Src, Env ^ reply_to, !PS, !IO),
+    det_sp(Src, !PS),
+
+    address_list(Src, Env ^ to, !PS, !IO),
+    det_sp(Src, !PS),
+
+    address_list(Src, Env ^ cc, !PS, !IO),
+    det_sp(Src, !PS),
+
+    address_list(Src, Env ^ bcc, !PS, !IO),
+    det_sp(Src, !PS),
+
+    nstring(Src, Env ^ in_reply_to, !PS, !IO),
+    det_sp(Src, !PS),
+
+    nstring(Src, Env ^ message_id, !PS, !IO),
+    det_next_char(Src, ')', !PS).
+
+:- pred address_list(src::in, list(address)::out, ps::in, ps::out,
+    io::di, io::uo) is det.
+
+address_list(Src, Addresses, !PS, !IO) :-
+    ( next_char(Src, '(', !PS) ->
+        one_or_more_addresses(Src, Addresses, !PS, !IO),
+        det_next_char(Src, ')', !PS)
+    ; atom(Src, atom("NIL"), !PS) ->
+        Addresses = []
+    ;
+        throw(fail_exception)
+    ).
+
+:- pred one_or_more_addresses(src::in, list(address)::out,
+    ps::in, ps::out, io::di, io::uo) is det.
+
+one_or_more_addresses(Src, Addresses, !PS, !IO) :-
+    zero_or_more_addresses(Src, Addresses, !PS, !IO),
+    (
+        Addresses = [],
+        throw(fail_exception)
+    ;
+        Addresses = [_ | _]
+    ).
+
+:- pred zero_or_more_addresses(src::in, list(address)::out,
+    ps::in, ps::out, io::di, io::uo) is det.
+
+zero_or_more_addresses(Src, Addresses, !PS, !IO) :-
+    maybe_address(Src, MaybeAddress, !PS, !IO),
+    (
+        MaybeAddress = yes(Address),
+        zero_or_more_addresses(Src, AddressesTail, !PS, !IO),
+        Addresses = [Address | AddressesTail] % lcmc
+    ;
+        MaybeAddress = no,
+        Addresses = []
+    ).
+
+:- pred maybe_address(src::in, maybe(address)::out, ps::in, ps::out,
+    io::di, io::uo) is det.
+
+maybe_address(Src, MaybeAddress, !PS, !IO) :-
+    ( next_char(Src, '(', !PS) ->
+        nstring(Src, Address ^ name, !PS, !IO),
+        det_sp(Src, !PS),
+        nstring(Src, Address ^ adl, !PS, !IO),
+        det_sp(Src, !PS),
+        nstring(Src, Address ^ mailbox, !PS, !IO),
+        det_sp(Src, !PS),
+        nstring(Src, Address ^ host, !PS, !IO),
+        det_next_char(Src, ')', !PS),
+        MaybeAddress = yes(Address)
+    ;
+        MaybeAddress = no
+    ).
+
+:- pred date_time(src::in, date_time::out, ps::in, ps::out) is semidet.
+
+date_time(Src, DateTime, !PS) :-
+    next_char(Src, '"', !PS),
+    date_day_fixed(Src, Day, !PS),
+    next_char(Src, '-', !PS),
+    date_month(Src, Month, !PS),
+    next_char(Src, '-', !PS),
+    date_year(Src, Year, !PS),
+    sp(Src, !PS),
+    time(Src, Time, !PS),
+    sp(Src, !PS),
+    zone(Src, Zone, !PS),
+    next_char(Src, '"', !PS),
+    DateTime = date_time(Day, Month, Year, Time, Zone).
+
+:- pred date_day_fixed(src::in, int::out, ps::in, ps::out) is semidet.
+
+date_day_fixed(Src, I, !PS) :-
+    ( sp(Src, !PS) ->
+        digit(Src, I, !PS)
+    ;
+        two_digit(Src, I, !PS)
+    ).
+
+:- pred date_month(src::in, month::out, ps::in, ps::out) is semidet.
+
+date_month(Src, Month, !PS) :-
+    next_char(Src, A, !PS),
+    next_char(Src, B, !PS),
+    next_char(Src, C, !PS),
+    Chars = [to_upper(A), to_upper(B), to_upper(C)],
+    string.from_char_list(Chars, String),
+    month(String, Month).
+
+:- pred month(string, month).
+:- mode month(in, out) is semidet.
+:- mode month(out, in) is det.
+
+month("JAN", jan).
+month("FEB", feb).
+month("MAR", mar).
+month("APR", apr).
+month("MAY", may).
+month("JUN", jun).
+month("JUL", jul).
+month("AUG", aug).
+month("SEP", sep).
+month("OCT", oct).
+month("NOV", nov).
+month("DEC", dec).
+
+:- pred date_year(src::in, int::out, ps::in, ps::out) is semidet.
+
+date_year(Src, Year, !PS) :-
+    four_digit(Src, Year, !PS).
+
+:- pred time(src::in, time::out, ps::in, ps::out) is semidet.
+
+time(Src, time(H, M, S), !PS) :-
+    two_digit(Src, H, !PS),
+    next_char(Src, ':', !PS),
+    two_digit(Src, M, !PS),
+    next_char(Src, ':', !PS),
+    two_digit(Src, S, !PS).
+
+:- pred zone(src::in, zone::out, ps::in, ps::out) is semidet.
+
+zone(Src, Zone, !PS) :-
+    next_char(Src, PM, !PS),
+    ( PM = ('+')
+    ; PM = ('-')
+    ),
+    digit_char(Src, A, !PS),
+    digit_char(Src, B, !PS),
+    digit_char(Src, C, !PS),
+    digit_char(Src, D, !PS),
+    string.from_char_list([PM, A, B, C, D], S),
+    Zone = zone(S).
+
+:- pred uniqueid(src::in, uid::out, ps::in, ps::out) is semidet.
+
+uniqueid(Src, uid(Number), !PS) :-
+    nz_number(Src, Number, !PS).
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

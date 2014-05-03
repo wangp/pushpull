@@ -44,8 +44,8 @@
     ;       close
     ;       expunge
     %;      copy(sequence_set, mailbox)
-    %;      fetch(sequence_set, ...)
-    %;      uid_fetch(sequence_set, ...)
+    ;       fetch(sequence_set(message_seq_nr), fetch_items)
+    ;       uid_fetch(sequence_set(uid), fetch_items)
     %;      store(sequence_set, ...)
     ;       search(search)
     ;       uid_search(search).
@@ -54,14 +54,14 @@
     --->    inbox
     ;       astring(astring). % not INBOX (case-insensitive)
 
+:- func crlf = string.
+
     % A crlf in the command stream means the client must wait for a
     % continuation response from the server before continuing with the rest of
     % the stream.  The final crlf that terminates the command is NOT in the
     % command stream.
     %
 :- pred make_command_stream(command::in, list(string)::out) is det.
-
-:- func crlf = string.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -84,6 +84,8 @@
 
 %-----------------------------------------------------------------------------%
 
+crlf = "\r\n".
+
 make_command_stream(Command, List) :-
     add(Command, init, Acc),
     List = list(Acc).
@@ -93,6 +95,17 @@ make_command_stream(Command, List) :-
 add_sp_then(X, !Acc) :-
     add(sp, !Acc),
     add(X, !Acc).
+
+:- pred add_comma_then(T::in, acc::in, acc::out) is det <= add(T).
+
+add_comma_then(X, !Acc) :-
+    add(",", !Acc),
+    add(X, !Acc).
+
+:- instance add(maybe(T)) <= add(T) where [
+    add(yes(X), !Acc) :- add(X, !Acc),
+    add(no, !Acc)
+].
 
 :- instance add(string) where [
     add(S, A, snoc(A, S))
@@ -106,13 +119,85 @@ add_sp_then(X, !Acc) :-
     add(dquote, !Acc) :- add("\"", !Acc)
 ].
 
+:- instance add(int) where [
+    add(I, !Acc) :- add(from_int(I), !Acc)
+].
+
 :- instance add(integer) where [
     add(N, !Acc) :- add(integer.to_string(N), !Acc)
+].
+
+:- instance add(message_seq_nr) where [
+    add(message_seq_nr(N), !Acc) :- add(N, !Acc)
+].
+
+:- instance add(uid) where [
+    add(uid(N), !Acc) :- add(N, !Acc)
 ].
 
 :- instance add(mod_seq_valzer) where [
     add(mod_seq_valzer(N), !Acc) :- add(N, !Acc)
 ].
+
+:- instance add(sequence_set(T)) <= add(T) where [
+    add(SequenceSet, !Acc) :-
+    (
+        SequenceSet = number(First, Rest),
+        add(First, !Acc),
+        list.foldl(add_comma_then, Rest, !Acc)
+    ;
+        SequenceSet = range(First, Rest),
+        add(First, !Acc),
+        list.foldl(add_comma_then, Rest, !Acc)
+    )
+].
+
+:- instance add(seq_number(T)) <= add(T) where [
+    add(number(X), !Acc) :- add(X, !Acc),
+    add(star, !Acc) :- add("*", !Acc)
+].
+
+:- instance add(seq_range(T)) <= add(T) where [
+    add(seq_range(L, R), !Acc) :-
+    (
+        add(L, !Acc),
+        add(":", !Acc),
+        add(R, !Acc)
+    )
+].
+
+:- instance add(astring) where [
+    add(AString, !Acc) :-
+    (
+        AString = astring(S),
+        add(S, !Acc)
+    ;
+        AString = imap_string(IString),
+        add(IString, !Acc)
+    )
+].
+
+:- instance add(imap_string) where [
+    add(String, !Acc) :-
+    (
+        String = quoted(Q),
+        add(dquote, !Acc),
+        add(escape_for_quoted_string(Q), !Acc),
+        add(dquote, !Acc)
+    ;
+        String = literal(L),
+        BraceCount = string.format("{%d}", [i(count_code_units(L))]),
+        add(BraceCount, !Acc),
+        add(crlf, !Acc), % Need to wait for server response.
+        add(L, !Acc)
+    )
+].
+
+:- func escape_for_quoted_string(string) = string.
+
+escape_for_quoted_string(S0) = S :-
+    string.replace_all(S0, "\\", "\\\\", S1),
+    string.replace_all(S1, """", "\\\"", S).
 
 :- instance add(command) where [
     add(Tag - Command, !Acc) :-
@@ -192,6 +277,18 @@ add_sp_then(X, !Acc) :-
         add("EXPUNGE", !Acc)
     ;
         (
+            Command = fetch(SequenceSet, Items),
+            add("FETCH ", !Acc),
+            add(SequenceSet, !Acc)
+        ;
+            Command = uid_fetch(SequenceSet, Items),
+            add("UID FETCH ", !Acc),
+            add(SequenceSet, !Acc)
+        ),
+        add(sp, !Acc),
+        add(Items, !Acc)
+    ;
+        (
             Command = search(search(MaybeCharset, SearchKey)),
             add("SEARCH", !Acc)
         ;
@@ -208,6 +305,17 @@ add_sp_then(X, !Acc) :-
         add(sp, !Acc),
         % Could raise the conjunction but don't need to.
         add(SearchKey, !Acc)
+    )
+].
+
+:- instance add(command.mailbox) where [
+    add(Mailbox, !Acc) :-
+    (
+        Mailbox = inbox,
+        add("INBOX", !Acc)
+    ;
+        Mailbox = astring(S),
+        add(S, !Acc)
     )
 ].
 
@@ -309,51 +417,105 @@ add_sp_then(X, !Acc) :-
     )
 ].
 
-:- instance add(astring) where [
-    add(AString, !Acc) :-
+:- instance add(fetch_items) where [
+    add(Items, !Acc) :-
     (
-        AString = astring(S),
-        add(S, !Acc)
+        Items = macro(all),
+        add("ALL", !Acc)
     ;
-        AString = imap_string(IString),
-        add(IString, !Acc)
+        Items = macro(fast),
+        add("FAST", !Acc)
+    ;
+        Items = macro(full),
+        add("FULL", !Acc)
+    ;
+        Items = atts(Att, Atts),
+        (
+            Atts = [],
+            add(Att, !Acc)
+        ;
+            Atts = [_ | _],
+            add("(", !Acc),
+            add(Att, !Acc),
+            list.foldl(add_sp_then, Atts, !Acc),
+            add(")", !Acc)
+        )
     )
 ].
 
-:- instance add(imap_string) where [
-    add(String, !Acc) :-
+:- instance add(fetch_att) where [
+    add(Att, !Acc) :-
     (
-        String = quoted(Q),
-        add(dquote, !Acc),
-        add(escape_for_quoted_string(Q), !Acc),
-        add(dquote, !Acc)
+        Att = body,
+        add("BODY", !Acc)
     ;
-        String = literal(L),
-        BraceCount = string.format("{%d}", [i(count_code_units(L))]),
-        add(BraceCount, !Acc),
-        add(crlf, !Acc), % Need to wait for server response.
-        add(L, !Acc)
+        Att = bodystructure,
+        add("BODYSTRUCTURE", !Acc)
+    ;
+        Att = envelope,
+        add("ENVELOPE", !Acc)
+    ;
+        Att = flags,
+        add("FLAGS", !Acc)
+    ;
+        Att = internaldate,
+        add("INTERNALDATE", !Acc)
+    ;
+        Att = rfc822,
+        add("RFC822", !Acc)
+    ;
+        Att = rfc822_header,
+        add("RFC822.HEADER", !Acc)
+    ;
+        Att = rfc822_size,
+        add("RFC822.SIZE", !Acc)
+    ;
+        Att = rfc822_text,
+        add("RFC822.TEXT", !Acc)
+    ;
+        Att = uid,
+        add("UID", !Acc)
+    ;
+        (
+            Att = body(SectionSpec, MaybePartial),
+            add("BODY", !Acc)
+        ;
+            Att = body_peek(SectionSpec, MaybePartial),
+            add("BODY.PEEK", !Acc)
+        ),
+        add("[", !Acc),
+        add(SectionSpec, !Acc),
+        add("]", !Acc),
+        add(MaybePartial, !Acc)
     )
 ].
 
-:- instance add(command.mailbox) where [
-    add(Mailbox, !Acc) :-
+:- instance add(section_spec) where [
+    add(msgtext(MsgText), !Acc) :-
+        add(MsgText, !Acc)
+].
+
+:- instance add(section_msgtext) where [
+    add(MsgText, !Acc) :-
     (
-        Mailbox = inbox,
-        add("INBOX", !Acc)
+        MsgText = header,
+        add("HEADER", !Acc)
     ;
-        Mailbox = astring(S),
-        add(S, !Acc)
+        MsgText = text,
+        add("TEXT", !Acc)
     )
 ].
 
-:- func escape_for_quoted_string(string) = string.
-
-escape_for_quoted_string(S0) = S :-
-    string.replace_all(S0, "\\", "\\\\", S1),
-    string.replace_all(S1, """", "\\\"", S).
-
-crlf = "\r\n".
+:- instance add(partial) where [
+    add(partial(Start, End)) -->
+    (
+        add("<"),
+        add(Start),
+        add("."),
+        add(End),
+        add(">")
+    )
+].
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

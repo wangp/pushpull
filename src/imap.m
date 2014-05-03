@@ -3,6 +3,7 @@
 :- module imap.
 :- interface.
 
+:- import_module assoc_list.
 :- import_module io.
 :- import_module list.
 :- import_module maybe.
@@ -65,6 +66,9 @@
 :- pred uid_search(imap::in, search_key::in,
     imap_result(pair(list(uid), maybe(mod_seq_value)))::out, io::di, io::uo)
     is det.
+
+:- pred uid_fetch(imap::in, sequence_set(uid)::in, fetch_items::in,
+    imap_result(assoc_list(uid, msg_atts))::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -152,9 +156,10 @@
     ;       nomodseq
     ;       highestmodseq(mod_seq_value).
 
-:- typeclass handle_search_results(T) where [
+:- typeclass handle_results(T) where [
     pred handle_search_results(list(integer)::in, maybe(mod_seq_value)::in,
-        T::in, T::out) is det
+        T::in, T::out) is det,
+    pred handle_fetch_results(integer::in, msg_atts::in, T::in, T::out) is det
 ].
 
 %-----------------------------------------------------------------------------%
@@ -205,7 +210,7 @@ wait_for_greeting(Pipe, Res, !IO) :-
     read_crlf_line_chop(Pipe, ResRead, !IO),
     (
         ResRead = ok(Bytes),
-        Src = src,
+        Src = src(Pipe),
         PS0 = Bytes,
         (
             greeting(Src, Greeting, PS0, PS),
@@ -705,6 +710,69 @@ to_uid(N) = uid(N).
 
 %-----------------------------------------------------------------------------%
 
+uid_fetch(IMAP, SequenceSet, Items, Res, !IO) :-
+    command_wrapper_low(do_uid_fetch(SequenceSet, Items), [selected],
+        IMAP, MaybeRes, !IO),
+    (
+        MaybeRes = ok(Res)
+    ;
+        MaybeRes = error(Error),
+        Res = result(error, Error, [])
+    ).
+
+:- pred do_uid_fetch(sequence_set(uid)::in, fetch_items::in, imap::in,
+    imap_result(assoc_list(uid, msg_atts))::out, io::di, io::uo) is det.
+
+do_uid_fetch(SequenceSet, Items, IMAP, Res, !IO) :-
+    get_new_tag(IMAP, Pipe, Tag, !IO),
+    Command = command_select(uid_fetch(SequenceSet, Items)),
+    make_command_stream(Tag - Command, CommandStream),
+    write_command_stream(Pipe, CommandStream, Res0, !IO),
+    (
+        Res0 = ok,
+        wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
+        (
+            MaybeResponse = ok(Response),
+            update_state(apply_uid_fetch_response, IMAP, Response, Res,
+                unit, _ : unit, !IO)
+        ;
+            MaybeResponse = error(Error),
+            Res = result(error, Error, [])
+        )
+    ;
+        Res0 = error(Error),
+        Res = result(error, Error, [])
+    ).
+
+:- pred apply_uid_fetch_response(complete_response::in,
+    imap_result(assoc_list(uid, msg_atts))::out,
+    imap_state::in, imap_state::out, unit::in, unit::out, io::di, io::uo)
+    is det.
+
+apply_uid_fetch_response(Response, Result, !State, unit, unit, !IO) :-
+    apply_complete_response(Response, !State, [], Alerts,
+        accept_fetch_results([]), accept_fetch_results(RevFetchResults), !IO),
+    Response = complete_response(_, FinalMaybeTag, FinalRespText),
+    (
+        FinalMaybeTag = tagged(_, ok),
+        assoc_list.map_keys_only(to_uid, RevFetchResults) = RevFetchResultsUID,
+        list.reverse(RevFetchResultsUID, FetchResultsUID),
+        Res = ok_with_data(FetchResultsUID)
+    ;
+        FinalMaybeTag = tagged(_, no),
+        Res = no
+    ;
+        FinalMaybeTag = tagged(_, bad),
+        Res = bad
+    ;
+        FinalMaybeTag = bye,
+        Res = bye
+    ),
+    FinalRespText = resp_text(_MaybeResponseCode, Text),
+    Result = result(Res, Text, Alerts).
+
+%-----------------------------------------------------------------------------%
+
 :- pred wait_for_complete_response(pipe::in, tag::in,
     maybe_error(complete_response)::out, io::di, io::uo) is det.
 
@@ -728,16 +796,16 @@ wait_for_complete_response_2(Pipe, Tag, RevUntagged0, Res, !IO) :-
                 true
             )
         ),
-        parse_response_single(Bytes, ParseResult),
+        parse_response_single(Pipe, Bytes, ParseResult, !IO),
         (
-            ParseResult = ok(continue_req(_)),
+            ParseResult = yes(continue_req(_)),
             Res = error("unexpected continue request")
         ;
-            ParseResult = ok(untagged(ResponseData)),
+            ParseResult = yes(untagged(ResponseData)),
             RevUntagged = [ResponseData | RevUntagged0],
             wait_for_complete_response_2(Pipe, Tag, RevUntagged, Res, !IO)
         ;
-            ParseResult = ok(tagged(ResponseTag, Cond, RespText)),
+            ParseResult = yes(tagged(ResponseTag, Cond, RespText)),
             ( Tag = ResponseTag ->
                 list.reverse(RevUntagged0, Untagged),
                 Response = complete_response(Untagged,
@@ -751,8 +819,8 @@ wait_for_complete_response_2(Pipe, Tag, RevUntagged0, Res, !IO) :-
                 sorry($module, $pred, "mismatching tagged response")
             )
         ;
-            ParseResult = error(Error),
-            Res = error(Error)
+            ParseResult = no,
+            Res = error("failed to parse response")
         )
     ;
         ResRead = eof,
@@ -772,30 +840,6 @@ wait_for_complete_response_2(Pipe, Tag, RevUntagged0, Res, !IO) :-
         Res = error(io.error_message(Error))
     ).
 
-:- pred parse_response_single(list(int)::in, maybe_error(response_single)::out)
-    is det.
-
-parse_response_single(Input, Res) :-
-    Src = src,
-    PS0 = Input,
-    (
-        response_single(Src, Response, PS0, PS),
-        eof(Src, PS)
-    ->
-        Res = ok(Response)
-    ;
-        Res = error("failed to parse response"),
-        trace [runtime(env("DEBUG_IMAP")), io(!IO)] (
-            ( string.from_code_unit_list(Input, String) ->
-                Stream = io.stderr_stream,
-                io.write_string(Stream, String, !IO),
-                io.nl(Stream, !IO)
-            ;
-                true
-            )
-        )
-    ).
-
 %-----------------------------------------------------------------------------%
 
 :- pred apply_complete_response(complete_response::in,
@@ -807,33 +851,36 @@ apply_complete_response(Response, !State, !Alerts, !IO) :-
 
 :- pred apply_complete_response(complete_response::in,
     imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
-    SR::in, SR::out, io::di, io::uo) is det <= handle_search_results(SR).
+    R::in, R::out, io::di, io::uo) is det <= handle_results(R).
 
-apply_complete_response(Response, !State, !Alerts, !SR, !IO) :-
+apply_complete_response(Response, !State, !Alerts, !R, !IO) :-
     Response = complete_response(UntaggedResponses, FinalMaybeTag,
         FinalRespText),
-    apply_untagged_responses(UntaggedResponses, !State, !Alerts, !SR),
+    apply_untagged_responses(UntaggedResponses, !State, !Alerts, !R),
     apply_cond_or_bye(cond_bye_1(FinalMaybeTag), FinalRespText,
-        !State, !Alerts, !SR).
+        !State, !Alerts, !R).
 
 :- pred apply_untagged_responses(list(untagged_response_data)::in,
     imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
-    SR::in, SR::out) is det <= handle_search_results(SR).
+    R::in, R::out) is det <= handle_results(R).
 
-apply_untagged_responses(ResponseData, !State, !Alerts, !SR) :-
-    list.foldl3(apply_untagged_response, ResponseData, !State, !Alerts, !SR).
+apply_untagged_responses(ResponseData, !State, !Alerts, !R) :-
+    list.foldl3(apply_untagged_response, ResponseData, !State, !Alerts, !R).
 
 :- pred apply_untagged_response(untagged_response_data::in,
     imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
-    SR::in, SR::out) is det <= handle_search_results(SR).
+    R::in, R::out) is det <= handle_results(R).
 
-apply_untagged_response(ResponseData, !State, !Alerts, !SR) :-
+apply_untagged_response(ResponseData, !State, !Alerts, !R) :-
     (
         ResponseData = cond_or_bye(Cond, RespText),
-        apply_cond_or_bye(Cond, RespText, !State, !Alerts, !SR)
+        apply_cond_or_bye(Cond, RespText, !State, !Alerts, !R)
     ;
         ResponseData = mailbox_data(MailboxData),
-        apply_mailbox_data(MailboxData, !State, !SR)
+        apply_mailbox_data(MailboxData, !State, !R)
+    ;
+        ResponseData = message_data(MessageData),
+        apply_message_data(MessageData, !State, !R)
     ;
         ResponseData = capability_data(Caps),
         !State ^ capabilities := yes(Caps)
@@ -841,12 +888,12 @@ apply_untagged_response(ResponseData, !State, !Alerts, !SR) :-
 
 :- pred apply_cond_or_bye(cond_bye::in, resp_text::in,
     imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
-    SR::in, SR::out) is det <= handle_search_results(SR).
+    R::in, R::out) is det <= handle_results(R).
 
-apply_cond_or_bye(Cond, RespText, !State, !Alerts, !SR) :-
+apply_cond_or_bye(Cond, RespText, !State, !Alerts, !R) :-
     (
         RespText = resp_text(yes(ResponseCode), Text),
-        apply_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts, !SR)
+        apply_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts, !R)
     ;
         RespText = resp_text(no, _Text)
     ),
@@ -862,9 +909,9 @@ apply_cond_or_bye(Cond, RespText, !State, !Alerts, !SR) :-
 
 :- pred apply_cond_or_bye_2(cond_bye::in, resp_text_code::in, string::in,
     imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
-    SR::in, SR::out) is det <= handle_search_results(SR).
+    R::in, R::out) is det <= handle_results(R).
 
-apply_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts, !SR) :-
+apply_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts, !R) :-
     (
         ResponseCode = alert,
         cons(alert(Text), !Alerts)
@@ -914,11 +961,11 @@ apply_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts, !SR) :-
     ).
 
 :- pred apply_mailbox_data(mailbox_data::in, imap_state::in, imap_state::out,
-    SR::in, SR::out) is det <= handle_search_results(SR).
+    R::in, R::out) is det <= handle_results(R).
 
-apply_mailbox_data(_MailboxData, State, State, !SR) :-
+apply_mailbox_data(_MailboxData, State, State, !R) :-
     State ^ selected = no.
-apply_mailbox_data(MailboxData, State0, State, !SR) :-
+apply_mailbox_data(MailboxData, State0, State, !R) :-
     State0 ^ selected = yes(Sel0),
     (
         MailboxData = flags(Flags),
@@ -932,7 +979,7 @@ apply_mailbox_data(MailboxData, State0, State, !SR) :-
         Sel = Sel0 ^ recent := Recent
     ;
         MailboxData = search(Numbers, MaybeModSeqValue),
-        handle_search_results(Numbers, MaybeModSeqValue, !SR),
+        handle_search_results(Numbers, MaybeModSeqValue, !R),
         Sel = Sel0
     ;
         ( MailboxData = list(_)
@@ -974,18 +1021,47 @@ apply_selected_mailbox_response_code(ResponseCode, !Sel) :-
         !Sel ^ highestmodseq := nomodseq
     ).
 
+:- pred apply_message_data(message_data::in, imap_state::in, imap_state::out,
+    R::in, R::out) is det <= handle_results(R).
+
+apply_message_data(MessageData, !State, !R) :-
+    (
+        MessageData = expunge(_),
+        sorry($module, $pred, "expunge")
+    ;
+        MessageData = fetch(Number, Atts),
+        handle_fetch_results(Number, Atts, !R)
+    ).
+
 %-----------------------------------------------------------------------------%
 
 :- type accept_search_results
     --->    accept_search_results(list(integer), maybe(mod_seq_value)).
 
-:- instance handle_search_results(accept_search_results) where [
-    handle_search_results(Numbers, MaybeModSeqValue,
-        _, accept_search_results(Numbers, MaybeModSeqValue))
+:- instance handle_results(accept_search_results) where [
+    handle_search_results(Numbers, MaybeModSeqValue, _, Results) :-
+        Results = accept_search_results(Numbers, MaybeModSeqValue),
+    handle_fetch_results(_, _, !Results)
 ].
 
-:- instance handle_search_results(unit) where [
-    handle_search_results(_, _, unit, unit)
+%-----------------------------------------------------------------------------%
+
+:- type accept_fetch_results
+    --->    accept_fetch_results(assoc_list(integer, msg_atts)).
+
+:- instance handle_results(accept_fetch_results) where [
+    handle_search_results(_, _, !Results),
+
+    handle_fetch_results(Number, Atts,
+        accept_fetch_results(Results0), accept_fetch_results(Results)) :-
+        cons(Number - Atts, Results0, Results)
+].
+
+%-----------------------------------------------------------------------------%
+
+:- instance handle_results(unit) where [
+    handle_search_results(_, _, unit, unit),
+    handle_fetch_results(_, _, unit, unit)
 ].
 
 %-----------------------------------------------------------------------------%

@@ -6,6 +6,9 @@
 :- pred read_crlf_line_chop(pipe::in, io.result(list(int))::out,
     io::di, io::uo) is det.
 
+:- pred read_bytes(pipe::in, int::in, io.res(list(int))::out,
+    io::di, io::uo) is det.
+
 :- pred write_command_stream(pipe::in, list(string)::in,
     maybe_error::out, io::di, io::uo) is det.
 
@@ -74,6 +77,13 @@ head_cr([cr | _]).
 
 lf = 10.
 cr = 13.
+
+%-----------------------------------------------------------------------------%
+
+read_bytes(open(Pipe), NumOctets, Res, !IO) :-
+    read_bytes(Pipe, NumOctets, Res, !IO).
+read_bytes(closed, _NumOctets, Res, !IO) :-
+    Res = error(io.make_io_error("session closed")).
 
 %-----------------------------------------------------------------------------%
 
