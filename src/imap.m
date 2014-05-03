@@ -1245,10 +1245,27 @@ apply_selected_mailbox_response_code(ResponseCode, !Sel) :-
 apply_message_data(MessageData, !State, !R) :-
     (
         MessageData = expunge(_),
-        sorry($module, $pred, "expunge")
+        (
+            !.State ^ selected = yes(Sel0),
+            decrement_exists(Sel0, Sel),
+            !State ^ selected := yes(Sel)
+        ;
+            !.State ^ selected = no
+        )
     ;
         MessageData = fetch(MsgSeqNr, Atts),
         handle_fetch_results(MsgSeqNr, Atts, !R)
+    ).
+
+:- pred decrement_exists(selected_mailbox::in, selected_mailbox::out) is det.
+
+decrement_exists(Sel0, Sel) :-
+    Exists = Sel0 ^ exists,
+    ( Exists > one ->
+        Sel = Sel0 ^ exists := Exists - one
+    ;
+        % Shouldn't happen.
+        Sel = Sel0
     ).
 
 %-----------------------------------------------------------------------------%
