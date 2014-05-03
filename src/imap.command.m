@@ -94,15 +94,15 @@ make_command_stream(Command, List) :-
 
 :- pred add_sp_then(T::in, acc::in, acc::out) is det <= add(T).
 
-add_sp_then(X, !Acc) :-
-    add(sp, !Acc),
-    add(X, !Acc).
+add_sp_then(X) -->
+    add(sp),
+    add(X).
 
 :- pred add_comma_then(T::in, acc::in, acc::out) is det <= add(T).
 
-add_comma_then(X, !Acc) :-
-    add(",", !Acc),
-    add(X, !Acc).
+add_comma_then(X) -->
+    add(","),
+    add(X).
 
 :- instance add(maybe(T)) <= add(T) where [
     add(yes(X), !Acc) :- add(X, !Acc),
@@ -114,27 +114,27 @@ add_comma_then(X, !Acc) :-
 ].
 
 :- instance add(sp) where [
-    add(sp, !Acc) :- add(" ", !Acc)
+    add(sp) --> add(" ")
 ].
 
 :- instance add(dquote) where [
-    add(dquote, !Acc) :- add("\"", !Acc)
+    add(dquote) --> add("\"")
 ].
 
 :- instance add(int) where [
-    add(I, !Acc) :- add(from_int(I), !Acc)
+    add(I) --> add(from_int(I))
 ].
 
 :- instance add(integer) where [
-    add(N, !Acc) :- add(integer.to_string(N), !Acc)
+    add(N) --> add(integer.to_string(N))
 ].
 
 :- instance add(message_seq_nr) where [
-    add(message_seq_nr(N), !Acc) :- add(N, !Acc)
+    add(message_seq_nr(N)) --> add(N)
 ].
 
 :- instance add(uid) where [
-    add(uid(N), !Acc) :- add(N, !Acc)
+    add(uid(N)) --> add(N)
 ].
 
 :- instance add(mod_seq_value) where [
@@ -142,7 +142,7 @@ add_comma_then(X, !Acc) :-
 ].
 
 :- instance add(mod_seq_valzer) where [
-    add(mod_seq_valzer(N), !Acc) :- add(N, !Acc)
+    add(mod_seq_valzer(N)) --> add(N)
 ].
 
 :- instance add(sequence_set(T)) <= add(T) where [
@@ -159,28 +159,22 @@ add_comma_then(X, !Acc) :-
 ].
 
 :- instance add(seq_number(T)) <= add(T) where [
-    add(number(X), !Acc) :- add(X, !Acc),
-    add(star, !Acc) :- add("*", !Acc)
+    add(number(X)) --> add(X),
+    add(star) --> add("*")
 ].
 
 :- instance add(seq_range(T)) <= add(T) where [
-    add(seq_range(L, R), !Acc) :-
+    add(seq_range(L, R)) -->
     (
-        add(L, !Acc),
-        add(":", !Acc),
-        add(R, !Acc)
+        add(L),
+        add(":"),
+        add(R)
     )
 ].
 
 :- instance add(astring) where [
-    add(AString, !Acc) :-
-    (
-        AString = astring(S),
-        add(S, !Acc)
-    ;
-        AString = imap_string(IString),
-        add(IString, !Acc)
-    )
+    add(astring(S)) --> add(S),
+    add(imap_string(S)) --> add(S)
 ].
 
 :- instance add(imap_string) where [
@@ -206,11 +200,11 @@ escape_for_quoted_string(S0) = S :-
     string.replace_all(S1, """", "\\\"", S).
 
 :- instance add(command) where [
-    add(Tag - Command, !Acc) :-
+    add(Tag - Command) -->
     (
-        add(Tag, !Acc),
-        add(sp, !Acc),
-        add(Command, !Acc)
+        add(Tag),
+        add(sp),
+        add(Command)
     )
 ].
 
@@ -219,54 +213,35 @@ escape_for_quoted_string(S0) = S :-
 ].
 
 :- instance add(command_in_state) where [
-    add(Command, !Acc) :-
-    (
-        Command = command_any(X),
-        add(X, !Acc)
-    ;
-        Command = command_auth(X),
-        add(X, !Acc)
-    ;
-        Command = command_nonauth(X),
-        add(X, !Acc)
-    ;
-        Command = command_select(X),
-        add(X, !Acc)
-    )
+    add(command_any(X)) --> add(X),
+    add(command_auth(X)) --> add(X),
+    add(command_nonauth(X)) --> add(X),
+    add(command_select(X)) --> add(X)
 ].
 
 :- instance add(command_any) where [
-    add(capability, !Acc) :-
-    (
-        add("CAPABILITY", !Acc)
-    ),
-    add(logout, !Acc) :-
-    (
-        add("LOGOUT", !Acc)
-    ),
-    add(noop, !Acc) :-
-    (
-        add("NOOP", !Acc)
-    )
+    add(capability) --> add("CAPABILITY"),
+    add(logout) --> add("LOGOUT"),
+    add(noop) --> add("NOOP")
 ].
 
 :- instance add(command_auth) where [
-    add(examine(Mailbox), !Acc) :-
+    add(examine(Mailbox)) -->
     (
-        add("EXAMINE", !Acc),
-        add(sp, !Acc),
-        add(Mailbox, !Acc)
+        add("EXAMINE"),
+        add(sp),
+        add(Mailbox)
     )
 ].
 
 :- instance add(command_nonauth) where [
-    add(login(UserId, Password), !Acc) :-
+    add(login(UserId, Password)) -->
     (
-        add("LOGIN", !Acc),
-        add(sp, !Acc),
-        add(UserId, !Acc),
-        add(sp, !Acc),
-        add(Password, !Acc)
+        add("LOGIN"),
+        add(sp),
+        add(UserId),
+        add(sp),
+        add(Password)
     )
 ].
 
@@ -323,19 +298,12 @@ escape_for_quoted_string(S0) = S :-
 ].
 
 :- instance add(command.mailbox) where [
-    add(Mailbox, !Acc) :-
-    (
-        Mailbox = inbox,
-        add("INBOX", !Acc)
-    ;
-        Mailbox = astring(S),
-        add(S, !Acc)
-    )
+    add(inbox) --> add("INBOX"),
+    add(astring(S)) --> add(S)
 ].
 
 :- instance add(charset) where [
-    add(charset(CharSet), !Acc) :-
-        add(CharSet, !Acc)
+    add(charset(CharSet)) --> add(CharSet)
 ].
 
 :- instance add(search_key) where [
@@ -509,19 +477,12 @@ escape_for_quoted_string(S0) = S :-
 ].
 
 :- instance add(section_spec) where [
-    add(msgtext(MsgText), !Acc) :-
-        add(MsgText, !Acc)
+    add(msgtext(MsgText)) --> add(MsgText)
 ].
 
 :- instance add(section_msgtext) where [
-    add(MsgText, !Acc) :-
-    (
-        MsgText = header,
-        add("HEADER", !Acc)
-    ;
-        MsgText = text,
-        add("TEXT", !Acc)
-    )
+    add(header) --> add("HEADER"),
+    add(text) --> add("TEXT")
 ].
 
 :- instance add(partial) where [
