@@ -44,8 +44,10 @@
     ;       close
     ;       expunge
     %;      copy(sequence_set, mailbox)
-    ;       fetch(sequence_set(message_seq_nr), fetch_items)
-    ;       uid_fetch(sequence_set(uid), fetch_items)
+    ;       fetch(sequence_set(message_seq_nr), fetch_items,
+                maybe(fetch_modifier))
+    ;       uid_fetch(sequence_set(uid), fetch_items,
+                maybe(fetch_modifier))
     %;      store(sequence_set, ...)
     ;       search(search)
     ;       uid_search(search).
@@ -133,6 +135,10 @@ add_comma_then(X, !Acc) :-
 
 :- instance add(uid) where [
     add(uid(N), !Acc) :- add(N, !Acc)
+].
+
+:- instance add(mod_seq_value) where [
+    add(mod_seq_value(N)) --> add(N)
 ].
 
 :- instance add(mod_seq_valzer) where [
@@ -277,16 +283,24 @@ escape_for_quoted_string(S0) = S :-
         add("EXPUNGE", !Acc)
     ;
         (
-            Command = fetch(SequenceSet, Items),
+            Command = fetch(SequenceSet, Items, MaybeModifier),
             add("FETCH ", !Acc),
             add(SequenceSet, !Acc)
         ;
-            Command = uid_fetch(SequenceSet, Items),
+            Command = uid_fetch(SequenceSet, Items, MaybeModifier),
             add("UID FETCH ", !Acc),
             add(SequenceSet, !Acc)
         ),
         add(sp, !Acc),
-        add(Items, !Acc)
+        add(Items, !Acc),
+        (
+            MaybeModifier = yes(Modifier),
+            add(" (", !Acc),
+            add(Modifier, !Acc),
+            add(")", !Acc)
+        ;
+            MaybeModifier = no
+        )
     ;
         (
             Command = search(search(MaybeCharset, SearchKey)),
@@ -518,6 +532,14 @@ escape_for_quoted_string(S0) = S :-
         add("."),
         add(End),
         add(">")
+    )
+].
+
+:- instance add(fetch_modifier) where [
+    add(changedsince(ModSeqValue)) -->
+    (
+        add("CHANGEDSINCE "),
+        add(ModSeqValue)
     )
 ].
 

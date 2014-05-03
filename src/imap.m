@@ -68,6 +68,7 @@
     is det.
 
 :- pred uid_fetch(imap::in, sequence_set(uid)::in, fetch_items::in,
+    maybe(fetch_modifier)::in,
     imap_result(assoc_list(message_seq_nr, msg_atts))::out, io::di, io::uo)
     is det.
 
@@ -712,9 +713,9 @@ to_uid(N) = uid(N).
 
 %-----------------------------------------------------------------------------%
 
-uid_fetch(IMAP, SequenceSet, Items, Res, !IO) :-
-    command_wrapper_low(do_uid_fetch(SequenceSet, Items), [selected],
-        IMAP, MaybeRes, !IO),
+uid_fetch(IMAP, SequenceSet, Items, MaybeModifier, Res, !IO) :-
+    command_wrapper_low(do_uid_fetch(SequenceSet, Items, MaybeModifier),
+        [selected], IMAP, MaybeRes, !IO),
     (
         MaybeRes = ok(Res)
     ;
@@ -722,13 +723,14 @@ uid_fetch(IMAP, SequenceSet, Items, Res, !IO) :-
         Res = result(error, Error, [])
     ).
 
-:- pred do_uid_fetch(sequence_set(uid)::in, fetch_items::in, imap::in,
+:- pred do_uid_fetch(sequence_set(uid)::in, fetch_items::in,
+    maybe(fetch_modifier)::in, imap::in,
     imap_result(assoc_list(message_seq_nr, msg_atts))::out, io::di, io::uo)
     is det.
 
-do_uid_fetch(SequenceSet, Items, IMAP, Res, !IO) :-
+do_uid_fetch(SequenceSet, Items, MaybeModifier, IMAP, Res, !IO) :-
     get_new_tag(IMAP, Pipe, Tag, !IO),
-    Command = command_select(uid_fetch(SequenceSet, Items)),
+    Command = command_select(uid_fetch(SequenceSet, Items, MaybeModifier)),
     make_command_stream(Tag - Command, CommandStream),
     write_command_stream(Pipe, CommandStream, Res0, !IO),
     (

@@ -115,7 +115,7 @@ do_uid_search(IMAP, UIDs, !IO) :-
 do_uid_fetch(IMAP, UIDs, !IO) :-
     ( make_sequence_set(UIDs, Set) ->
         Items = atts(rfc822, [flags, envelope, modseq]),
-        uid_fetch(IMAP, Set, Items, result(ResFetch, Text, Alerts), !IO),
+        uid_fetch(IMAP, Set, Items, no, result(ResFetch, Text, Alerts), !IO),
         report_alerts(Alerts, !IO)
     ;
         ResFetch = ok_with_data([]),
