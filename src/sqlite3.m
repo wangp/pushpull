@@ -9,7 +9,7 @@
 :- import_module io.
 :- import_module maybe.
 
-:- import_module int64.
+% :- import_module int64.
 
 %-----------------------------------------------------------------------------%
 
@@ -32,7 +32,7 @@
 :- type bind_value
     --->    null
     ;       int(int)
-    ;       int64(int64)
+    %;      int64(int64)
     ;       text_by_reference(string)
     ;       blob_by_reference(c_pointer, int).
 
@@ -134,8 +134,8 @@
 :- pred column_int(stmt::in, column::in, int::out,
     io::di, io::uo) is det.
 
-:- pred column_int64(stmt::in, column::in, int64::out,
-    io::di, io::uo) is det.
+% :- pred column_int64(stmt::in, column::in, int64::out,
+%     io::di, io::uo) is det.
 
 :- pred column_text(stmt::in, column::in, string::out,
     io::di, io::uo) is det.
@@ -437,9 +437,11 @@ bind(Db, Stmt, IndexType, Value, Res, !IO) :-
     ;
         Value = int(Int),
         bind_int(Db, Stmt, IndexType, Int, Res, !IO)
+    /*
     ;
         Value = int64(Int64),
         bind_int64(Db, Stmt, IndexType, Int64, Res, !IO)
+    */
     ;
         Value = text_by_reference(String),
         unsafe_bind_text(Db, Stmt, IndexType, String, Res, !IO)
@@ -483,6 +485,7 @@ bind_int(Db, Stmt, IndexType, Value, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
+/*
 :- pred bind_int64(db(RwRo)::in, stmt::in, bind_index::in, int64::in,
     maybe_error::out, io::di, io::uo) is det.
 
@@ -516,6 +519,7 @@ bind_int64(Db, Stmt, IndexType, Value, Res, !IO) :-
         Error = _msqlite_copy_errmsg(Db);
     }
 ").
+*/
 
 %-----------------------------------------------------------------------------%
 
@@ -733,6 +737,7 @@ column_int(Stmt, column(Col), Int, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
+/*
 column_int64(Stmt, column(Col), Int, !IO) :-
     column_int64_2(Stmt, Col, Int, !IO).
 
@@ -745,6 +750,7 @@ column_int64(Stmt, column(Col), Int, !IO) :-
 "
     Int = sqlite3_column_int64(Stmt, Col);
 ").
+*/
 
 %-----------------------------------------------------------------------------%
 
