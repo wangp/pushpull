@@ -23,8 +23,6 @@
 :- type password
     --->    password(string).
 
-:- type mailbox.
-
 :- type imap_result
     --->    result(imap_res, string, list(alert)).
 
@@ -50,6 +48,11 @@
 :- type alert
     --->    alert(string).
 
+:- type highestmodseq
+    --->    unknown
+    ;       nomodseq
+    ;       highestmodseq(mod_seq_value).
+
     % open("host:port", Res, Alerts)
     %
 :- pred open(string::in, maybe_error(imap)::out, list(alert)::out,
@@ -64,6 +67,12 @@
 
 :- pred examine(imap::in, mailbox::in, imap_result::out, io::di, io::uo)
     is det.
+
+:- pred get_selected_mailbox_uidvalidity(imap::in, maybe(uidvalidity)::out,
+    io::di, io::uo) is det.
+
+:- pred get_selected_mailbox_highest_modseqvalue(imap::in,
+    maybe(highestmodseq)::out, io::di, io::uo) is det.
 
 :- pred uid_search(imap::in, search_key::in,
     imap_result(pair(list(uid), maybe(mod_seq_value)))::out, io::di, io::uo)
@@ -115,8 +124,6 @@
 :- import_module imap.response.
 :- import_module subprocess.
 
-:- type mailbox == command.mailbox.
-
 :- type imap
     --->    imap(
                 pipe :: io_mutvar(pipe),
@@ -145,7 +152,7 @@
 
 :- type selected_mailbox
     --->    selected_mailbox(
-                selected_mailbox :: command.mailbox,
+                selected_mailbox :: mailbox,
                 access :: access,
                 flags :: list(flag),
                 % Defined flags in the mailbox.
@@ -173,11 +180,6 @@
 :- type access
     --->    read_only
     ;       read_write.
-
-:- type highestmodseq
-    --->    unknown
-    ;       nomodseq
-    ;       highestmodseq(mod_seq_value).
 
 :- typeclass handle_results(T) where [
     pred handle_search_results(list(integer)::in, maybe(mod_seq_value)::in,
@@ -625,8 +627,8 @@ examine(IMAP, Mailbox, Res, !IO) :-
     command_wrapper(do_examine(Mailbox), [authenticated, selected],
         IMAP, Res, !IO).
 
-:- pred do_examine(command.mailbox::in, imap::in, imap_result::out,
-    io::di, io::uo) is det.
+:- pred do_examine(mailbox::in, imap::in, imap_result::out, io::di, io::uo)
+    is det.
 
 do_examine(Mailbox, IMAP, Res, !IO) :-
     get_new_tag(IMAP, Pipe, Tag, !IO),
@@ -650,7 +652,7 @@ do_examine(Mailbox, IMAP, Res, !IO) :-
         Res = result(error, Error, [])
     ).
 
-:- pred apply_examine_response(command.mailbox::in, complete_response::in,
+:- pred apply_examine_response(mailbox::in, complete_response::in,
     unit::out, imap_state::in, imap_state::out,
     list(alert)::in, list(alert)::out, io::di, io::uo) is det.
 
@@ -674,11 +676,39 @@ apply_examine_response(Mailbox, Response, unit, !State, !Alerts, !IO) :-
     ),
     apply_complete_response(Response, !State, !Alerts, !IO).
 
-:- func new_selected_mailbox(command.mailbox) = selected_mailbox.
+:- func new_selected_mailbox(mailbox) = selected_mailbox.
 
 new_selected_mailbox(Mailbox) =
     selected_mailbox(Mailbox, read_only, [], zero, zero, no, no, no, no,
         unknown).
+
+%-----------------------------------------------------------------------------%
+
+get_selected_mailbox_uidvalidity(IMAP, MaybeUIDValidity, !IO) :-
+    IMAP = imap(_PipeMutvar, _TagMutvar, StateMutvar),
+    get_mutvar(StateMutvar, State, !IO),
+    MaybeSel = State ^ selected,
+    (
+        MaybeSel = yes(Sel),
+        MaybeUIDValidity = Sel ^ uidvalidity
+    ;
+        MaybeSel = no,
+        MaybeUIDValidity = no
+    ).
+
+%-----------------------------------------------------------------------------%
+
+get_selected_mailbox_highest_modseqvalue(IMAP, Res, !IO) :-
+    IMAP = imap(_PipeMutvar, _TagMutvar, StateMutvar),
+    get_mutvar(StateMutvar, State, !IO),
+    MaybeSel = State ^ selected,
+    (
+        MaybeSel = yes(Sel),
+        Res = yes(Sel ^ highestmodseq)
+    ;
+        MaybeSel = no,
+        Res = no
+    ).
 
 %-----------------------------------------------------------------------------%
 

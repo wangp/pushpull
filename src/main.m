@@ -15,64 +15,115 @@
 :- import_module bool.
 :- import_module integer.
 :- import_module list.
+:- import_module map.
 :- import_module maybe.
 :- import_module pair.
 :- import_module pretty_printer.
+:- import_module solutions.
+:- import_module string.
 
+:- import_module database.
 :- import_module imap.
 :- import_module imap.types.
 :- import_module signal.
+
+:- type remote_message_info
+    --->    remote_message_info(
+                message_id  :: message_id,  % may be NIL
+                flags       :: list(flag)   % does not include \Recent
+            ).
 
 %-----------------------------------------------------------------------------%
 
 main(!IO) :-
     ignore_sigpipe(yes, !IO),
     io.command_line_arguments(Args, !IO),
-    ( Args = [HostPort, UserName, Password] ->
-        imap.open(HostPort, ResOpen, OpenAlerts, !IO),
-        report_alerts(OpenAlerts, !IO),
+    ( Args = [DbFileName, HostPort, UserName, Password] ->
+        open_database(DbFileName, ResOpenDb, !IO),
         (
-            ResOpen = ok(IMAP),
-            login(IMAP, username(UserName), password(Password),
-                result(ResLogin, LoginMessage, LoginAlerts), !IO),
-            report_alerts(LoginAlerts, !IO),
-            (
-                ResLogin = ok,
-                io.write_string(LoginMessage, !IO),
-                io.nl(!IO),
-                logged_in(IMAP, !IO)
-            ;
-                ( ResLogin = no
-                ; ResLogin = bad
-                ; ResLogin = bye
-                ; ResLogin = continue
-                ; ResLogin = error
-                ),
-                report_error(LoginMessage, !IO)
-            ),
-            logout(IMAP, ResLogout, !IO),
-            io.write(ResLogout, !IO),
-            io.nl(!IO)
+            ResOpenDb = ok(Db),
+            main_2(Db, HostPort, UserName, Password, !IO),
+            close_database(Db, !IO)
         ;
-            ResOpen = error(Error),
+            ResOpenDb = error(Error),
             report_error(Error, !IO)
         )
     ;
         report_error("unexpected arguments", !IO)
     ).
 
-:- pred logged_in(imap::in, io::di, io::uo) is det.
+:- pred main_2(database::in, string::in, string::in, string::in,
+    io::di, io::uo) is det.
 
-logged_in(IMAP, !IO) :-
-    examine(IMAP, mailbox("INBOX"), result(ResExamine, Text, Alerts), !IO),
+main_2(Db, HostPort, UserName, Password, !IO) :-
+    imap.open(HostPort, ResOpen, OpenAlerts, !IO),
+    report_alerts(OpenAlerts, !IO),
+    (
+        ResOpen = ok(IMAP),
+        login(IMAP, username(UserName), password(Password),
+            result(ResLogin, LoginMessage, LoginAlerts), !IO),
+        report_alerts(LoginAlerts, !IO),
+        (
+            ResLogin = ok,
+            io.write_string(LoginMessage, !IO),
+            io.nl(!IO),
+            logged_in(Db, IMAP, !IO)
+        ;
+            ( ResLogin = no
+            ; ResLogin = bad
+            ; ResLogin = bye
+            ; ResLogin = continue
+            ; ResLogin = error
+            ),
+            report_error(LoginMessage, !IO)
+        ),
+        logout(IMAP, ResLogout, !IO),
+        io.write(ResLogout, !IO),
+        io.nl(!IO)
+    ;
+        ResOpen = error(Error),
+        report_error(Error, !IO)
+    ).
+
+:- pred logged_in(database::in, imap::in, io::di, io::uo) is det.
+
+logged_in(Db, IMAP, !IO) :-
+    MailboxName = mailbox("INBOX"),
+    examine(IMAP, MailboxName, result(ResExamine, Text, Alerts), !IO),
     report_alerts(Alerts, !IO),
     (
         ResExamine = ok,
         io.write_string(Text, !IO),
         io.nl(!IO),
-        do_uid_search(IMAP, UIDs, MaybeModSeqValue, !IO),
-        do_uid_fetch(IMAP, yes, UIDs, !IO),
-        do_idle(IMAP, MaybeModSeqValue, !IO)
+
+        get_selected_mailbox_uidvalidity(IMAP, MaybeUIDValidity, !IO),
+        get_selected_mailbox_highest_modseqvalue(IMAP,
+            MaybeHighestModSeqValue, !IO),
+        (
+            MaybeUIDValidity = yes(UIDValidity),
+            MaybeHighestModSeqValue = yes(highestmodseq(HighestModSeqValue))
+        ->
+            insert_or_ignore_remote_mailbox(Db, MailboxName, UIDValidity,
+                ResInsert, !IO),
+            (
+                ResInsert = ok,
+                lookup_remote_mailbox(Db, MailboxName, UIDValidity, ResLookup,
+                    !IO),
+                (
+                    ResLookup = found(RemoteMailbox, LastModSeqValzer),
+                    update_db_remote_mailbox(Db, IMAP, RemoteMailbox,
+                        LastModSeqValzer, HighestModSeqValue, !IO)
+                ;
+                    ResLookup = error(Error),
+                    report_error(Error, !IO)
+                )
+            ;
+                ResInsert = error(Error),
+                report_error(Error, !IO)
+            )
+        ;
+            report_error("Cannot support this server.", !IO)
+        )
     ;
         ( ResExamine = no
         ; ResExamine = bad
@@ -82,6 +133,146 @@ logged_in(IMAP, !IO) :-
         ),
         report_error(Text, !IO)
     ).
+
+%-----------------------------------------------------------------------------%
+
+    % Update the database's knowledge of the remote mailbox state,
+    % since the last known mod-sequence-value.
+    %
+:- pred update_db_remote_mailbox(database::in, imap::in, remote_mailbox::in,
+    mod_seq_valzer::in, mod_seq_value::in, io::di, io::uo) is det.
+
+update_db_remote_mailbox(Db, IMAP, RemoteMailbox, LastModSeqValzer,
+        HighestModSeqValue, !IO) :-
+    % Search for changes which came *after* LastModSeqValzer.
+    LastModSeqValzer = mod_seq_valzer(N),
+    SearchKey = modseq(mod_seq_valzer(N + one)),
+    uid_search(IMAP, SearchKey, result(ResSearch, Text, Alerts), !IO),
+    report_alerts(Alerts, !IO),
+    (
+        ResSearch = ok_with_data(UIDs - _HighestModSeqValueOfFound),
+        io.write_string(Text, !IO),
+        io.nl(!IO),
+
+        fetch_remote_message_infos(IMAP, UIDs, ResFetch, !IO),
+        (
+            ResFetch = ok(RemoteMessageInfos),
+            update_db_with_remote_message_infos(Db, RemoteMailbox,
+                RemoteMessageInfos, HighestModSeqValue, ResUpdate, !IO),
+            (
+                ResUpdate = ok
+            ;
+                ResUpdate = error(Error),
+                report_error(Error, !IO)
+            )
+        ;
+            ResFetch = error(Error),
+            report_error(Error, !IO)
+        )
+    ;
+        ( ResSearch = no
+        ; ResSearch = bad
+        ; ResSearch = bye
+        ; ResSearch = continue
+        ; ResSearch = error
+        ),
+        report_error(Text, !IO)
+    ).
+
+:- pred fetch_remote_message_infos(imap::in, list(uid)::in,
+    maybe_error(map(uid, remote_message_info))::out, io::di, io::uo) is det.
+
+fetch_remote_message_infos(IMAP, UIDs, Res, !IO) :-
+    ( make_sequence_set(UIDs, Set) ->
+        % We only need the Message-ID from the envelope and really only for new
+        % messages.
+        Items = atts(flags, [envelope]),
+        uid_fetch(IMAP, Set, Items, no, result(ResFetch, Text, Alerts),
+            !IO),
+        report_alerts(Alerts, !IO),
+        (
+            ResFetch = ok_with_data(AssocList),
+            io.write_string(Text, !IO),
+            io.nl(!IO),
+            ( list.foldl(make_remote_message_info, AssocList, map.init, Map) ->
+                Res = ok(Map)
+            ;
+                Res = error("failed in make_remote_message_info")
+            )
+        ;
+            ( ResFetch = no
+            ; ResFetch = bad
+            ; ResFetch = bye
+            ; ResFetch = continue
+            ; ResFetch = error
+            ),
+            Res = error("unexpected response to UID FETCH: " ++ Text)
+        )
+    ;
+        % Empty set.
+        Res = ok(map.init)
+    ).
+
+:- pred make_remote_message_info(pair(message_seq_nr, msg_atts)::in,
+    map(uid, remote_message_info)::in, map(uid, remote_message_info)::out)
+    is semidet.
+
+make_remote_message_info(_MsgSeqNr - Atts, !Map) :-
+    solutions((pred(U::out) is nondet :- member(uid(U), Atts)),
+        [UID]),
+
+    solutions((pred(E::out) is nondet :- member(envelope(E), Atts)),
+        [Envelope]),
+    MessageId = Envelope ^ message_id,
+
+    solutions((pred(F::out) is nondet :- member(flags(F), Atts)),
+        [Flags0]),
+    list.filter_map(flag_except_recent, Flags0, Flags),
+
+    % I guess the server should not send multiple results for the same UID.
+    map.insert(UID, remote_message_info(MessageId, Flags), !Map).
+
+:- pred flag_except_recent(flag_fetch::in, flag::out) is semidet.
+
+flag_except_recent(flag(Flag), Flag).
+flag_except_recent(recent, _) :- fail.
+
+:- pred update_db_with_remote_message_infos(database::in, remote_mailbox::in,
+    map(uid, remote_message_info)::in, mod_seq_value::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+update_db_with_remote_message_infos(Db, RemoteMailbox, RemoteMessageInfos,
+        ModSeqValue, Res, !IO) :-
+    % XXX probably want a transaction
+    map.foldl2(update_db_with_remote_message_info(Db, RemoteMailbox),
+        RemoteMessageInfos, ok, Res0, !IO),
+    (
+        Res0 = ok,
+        update_remote_mailbox_modseqvalue(Db, RemoteMailbox, ModSeqValue,
+            Res, !IO)
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred update_db_with_remote_message_info(database::in, remote_mailbox::in,
+    uid::in, remote_message_info::in, maybe_error::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+update_db_with_remote_message_info(Db, RemoteMailbox, UID, RemoteMessageInfo,
+        MaybeError0, MaybeError, !IO) :-
+    (
+        MaybeError0 = ok,
+        RemoteMessageInfo = remote_message_info(MessageId, Flags),
+        upsert_remote_message_flags(Db, RemoteMailbox, UID, MessageId, Flags,
+            MaybeError, !IO)
+    ;
+        MaybeError0 = error(Error),
+        MaybeError = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+%-----------------------------------------------------------------------------%
 
 :- pred do_uid_search(imap::in, list(uid)::out, maybe(mod_seq_value)::out,
     io::di, io::uo) is det.

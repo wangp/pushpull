@@ -23,7 +23,7 @@
     %--->   append
     %;      create
     %;      delete
-    --->    examine(command.mailbox)
+    --->    examine(mailbox)
     %;      list
     %;      lsub
     %;      rename
@@ -52,10 +52,6 @@
     %;      store(sequence_set, ...)
     ;       search(search)
     ;       uid_search(search).
-
-:- type mailbox
-    --->    inbox
-    ;       astring(astring). % not INBOX (case-insensitive)
 
 :- func crlf = string.
 
@@ -307,7 +303,7 @@ escape_for_quoted_string(S0) = S :-
     )
 ].
 
-:- instance add(command.mailbox) where [
+:- instance add(mailbox) where [
     add(inbox) --> add("INBOX"),
     add(astring(S)) --> add(S)
 ].

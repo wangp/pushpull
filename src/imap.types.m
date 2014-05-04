@@ -18,6 +18,10 @@
 
 :- type nstring == maybe(imap_string).
 
+:- type mailbox
+    --->    inbox
+    ;       astring(astring).       % not INBOX (case-insensitive)
+
 :- type tag
     --->    tag(string).            % 1*<any ASTRING-CHAR except "+">
 
@@ -150,6 +154,19 @@
     ;       uid(uid)
     ;       modseq(mod_seq_value).
 
+:- type flag
+    --->    system(system_flag)
+    ;       keyword(atom).
+
+:- type system_flag
+    --->    answered
+    ;       flagged
+    ;       deleted
+    ;       seen
+    ;       draft
+    % does not include \Recent
+    ;       extension(atom).
+
 :- type flag_fetch
     --->    flag(flag)
     ;       recent.
@@ -165,8 +182,11 @@
                 cc          :: list(address),
                 bcc         :: list(address),
                 in_reply_to :: nstring,
-                message_id  :: nstring
+                message_id  :: message_id
             ).
+
+:- type message_id
+    --->    message_id(nstring).
 
 :- type address
     --->    address(

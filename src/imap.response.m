@@ -96,25 +96,12 @@
     --->    can_create_keyword_flags
     ;       cannot_create_keyword_flags.
 
-:- type flag
-    --->    system(system_flag)
-    ;       keyword(atom).
-
-:- type system_flag
-    --->    answered
-    ;       flagged
-    ;       deleted
-    ;       seen
-    ;       draft
-    % does not include \Recent
-    ;       extension(atom).
-
 :- type mailbox_data
     --->    flags(list(flag))
     ;       list(mailbox_list)
     ;       lsub(mailbox_list)
     ;       search(list(integer), maybe(mod_seq_value))
-    ;       status(command.mailbox, status_att_list)
+    ;       status(mailbox, status_att_list)
     ;       exists(integer)
     ;       recent(integer).
 
@@ -123,7 +110,7 @@
                 maybe(mailbox_sflag),
                 list(mailbox_oflag),
                 maybe(hierarchy_separator),
-                command.mailbox
+                mailbox
             ).
 
 :- type mailbox_sflag
@@ -897,7 +884,9 @@ envelope(Src, Env, !PS, !IO) :-
     nstring(Src, Env ^ in_reply_to, !PS, !IO),
     det_sp(Src, !PS),
 
-    nstring(Src, Env ^ message_id, !PS, !IO),
+    nstring(Src, MessageId,  !PS, !IO),
+    Env ^ message_id = message_id(MessageId),
+
     det_next_char(Src, ')', !PS).
 
 :- pred address_list(src::in, list(address)::out, ps::in, ps::out,
