@@ -27,6 +27,15 @@
 :- import_module imap.types.
 :- import_module signal.
 
+:- type prog_config
+    --->    prog_config(
+                db_filename :: string,
+                hostport    :: string,
+                username    :: username,
+                password    :: password,
+                mailbox     :: mailbox
+            ).
+
 :- type remote_message_info
     --->    remote_message_info(
                 message_id  :: message_id,  % may be NIL
@@ -39,10 +48,13 @@ main(!IO) :-
     ignore_sigpipe(yes, !IO),
     io.command_line_arguments(Args, !IO),
     ( Args = [DbFileName, HostPort, UserName, Password] ->
+        Config = prog_config(DbFileName,
+            HostPort, username(UserName), password(Password),
+            mailbox("INBOX")),
         open_database(DbFileName, ResOpenDb, !IO),
         (
             ResOpenDb = ok(Db),
-            main_2(Db, HostPort, UserName, Password, !IO),
+            main_2(Config, Db, !IO),
             close_database(Db, !IO)
         ;
             ResOpenDb = error(Error),
@@ -52,22 +64,24 @@ main(!IO) :-
         report_error("unexpected arguments", !IO)
     ).
 
-:- pred main_2(database::in, string::in, string::in, string::in,
-    io::di, io::uo) is det.
+:- pred main_2(prog_config::in, database::in, io::di, io::uo) is det.
 
-main_2(Db, HostPort, UserName, Password, !IO) :-
+main_2(Config, Db, !IO) :-
+    HostPort = Config ^ hostport,
+    UserName = Config ^ username,
+    Password = Config ^ password,
     imap.open(HostPort, ResOpen, OpenAlerts, !IO),
     report_alerts(OpenAlerts, !IO),
     (
         ResOpen = ok(IMAP),
-        login(IMAP, username(UserName), password(Password),
+        login(IMAP, UserName, Password,
             result(ResLogin, LoginMessage, LoginAlerts), !IO),
         report_alerts(LoginAlerts, !IO),
         (
             ResLogin = ok,
             io.write_string(LoginMessage, !IO),
             io.nl(!IO),
-            logged_in(Db, IMAP, !IO)
+            logged_in(Config, Db, IMAP, !IO)
         ;
             ( ResLogin = no
             ; ResLogin = bad
@@ -85,10 +99,11 @@ main_2(Db, HostPort, UserName, Password, !IO) :-
         report_error(Error, !IO)
     ).
 
-:- pred logged_in(database::in, imap::in, io::di, io::uo) is det.
+:- pred logged_in(prog_config::in, database::in, imap::in, io::di, io::uo)
+    is det.
 
-logged_in(Db, IMAP, !IO) :-
-    MailboxName = mailbox("INBOX"),
+logged_in(Config, Db, IMAP, !IO) :-
+    MailboxName = Config ^ mailbox,
     examine(IMAP, MailboxName, result(ResExamine, Text, Alerts), !IO),
     report_alerts(Alerts, !IO),
     (
