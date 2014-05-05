@@ -48,9 +48,8 @@ main(!IO) :-
     ignore_sigpipe(yes, !IO),
     io.command_line_arguments(Args, !IO),
     ( Args = [DbFileName, HostPort, UserName, Password] ->
-        Config = prog_config(DbFileName,
-            HostPort, username(UserName), password(Password),
-            mailbox("INBOX")),
+        Config = prog_config(DbFileName, HostPort, username(UserName),
+            password(Password), mailbox("INBOX")),
         open_database(DbFileName, ResOpenDb, !IO),
         (
             ResOpenDb = ok(Db),
@@ -126,7 +125,7 @@ logged_in(Config, Db, IMAP, !IO) :-
                     !IO),
                 (
                     ResLookup = found(RemoteMailbox, LastModSeqValzer),
-                    update_db_remote_mailbox(Db, IMAP, RemoteMailbox,
+                    update_db_remote_mailbox(Config, Db, IMAP, RemoteMailbox,
                         LastModSeqValzer, HighestModSeqValue, !IO)
                 ;
                     ResLookup = error(Error),
@@ -154,10 +153,11 @@ logged_in(Config, Db, IMAP, !IO) :-
     % Update the database's knowledge of the remote mailbox state,
     % since the last known mod-sequence-value.
     %
-:- pred update_db_remote_mailbox(database::in, imap::in, remote_mailbox::in,
-    mod_seq_valzer::in, mod_seq_value::in, io::di, io::uo) is det.
+:- pred update_db_remote_mailbox(prog_config::in, database::in, imap::in,
+    remote_mailbox::in, mod_seq_valzer::in, mod_seq_value::in, io::di, io::uo)
+    is det.
 
-update_db_remote_mailbox(Db, IMAP, RemoteMailbox, LastModSeqValzer,
+update_db_remote_mailbox(_Config, Db, IMAP, RemoteMailbox, LastModSeqValzer,
         HighestModSeqValue, !IO) :-
     % Search for changes which came *after* LastModSeqValzer.
     LastModSeqValzer = mod_seq_valzer(N),
@@ -258,7 +258,6 @@ flag_except_recent(recent, _) :- fail.
 
 update_db_with_remote_message_infos(Db, RemoteMailbox, RemoteMessageInfos,
         ModSeqValue, Res, !IO) :-
-    % XXX probably want a transaction
     map.foldl2(update_db_with_remote_message_info(Db, RemoteMailbox),
         RemoteMessageInfos, ok, Res0, !IO),
     (
@@ -278,8 +277,28 @@ update_db_with_remote_message_info(Db, RemoteMailbox, UID, RemoteMessageInfo,
         MaybeError0, MaybeError, !IO) :-
     (
         MaybeError0 = ok,
-        RemoteMessageInfo = remote_message_info(MessageId, Flags),
-        upsert_remote_message_flags(Db, RemoteMailbox, UID, MessageId, Flags,
+        do_update_db_with_remote_message_info(Db, RemoteMailbox, UID,
+            RemoteMessageInfo, MaybeError, !IO)
+    ;
+        MaybeError0 = error(Error),
+        MaybeError = error(Error)
+    ).
+
+    % XXX probably want a transaction around this
+:- pred do_update_db_with_remote_message_info(database::in, remote_mailbox::in,
+    uid::in, remote_message_info::in, maybe_error::out, io::di, io::uo) is det.
+
+do_update_db_with_remote_message_info(Db, RemoteMailbox, UID, RemoteMessageInfo,
+        MaybeError, !IO) :-
+    RemoteMessageInfo = remote_message_info(MessageId, Flags),
+    search_remote_message(Db, RemoteMailbox, UID, MessageId, MaybeError0, !IO),
+    (
+        MaybeError0 = ok(found),
+        update_remote_message_flags(Db, RemoteMailbox, UID, Flags,
+            MaybeError, !IO)
+    ;
+        MaybeError0 = ok(not_found),
+        insert_new_remote_message(Db, RemoteMailbox, UID, MessageId, Flags,
             MaybeError, !IO)
     ;
         MaybeError0 = error(Error),

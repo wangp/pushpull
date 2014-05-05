@@ -42,8 +42,18 @@
 
 %-----------------------------------------------------------------------------%
 
-:- pred upsert_remote_message_flags(database::in, remote_mailbox::in, uid::in,
+:- type found
+    --->    found
+    ;       not_found.
+
+:- pred search_remote_message(database::in, remote_mailbox::in, uid::in,
+    message_id::in, maybe_error(found)::out, io::di, io::uo) is det.
+
+:- pred insert_new_remote_message(database::in, remote_mailbox::in, uid::in,
     message_id::in, list(flag)::in, maybe_error::out, io::di, io::uo) is det.
+
+:- pred update_remote_message_flags(database::in, remote_mailbox::in, uid::in,
+    list(flag)::in, maybe_error::out, io::di, io::uo) is det.
 
 :- pred update_remote_mailbox_modseqvalue(database::in, remote_mailbox::in,
     mod_seq_value::in, maybe_error::out, io::di, io::uo) is det.
@@ -285,55 +295,99 @@ insert_or_ignore_message_id_2(Db, Stmt, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-upsert_remote_message_flags(Db, RemoteMailbox, UID, MessageId, Flags, Res,
-        !IO) :-
+search_remote_message(Db, RemoteMailbox, UID, MessageId, Res, !IO) :-
+    RemoteMailbox = remote_mailbox(_, _, RemoteMailboxRowId),
+    Stmt = "SELECT id FROM remote_message"
+        ++ " WHERE mailbox_id = :mailbox_id"
+        ++ "   AND uid = :uid"
+        ++ "   AND message_id = (SELECT id FROM message_ids"
+        ++ "                     WHERE message_id_string = :message_id_string)",
+    with_stmt(search_remote_message_2, Db, Stmt, [
+        name(":mailbox_id") - bind_value(RemoteMailboxRowId),
+        name(":uid") - bind_value(UID),
+        name(":message_id_string") - bind_value(MessageId)
+    ], Res, !IO).
+
+:- pred search_remote_message_2(db(rw)::in, stmt::in, maybe_error(found)::out,
+    io::di, io::uo) is det.
+
+search_remote_message_2(Db, Stmt, Res, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
+    (
+        StepResult = done,
+        Res = ok(not_found)
+    ;
+        StepResult = row,
+        Res = ok(found)
+    ;
+        StepResult = error(Error),
+        Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
+insert_new_remote_message(Db, RemoteMailbox, UID, MessageId, Flags, Res, !IO)
+        :-
     insert_or_ignore_message_id(Db, MessageId, Res0, !IO),
     (
         Res0 = ok,
-        upsert_remote_message_flags_2(Db, RemoteMailbox, UID, MessageId,
+        insert_new_remote_message_2(Db, RemoteMailbox, UID, MessageId,
             Flags, Res, !IO)
     ;
         Res0 = error(Error),
         Res = error(Error)
     ).
 
-:- pred upsert_remote_message_flags_2(db(rw)::in, remote_mailbox::in, uid::in,
+:- pred insert_new_remote_message_2(db(rw)::in, remote_mailbox::in, uid::in,
     message_id::in, list(flag)::in, maybe_error::out, io::di, io::uo) is det.
 
-upsert_remote_message_flags_2(Db, RemoteMailbox, UID, MessageId, Flags, Res,
-        !IO) :-
+insert_new_remote_message_2(Db, RemoteMailbox, UID, MessageId, Flags, Res, !IO)
+        :-
     RemoteMailbox = remote_mailbox(_, _, RemoteMailboxRowId),
-    % INSERT OR REPLACE INTO is wrong because it will increment the id.
-    % So we INSERT OR IGNORE followed by UPDATE.  Sucks.
-    StmtA = "INSERT OR IGNORE INTO"
+    Stmt = "INSERT OR FAIL INTO"
         ++ " remote_message(mailbox_id, uid, flags, message_id)"
         ++ " VALUES(:mailbox_id, :uid, :flags,"
         ++ "    (SELECT id FROM message_ids"
         ++ "     WHERE message_id_string = :message_id_string ))",
-    with_stmt(upsert_remote_message_flags_3, Db, StmtA, [
+    with_stmt(insert_new_remote_message_3, Db, Stmt, [
         name(":mailbox_id") - bind_value(RemoteMailboxRowId),
         name(":uid") - bind_value(UID),
         name(":flags") - bind_value(flags_to_string(Flags)),
         name(":message_id_string") - bind_value(MessageId)
-    ], Res0, !IO),
+    ], Res, !IO).
+
+:- pred insert_new_remote_message_3(db(rw)::in, stmt::in,
+    maybe_error::out, io::di, io::uo) is det.
+
+insert_new_remote_message_3(Db, Stmt, Res, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
     (
-        Res0 = ok,
-        StmtB = "UPDATE remote_message SET flags = :flags"
-            ++ " WHERE mailbox_id = :mailbox_id AND uid = :uid",
-        with_stmt(upsert_remote_message_flags_3, Db, StmtB, [
-            name(":mailbox_id") - bind_value(RemoteMailboxRowId),
-            name(":uid") - bind_value(UID),
-            name(":flags") - bind_value(flags_to_string(Flags))
-        ], Res, !IO)
+        StepResult = done,
+        Res = ok
     ;
-        Res0 = error(Error),
+        StepResult = row,
+        Res = error("unexpected row")
+    ;
+        StepResult = error(Error),
         Res = error(Error)
     ).
 
-:- pred upsert_remote_message_flags_3(db(rw)::in, stmt::in,
-    maybe_error::out, io::di, io::uo) is det.
+%-----------------------------------------------------------------------------%
 
-upsert_remote_message_flags_3(Db, Stmt, Res, !IO) :-
+update_remote_message_flags(Db, RemoteMailbox, UID, Flags, Res, !IO) :-
+    RemoteMailbox = remote_mailbox(_, _, RemoteMailboxRowId),
+    StmtB = "UPDATE remote_message SET flags = :flags"
+        ++ " WHERE mailbox_id = :mailbox_id AND uid = :uid",
+    with_stmt(update_remote_message_flags_2, Db, StmtB, [
+        name(":mailbox_id") - bind_value(RemoteMailboxRowId),
+        name(":uid") - bind_value(UID),
+        name(":flags") - bind_value(flags_to_string(Flags))
+    ], Res, !IO).
+
+:- pred update_remote_message_flags_2(db(rw)::in, stmt::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+update_remote_message_flags_2(Db, Stmt, Res, !IO) :-
     step(Db, Stmt, StepResult, !IO),
     (
         StepResult = done,
