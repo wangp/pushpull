@@ -19,6 +19,7 @@
 :- import_module maybe.
 :- import_module pair.
 :- import_module pretty_printer.
+:- import_module require.
 :- import_module solutions.
 :- import_module string.
 
@@ -293,13 +294,32 @@ do_update_db_with_remote_message_info(Db, RemoteMailbox, UID, RemoteMessageInfo,
     RemoteMessageInfo = remote_message_info(MessageId, Flags),
     search_remote_message(Db, RemoteMailbox, UID, MessageId, MaybeError0, !IO),
     (
-        MaybeError0 = ok(found),
-        update_remote_message_flags(Db, RemoteMailbox, UID, Flags,
-            MaybeError, !IO)
+        MaybeError0 = ok(yes(RemoteMessageId)),
+        update_remote_message_flags(Db, RemoteMessageId, Flags, MaybeError,
+            !IO)
     ;
-        MaybeError0 = ok(not_found),
+        MaybeError0 = ok(no),
         insert_new_remote_message(Db, RemoteMailbox, UID, MessageId, Flags,
-            MaybeError, !IO)
+            MaybeError1, !IO),
+        (
+            MaybeError1 = ok,
+            search_remote_message(Db, RemoteMailbox, UID, MessageId,
+                MaybeError2, !IO),
+            (
+                MaybeError2 = ok(yes(RemoteMessageId)),
+                insert_new_remote_pairing(Db, RemoteMessageId, MaybeError, !IO)
+            ;
+                MaybeError2 = ok(no),
+                unexpected($module, $pred,
+                    "cannot find remote_message just inserted")
+            ;
+                MaybeError2 = error(Error),
+                MaybeError = error(Error)
+            )
+        ;
+            MaybeError1 = error(Error),
+            MaybeError = error(Error)
+        )
     ;
         MaybeError0 = error(Error),
         MaybeError = error(Error)
