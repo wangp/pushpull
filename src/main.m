@@ -158,12 +158,11 @@ report_alert(alert(Alert), !IO) :-
 write_uid(uid(N), !IO) :-
     io.write_string(to_string(N), !IO).
 
-:- pred write_fetch_result(pair(uid, msg_atts)::in, io::di, io::uo) is det.
+:- pred write_fetch_result(pair(message_seq_nr, msg_atts)::in, io::di, io::uo)
+    is det.
 
-write_fetch_result(UID - Atts, !IO) :-
-    io.write_string("Fetched UID ", !IO),
-    write_uid(UID, !IO),
-    io.write_string(":\n", !IO),
+write_fetch_result(_MsgSeqNr - Atts, !IO) :-
+    io.write_string("Fetched: ", !IO),
     list.foldl(write_msg_att, Atts, !IO),
     io.nl(!IO).
 

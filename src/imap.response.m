@@ -147,7 +147,7 @@
 
 :- type message_data
     --->    expunge(integer)
-    ;       fetch(integer, msg_atts). % non-empty
+    ;       fetch(message_seq_nr, msg_atts). % non-empty
 
 %-----------------------------------------------------------------------------%
 
@@ -734,7 +734,8 @@ message_data(Src, MessageData, !PS, !IO) :-
         ( Atom = atom("EXPUNGE") ->
             MessageData = expunge(Number)
         ; Atom = atom("FETCH") ->
-            message_data_fetch(Src, Number, MessageData, !PS, !IO)
+            message_data_fetch(Src, message_seq_nr(Number), MessageData,
+                !PS, !IO)
         ;
             throw(fail_exception)
         )
@@ -742,16 +743,16 @@ message_data(Src, MessageData, !PS, !IO) :-
         throw(fail_exception)
     ).
 
-:- pred message_data_fetch(src::in, integer::in, message_data::out,
+:- pred message_data_fetch(src::in, message_seq_nr::in, message_data::out,
     ps::in, ps::out, io::di, io::uo) is det.
 
-message_data_fetch(Src, Number, MessageData, !PS, !IO) :-
+message_data_fetch(Src, MsgSeqNr, MessageData, !PS, !IO) :-
     det_sp(Src, !PS),
     det_next_char(Src, '(', !PS),
     msg_att(Src, Att, !PS, !IO),
     sp_then_msg_atts(Src, Atts, !PS, !IO),
     det_next_char(Src, ')', !PS),
-    MessageData = fetch(Number, [Att | Atts]).
+    MessageData = fetch(MsgSeqNr, [Att | Atts]).
 
 :- pred sp_then_msg_atts(src::in, list(msg_att)::out,
     ps::in, ps::out, io::di, io::uo) is det.

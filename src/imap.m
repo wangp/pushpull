@@ -68,7 +68,8 @@
     is det.
 
 :- pred uid_fetch(imap::in, sequence_set(uid)::in, fetch_items::in,
-    imap_result(assoc_list(uid, msg_atts))::out, io::di, io::uo) is det.
+    imap_result(assoc_list(message_seq_nr, msg_atts))::out, io::di, io::uo)
+    is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -159,7 +160,8 @@
 :- typeclass handle_results(T) where [
     pred handle_search_results(list(integer)::in, maybe(mod_seq_value)::in,
         T::in, T::out) is det,
-    pred handle_fetch_results(integer::in, msg_atts::in, T::in, T::out) is det
+    pred handle_fetch_results(message_seq_nr::in, msg_atts::in, T::in, T::out)
+        is det
 ].
 
 %-----------------------------------------------------------------------------%
@@ -721,7 +723,8 @@ uid_fetch(IMAP, SequenceSet, Items, Res, !IO) :-
     ).
 
 :- pred do_uid_fetch(sequence_set(uid)::in, fetch_items::in, imap::in,
-    imap_result(assoc_list(uid, msg_atts))::out, io::di, io::uo) is det.
+    imap_result(assoc_list(message_seq_nr, msg_atts))::out, io::di, io::uo)
+    is det.
 
 do_uid_fetch(SequenceSet, Items, IMAP, Res, !IO) :-
     get_new_tag(IMAP, Pipe, Tag, !IO),
@@ -745,7 +748,7 @@ do_uid_fetch(SequenceSet, Items, IMAP, Res, !IO) :-
     ).
 
 :- pred apply_uid_fetch_response(complete_response::in,
-    imap_result(assoc_list(uid, msg_atts))::out,
+    imap_result(assoc_list(message_seq_nr, msg_atts))::out,
     imap_state::in, imap_state::out, unit::in, unit::out, io::di, io::uo)
     is det.
 
@@ -755,9 +758,8 @@ apply_uid_fetch_response(Response, Result, !State, unit, unit, !IO) :-
     Response = complete_response(_, FinalMaybeTag, FinalRespText),
     (
         FinalMaybeTag = tagged(_, ok),
-        assoc_list.map_keys_only(to_uid, RevFetchResults) = RevFetchResultsUID,
-        list.reverse(RevFetchResultsUID, FetchResultsUID),
-        Res = ok_with_data(FetchResultsUID)
+        list.reverse(RevFetchResults, FetchResults),
+        Res = ok_with_data(FetchResults)
     ;
         FinalMaybeTag = tagged(_, no),
         Res = no
@@ -1029,8 +1031,8 @@ apply_message_data(MessageData, !State, !R) :-
         MessageData = expunge(_),
         sorry($module, $pred, "expunge")
     ;
-        MessageData = fetch(Number, Atts),
-        handle_fetch_results(Number, Atts, !R)
+        MessageData = fetch(MsgSeqNr, Atts),
+        handle_fetch_results(MsgSeqNr, Atts, !R)
     ).
 
 %-----------------------------------------------------------------------------%
@@ -1047,14 +1049,14 @@ apply_message_data(MessageData, !State, !R) :-
 %-----------------------------------------------------------------------------%
 
 :- type accept_fetch_results
-    --->    accept_fetch_results(assoc_list(integer, msg_atts)).
+    --->    accept_fetch_results(assoc_list(message_seq_nr, msg_atts)).
 
 :- instance handle_results(accept_fetch_results) where [
     handle_search_results(_, _, !Results),
 
-    handle_fetch_results(Number, Atts,
+    handle_fetch_results(MsgSeqNr, Atts,
         accept_fetch_results(Results0), accept_fetch_results(Results)) :-
-        cons(Number - Atts, Results0, Results)
+        cons(MsgSeqNr - Atts, Results0, Results)
 ].
 
 %-----------------------------------------------------------------------------%
