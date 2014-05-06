@@ -12,7 +12,9 @@
 
 :- implementation.
 
+:- import_module assoc_list.
 :- import_module bool.
+:- import_module dir.
 :- import_module integer.
 :- import_module list.
 :- import_module map.
@@ -26,16 +28,21 @@
 :- import_module database.
 :- import_module imap.
 :- import_module imap.types.
+:- import_module maildir.
 :- import_module signal.
 
 :- type prog_config
     --->    prog_config(
                 db_filename :: string,
+                maildir     :: maildir,
                 hostport    :: string,
                 username    :: username,
                 password    :: password,
                 mailbox     :: mailbox
             ).
+
+:- type maildir
+    --->    maildir(string).
 
 :- type remote_message_info
     --->    remote_message_info(
@@ -48,9 +55,9 @@
 main(!IO) :-
     ignore_sigpipe(yes, !IO),
     io.command_line_arguments(Args, !IO),
-    ( Args = [DbFileName, HostPort, UserName, Password] ->
-        Config = prog_config(DbFileName, HostPort, username(UserName),
-            password(Password), mailbox("INBOX")),
+    ( Args = [DbFileName, Maildir, HostPort, UserName, Password] ->
+        Config = prog_config(DbFileName, maildir(Maildir), HostPort,
+            username(UserName), password(Password), mailbox("INBOX")),
         open_database(DbFileName, ResOpenDb, !IO),
         (
             ResOpenDb = ok(Db),
@@ -127,7 +134,21 @@ logged_in(Config, Db, IMAP, !IO) :-
                 (
                     ResLookup = found(RemoteMailbox, LastModSeqValzer),
                     update_db_remote_mailbox(Config, Db, IMAP, RemoteMailbox,
-                        LastModSeqValzer, HighestModSeqValue, !IO)
+                        LastModSeqValzer, HighestModSeqValue, ResUpdate, !IO),
+                    (
+                        ResUpdate = ok,
+                        download_unpaired_remote_messages(Config, Db, IMAP,
+                            RemoteMailbox, ResDownload, !IO),
+                        (
+                            ResDownload = ok
+                        ;
+                            ResDownload = error(Error),
+                            report_error(Error, !IO)
+                        )
+                    ;
+                        ResUpdate = error(Error),
+                        report_error(Error, !IO)
+                    )
                 ;
                     ResLookup = error(Error),
                     report_error(Error, !IO)
@@ -155,11 +176,11 @@ logged_in(Config, Db, IMAP, !IO) :-
     % since the last known mod-sequence-value.
     %
 :- pred update_db_remote_mailbox(prog_config::in, database::in, imap::in,
-    remote_mailbox::in, mod_seq_valzer::in, mod_seq_value::in, io::di, io::uo)
-    is det.
+    remote_mailbox::in, mod_seq_valzer::in, mod_seq_value::in,
+    maybe_error::out, io::di, io::uo) is det.
 
 update_db_remote_mailbox(_Config, Db, IMAP, RemoteMailbox, LastModSeqValzer,
-        HighestModSeqValue, !IO) :-
+        HighestModSeqValue, Res, !IO) :-
     % Search for changes which came *after* LastModSeqValzer.
     LastModSeqValzer = mod_seq_valzer(N),
     SearchKey = modseq(mod_seq_valzer(N + one)),
@@ -174,16 +195,10 @@ update_db_remote_mailbox(_Config, Db, IMAP, RemoteMailbox, LastModSeqValzer,
         (
             ResFetch = ok(RemoteMessageInfos),
             update_db_with_remote_message_infos(Db, RemoteMailbox,
-                RemoteMessageInfos, HighestModSeqValue, ResUpdate, !IO),
-            (
-                ResUpdate = ok
-            ;
-                ResUpdate = error(Error),
-                report_error(Error, !IO)
-            )
+                RemoteMessageInfos, HighestModSeqValue, Res, !IO)
         ;
             ResFetch = error(Error),
-            report_error(Error, !IO)
+            Res = error(Error)
         )
     ;
         ( ResSearch = no
@@ -192,7 +207,7 @@ update_db_remote_mailbox(_Config, Db, IMAP, RemoteMailbox, LastModSeqValzer,
         ; ResSearch = continue
         ; ResSearch = error
         ),
-        report_error(Text, !IO)
+        Res = error("unexpected response to UID SEARCH: " ++ Text)
     ).
 
 :- pred fetch_remote_message_infos(imap::in, list(uid)::in,
@@ -324,6 +339,151 @@ do_update_db_with_remote_message_info(Db, RemoteMailbox, UID, RemoteMessageInfo,
         MaybeError0 = error(Error),
         MaybeError = error(Error)
     ).
+
+%-----------------------------------------------------------------------------%
+
+:- pred download_unpaired_remote_messages(prog_config::in, database::in,
+    imap::in, remote_mailbox::in, maybe_error::out, io::di, io::uo) is det.
+
+download_unpaired_remote_messages(Config, Database, IMAP, RemoteMailbox,
+        Res, !IO) :-
+    search_messages_without_local_pairing(Database, RemoteMailbox, ResSearch,
+        !IO),
+    (
+        ResSearch = ok(UIDs),
+        download_messages(Config, Database, IMAP, RemoteMailbox, UIDs, Res,
+            !IO)
+    ;
+        ResSearch = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred download_messages(prog_config::in, database::in, imap::in,
+    remote_mailbox::in, list(uid)::in, maybe_error::out, io::di, io::uo)
+    is det.
+
+download_messages(Config, Database, IMAP, RemoteMailbox, UIDs, Res, !IO) :-
+    (
+        UIDs = [],
+        Res = ok
+    ;
+        UIDs = [UID | RestUIDs],
+        download_message(Config, Database, IMAP, RemoteMailbox, UID,
+            Res0, !IO),
+        (
+            Res0 = ok,
+            download_messages(Config, Database, IMAP, RemoteMailbox, RestUIDs,
+                Res, !IO)
+        ;
+            Res0 = error(Error),
+            Res = error(Error)
+        )
+    ).
+
+:- pred download_message(prog_config::in, database::in, imap::in,
+    remote_mailbox::in, uid::in, maybe_error::out, io::di, io::uo) is det.
+
+download_message(Config, _Database, IMAP, _RemoteMailbox, UID, Res, !IO) :-
+    % Need FLAGS for Maildir filename.
+    % MODSEQ could be used to update remote_message row.
+    Items = atts(rfc822, [flags, modseq]),
+    uid_fetch(IMAP, singleton_sequence_set(UID), Items, no,
+        result(ResFetch, Text, Alerts), !IO),
+    report_alerts(Alerts, !IO),
+    (
+        ResFetch = ok_with_data(FetchResults),
+        ( find_uid_fetch_result(FetchResults, UID, Atts) ->
+            ( get_rfc822_att(Atts, RawMessage) ->
+                save_raw_message(Config, UID, RawMessage, ResSave, !IO),
+                (
+                    ResSave = ok,
+                    % XXX add local message to database and update pairing
+                    Res = ok
+                ;
+                    ResSave = error(Error),
+                    Res = error(Error)
+                )
+            ;
+                Res = error("missing RFC822 response")
+            )
+        ;
+            % Message no longer exists on server?
+            Res = ok
+        )
+    ;
+        ( ResFetch = no
+        ; ResFetch = bad
+        ; ResFetch = bye
+        ; ResFetch = continue
+        ; ResFetch = error
+        ),
+        Res = error("unexpected response to UID FETCH: " ++ Text)
+    ).
+
+:- pred find_uid_fetch_result(assoc_list(message_seq_nr, msg_atts)::in,
+    uid::in, msg_atts::out) is semidet.
+
+find_uid_fetch_result(FetchResults, UID, MsgAtts) :-
+    list.find_first_match(
+        (pred(_ - Atts::in) is semidet :- list.member(uid(UID), Atts)),
+        FetchResults, _MsgSeqNr - MsgAtts).
+
+:- pred get_rfc822_att(msg_atts::in, imap_string::out) is semidet.
+
+get_rfc822_att(Atts, String) :-
+    solutions(pred(X::out) is nondet :- member(rfc822(X), Atts), [NString]),
+    NString = yes(String).
+
+:- pred save_raw_message(prog_config::in, uid::in, imap_string::in,
+    maybe_error::out, io::di, io::uo) is det.
+
+save_raw_message(Config, uid(UID), RawMessage, Res, !IO) :-
+    Config ^ maildir = maildir(Maildir),
+    TmpDirName = Maildir / "tmp",
+    NewDirName = Maildir / "new",
+    generate_unique_name(TmpDirName, ResUnique, !IO),
+    (
+        ResUnique = ok(Unique),
+        TmpPath = TmpDirName / Unique,
+        NewPath = NewDirName / Unique,
+        io.format("Saving message UID %s to %s\n",
+            [s(to_string(UID)), s(TmpPath)], !IO),
+        io.open_output(TmpPath, ResOpen, !IO),
+        (
+            ResOpen = ok(Stream),
+            % XXX catch exceptions during write and fsync
+            write_imap_string(Stream, RawMessage, !IO),
+            io.close_output(Stream, !IO),
+            % XXX Add flags to filename. Move to cur depending on flags.
+            io.rename_file(TmpPath, NewPath, ResRename, !IO),
+            (
+                ResRename = ok,
+                Res = ok
+            ;
+                ResRename = error(Error),
+                io.remove_file(TmpPath, _, !IO),
+                Res = error(io.error_message(Error))
+            )
+        ;
+            ResOpen = error(Error),
+            io.remove_file(TmpPath, _, !IO),
+            Res = error(io.error_message(Error))
+        )
+    ;
+        ResUnique = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred write_imap_string(io.output_stream::in, imap_string::in,
+    io::di, io::uo) is det.
+
+write_imap_string(Stream, IString, !IO) :-
+    (
+        IString = quoted(String)
+    ;
+        IString = literal(String)
+    ),
+    io.write_string(Stream, String, !IO).
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%

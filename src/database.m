@@ -64,6 +64,9 @@
 :- pred insert_new_remote_pairing(database::in, remote_message_id::in,
     maybe_error::out, io::di, io::uo) is det.
 
+:- pred search_messages_without_local_pairing(database::in, remote_mailbox::in,
+    maybe_error(list(uid))::out, io::di, io::uo) is det.
+
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
@@ -483,6 +486,54 @@ insert_new_remote_pairing_2(Db, Stmt, Res, !IO) :-
     ;
         StepResult = row,
         Res = error("unexpected row")
+    ;
+        StepResult = error(Error),
+        Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
+search_messages_without_local_pairing(Db, RemoteMailbox, Res, !IO) :-
+    RemoteMailbox = remote_mailbox(_, _, RemoteMailboxId),
+    Stmt = "SELECT remote_message.uid FROM remote_message INNER JOIN pairing"
+        ++ " WHERE remote_message.mailbox_id = :mailbox_id"
+        ++ "   AND remote_message.id = pairing.remote_message_id"
+        ++ "   AND pairing.local_message_id IS NULL",
+    with_stmt(search_messages_without_local_pairing_2, Db, Stmt, [
+        name(":mailbox_id") - bind_value(RemoteMailboxId)
+    ], Res, !IO).
+
+:- pred search_messages_without_local_pairing_2(db(rw)::in, stmt::in,
+    maybe_error(list(uid))::out, io::di, io::uo) is det.
+
+search_messages_without_local_pairing_2(Db, Stmt, Res, !IO) :-
+    search_messages_without_local_pairing_3(Db, Stmt, Res0, [], UIDs, !IO),
+    (
+        Res0 = ok,
+        Res = ok(UIDs)
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred search_messages_without_local_pairing_3(db(rw)::in, stmt::in,
+    maybe_error::out, list(uid)::in, list(uid)::out, io::di, io::uo) is det.
+
+search_messages_without_local_pairing_3(Db, Stmt, Res, !UIDs, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
+    (
+        StepResult = done,
+        Res = ok
+    ;
+        StepResult = row,
+        column_text(Stmt, column(0), UIDText, !IO),
+        ( integer.from_string(UIDText) = Integer ->
+            UID = uid(Integer),
+            cons(UID, !UIDs),
+            search_messages_without_local_pairing_3(Db, Stmt, Res, !UIDs, !IO)
+        ;
+            Res = error("bad UID")
+        )
     ;
         StepResult = error(Error),
         Res = error(Error)
