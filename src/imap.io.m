@@ -90,8 +90,9 @@ read_bytes(closed, _NumOctets, Res, !IO) :-
 write_command_stream(open(Pipe), Xs, Res, !IO) :-
     trace [runtime(env("DEBUG_IMAP")), io(!IO2)] (
         Stream = io.stderr_stream,
-        io.write(Stream, Xs, !IO2),
-        io.nl(Stream, !IO2)
+        io.write_string(Stream, "\x1B\[32;01m", !IO2),
+        list.foldl(io.write_string(Stream), Xs, !IO2),
+        io.write_string(Stream, "\x1B\[0m\n", !IO2)
     ),
     write_command_stream_2(Pipe, Xs, Res, !IO),
     flush_output(Pipe, !IO).
