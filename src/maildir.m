@@ -4,10 +4,23 @@
 :- interface.
 
 :- import_module io.
+:- import_module list.
 :- import_module maybe.
 
-:- pred generate_unique_name(string::in, maybe_error(string)::out,
+:- import_module imap.
+:- import_module imap.types.
+
+%-----------------------------------------------------------------------------%
+
+:- type uniquename
+    --->    uniquename(string).
+
+:- pred generate_unique_name(string::in, maybe_error(uniquename)::out,
     io::di, io::uo) is det.
+
+:- func info_suffix(list(flag)) = string.
+
+:- func empty_info_suffix = string.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -15,13 +28,16 @@
 :- implementation.
 
 :- import_module bool.
+:- import_module char.
 :- import_module dir.
 :- import_module int.
-:- import_module list.
 :- import_module string.
 
 :- import_module gettimeofday.
 :- import_module sys_util.
+
+:- inst standard_maildir_flag
+    --->    'R' ; 'F' ; 'T' ; 'S' ; 'D'.
 
 %-----------------------------------------------------------------------------%
 
@@ -33,7 +49,7 @@ generate_unique_name(DirName, Res, !IO) :-
     generate_unique_name_2(DirName, Pid, HostName, Res, !IO).
 
 :- pred generate_unique_name_2(string::in, int::in, string::in,
-    maybe_error(string)::out, io::di, io::uo) is det.
+    maybe_error(uniquename)::out, io::di, io::uo) is det.
 
 generate_unique_name_2(DirName, Pid, HostName, Res, !IO) :-
     gettimeofday(Sec, Usec, !IO),
@@ -43,7 +59,7 @@ generate_unique_name_2(DirName, Pid, HostName, Res, !IO) :-
     open_excl(Path, Fd, AlreadyExists, !IO),
     ( Fd >= 0 ->
         close(Fd, !IO),
-        Res = ok(UniqueName)
+        Res = ok(uniquename(UniqueName))
     ; AlreadyExists = yes ->
         generate_unique_name_2(DirName, Pid, HostName, Res, !IO)
     ;
@@ -80,6 +96,40 @@ safe_gethostname(HostName, !IO) :-
 "
     close(Fd);
 ").
+
+%-----------------------------------------------------------------------------%
+
+empty_info_suffix = ":2,".
+
+info_suffix(Flags) = Suffix :-
+    list.filter_map(flag_char, Flags, Chars0),
+    % Chars must be in ASCII order.
+    list.sort(Chars0, Chars),
+    Suffix = empty_info_suffix ++ string.from_char_list(Chars).
+
+:- pred flag_char(flag::in, char::out) is semidet.
+
+flag_char(system(Flag), Char) :-
+    require_complete_switch [Flag]
+    (
+        Flag = answered,
+        Char = 'R'
+    ;
+        Flag = flagged,
+        Char = 'F'
+    ;
+        Flag = deleted,
+        Char = 'T'
+    ;
+        Flag = seen,
+        Char = 'S'
+    ;
+        Flag = draft,
+        Char = 'D'
+    ;
+        Flag = extension(_),
+        fail
+    ).
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

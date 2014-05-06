@@ -393,10 +393,13 @@ download_message(Config, _Database, IMAP, _RemoteMailbox, UID, Res, !IO) :-
     (
         ResFetch = ok_with_data(FetchResults),
         ( find_uid_fetch_result(FetchResults, UID, Atts) ->
-            ( get_rfc822_att(Atts, RawMessage) ->
-                save_raw_message(Config, UID, RawMessage, ResSave, !IO),
+            (
+                get_rfc822_att(Atts, RawMessage),
+                get_flags(Atts, Flags)
+            ->
+                save_raw_message(Config, UID, RawMessage, Flags, ResSave, !IO),
                 (
-                    ResSave = ok,
+                    ResSave = ok(_Unique),
                     % XXX add local message to database and update pairing
                     Res = ok
                 ;
@@ -434,31 +437,41 @@ get_rfc822_att(Atts, String) :-
     solutions(pred(X::out) is nondet :- member(rfc822(X), Atts), [NString]),
     NString = yes(String).
 
-:- pred save_raw_message(prog_config::in, uid::in, imap_string::in,
-    maybe_error::out, io::di, io::uo) is det.
+:- pred get_flags(msg_atts::in, list(flag)::out) is semidet.
 
-save_raw_message(Config, uid(UID), RawMessage, Res, !IO) :-
+get_flags(Atts, Flags) :-
+    solutions(pred(X::out) is nondet :- member(flags(X), Atts), [Flags0]),
+    list.filter_map(flag_except_recent, Flags0, Flags).
+
+:- pred save_raw_message(prog_config::in, uid::in, imap_string::in,
+    list(flag)::in, maybe_error(uniquename)::out, io::di, io::uo) is det.
+
+save_raw_message(Config, uid(UID), RawMessage, Flags, Res, !IO) :-
     Config ^ maildir = maildir(Maildir),
     TmpDirName = Maildir / "tmp",
-    NewDirName = Maildir / "new",
     generate_unique_name(TmpDirName, ResUnique, !IO),
     (
         ResUnique = ok(Unique),
-        TmpPath = TmpDirName / Unique,
-        NewPath = NewDirName / Unique,
+        Unique = uniquename(UniqueString),
+        TmpPath = TmpDirName / UniqueString,
+        InfoSuffix = info_suffix(Flags),
+        ( InfoSuffix = empty_info_suffix ->
+            DestPath = Maildir / "new" / UniqueString
+        ;
+            DestPath = Maildir / "cur" / UniqueString ++ InfoSuffix
+        ),
         io.format("Saving message UID %s to %s\n",
-            [s(to_string(UID)), s(TmpPath)], !IO),
+            [s(to_string(UID)), s(DestPath)], !IO),
         io.open_output(TmpPath, ResOpen, !IO),
         (
             ResOpen = ok(Stream),
             % XXX catch exceptions during write and fsync
             write_imap_string(Stream, RawMessage, !IO),
             io.close_output(Stream, !IO),
-            % XXX Add flags to filename. Move to cur depending on flags.
-            io.rename_file(TmpPath, NewPath, ResRename, !IO),
+            io.rename_file(TmpPath, DestPath, ResRename, !IO),
             (
                 ResRename = ok,
-                Res = ok
+                Res = ok(Unique)
             ;
                 ResRename = error(Error),
                 io.remove_file(TmpPath, _, !IO),
