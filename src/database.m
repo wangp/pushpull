@@ -8,6 +8,7 @@
 :- import_module list.
 :- import_module maybe.
 
+:- import_module flag_delta.
 :- import_module imap.
 :- import_module imap.types.
 :- import_module maildir.
@@ -65,7 +66,7 @@
 :- type pairing_id.
 
 :- pred search_pairing_by_remote_message(database::in, remote_mailbox::in,
-    uid::in, message_id::in, maybe_error(maybe(pairing_id))::out,
+    uid::in, message_id::in, maybe_error(maybe({pairing_id, flag_deltas}))::out,
     io::di, io::uo) is det.
 
 :- pred insert_new_pairing_only_remote_message(database::in, message_id::in,
@@ -76,7 +77,7 @@
     uniquename::in, list(flag)::in, maybe_error::out, io::di, io::uo) is det.
 
 :- pred update_remote_message_flags(database::in, pairing_id::in,
-    list(flag)::in, maybe_error::out, io::di, io::uo) is det.
+    flag_deltas::in, maybe_error::out, io::di, io::uo) is det.
 
 :- pred search_pairings_without_local_message(database::in,
     remote_mailbox::in, maybe_error(assoc_list(pairing_id, uid))::out,
@@ -93,6 +94,8 @@
 :- import_module string.
 
 :- import_module sqlite3.
+
+%-----------------------------------------------------------------------------%
 
 :- type database == sqlite3.db(rw).
 
@@ -177,6 +180,10 @@
 
 :- instance bind_value(uniquename) where [
     bind_value(uniquename(S)) = bind_value(S)
+].
+
+:- instance bind_value(flag_deltas) where [
+    bind_value(FlagDeltas) = bind_value(to_string(FlagDeltas))
 ].
 
 %-----------------------------------------------------------------------------%
@@ -398,7 +405,7 @@ update_remote_mailbox_modseqvalue_2(Db, Stmt, Res, !IO) :-
 search_pairing_by_remote_message(Db, RemoteMailbox, UID, MessageId, Res, !IO)
         :-
     RemoteMailbox = remote_mailbox(_, _, RemoteMailboxRowId),
-    Stmt = "SELECT pairing_id FROM pairing"
+    Stmt = "SELECT pairing_id, remote_flags FROM pairing"
         ++ " WHERE remote_mailbox_id = :remote_mailbox_id"
         ++ "   AND remote_uid = :remote_uid"
         ++ "   AND message_id = :message_id",
@@ -409,7 +416,7 @@ search_pairing_by_remote_message(Db, RemoteMailbox, UID, MessageId, Res, !IO)
     ], Res, !IO).
 
 :- pred search_pairing_by_remote_message_2(db(rw)::in, stmt::in,
-    maybe_error(maybe(pairing_id))::out, io::di, io::uo) is det.
+    maybe_error(maybe({pairing_id, flag_deltas}))::out, io::di, io::uo) is det.
 
 search_pairing_by_remote_message_2(Db, Stmt, Res, !IO) :-
     step(Db, Stmt, StepResult, !IO),
@@ -419,7 +426,14 @@ search_pairing_by_remote_message_2(Db, Stmt, Res, !IO) :-
     ;
         StepResult = row,
         column_int(Stmt, column(0), Id, !IO),
-        Res = ok(yes(pairing_id(Id)))
+        PairingId = pairing_id(Id),
+
+        column_text(Stmt, column(1), FlagsText, !IO),
+        ( from_string(FlagsText, FlagsSet) ->
+            Res = ok(yes({PairingId, FlagsSet}))
+        ;
+            Res = error("remote_flags bad syntax")
+        )
     ;
         StepResult = error(Error),
         Res = error(Error)
@@ -442,7 +456,7 @@ insert_new_pairing_only_remote_message(Db, MessageId, LocalMailbox,
         name(":local_mailbox_id") - bind_value(LocalMailboxId),
         name(":remote_mailbox_id") - bind_value(RemoteMailboxId),
         name(":remote_uid") - bind_value(UID),
-        name(":remote_flags") - bind_value(flags_to_string(Flags))
+        name(":remote_flags") - bind_value(init_flag_deltas(Flags))
     ], Res, !IO).
 
 :- pred insert_new_remote_message_2(db(rw)::in, stmt::in,
@@ -470,7 +484,7 @@ set_pairing_local_message(Db, PairingId, UniqueName, Flags, Res, !IO) :-
         ++ " WHERE pairing_id = :pairing_id",
     with_stmt(set_pairing_local_message_2, Db, Stmt, [
         name(":local_uniquename") - bind_value(UniqueName),
-        name(":local_flags") - bind_value(flags_to_string(Flags)),
+        name(":local_flags") - bind_value(init_flag_deltas(Flags)),
         name(":pairing_id") - bind_value(PairingId)
     ], Res, !IO).
 
@@ -498,7 +512,7 @@ update_remote_message_flags(Db, PairingId, Flags, Res, !IO) :-
         ++ " WHERE pairing_id = :pairing_id",
     with_stmt(update_remote_message_flags_2, Db, Stmt, [
         name(":pairing_id") - bind_value(PairingId),
-        name(":remote_flags") - bind_value(flags_to_string(Flags))
+        name(":remote_flags") - bind_value(Flags)
     ], Res, !IO).
 
 :- pred update_remote_message_flags_2(db(rw)::in, stmt::in, maybe_error::out,
@@ -516,29 +530,6 @@ update_remote_message_flags_2(Db, Stmt, Res, !IO) :-
         StepResult = error(Error),
         Res = error(Error)
     ).
-
-:- func flags_to_string(list(flag)) = string.
-
-flags_to_string(Flags) =
-    string.join_list(" ", list.map(flag_to_string, Flags)).
-
-:- func flag_to_string(flag) = string.
-
-flag_to_string(system(Flag)) = system_flag_to_string(Flag).
-flag_to_string(keyword(Atom)) = atom_to_string(Atom).
-
-:- func system_flag_to_string(system_flag) = string.
-
-system_flag_to_string(answered) = "\\Answered".
-system_flag_to_string(flagged) = "\\Flagged".
-system_flag_to_string(deleted) = "\\Deleted".
-system_flag_to_string(seen) = "\\Seen".
-system_flag_to_string(draft) = "\\Draft".
-system_flag_to_string(extension(Atom)) = "\\" ++ atom_to_string(Atom).
-
-:- func atom_to_string(atom) = string.
-
-atom_to_string(atom(S)) = S. % will be uppercase
 
 %-----------------------------------------------------------------------------%
 

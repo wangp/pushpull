@@ -25,6 +25,7 @@
 :- import_module string.
 
 :- import_module database.
+:- import_module flag_delta.
 :- import_module imap.
 :- import_module imap.types.
 :- import_module maildir.
@@ -335,8 +336,9 @@ do_update_db_with_remote_message_info(Db, LocalMailbox, RemoteMailbox, UID,
     search_pairing_by_remote_message(Db, RemoteMailbox, UID, MessageId,
         MaybeError0, !IO),
     (
-        MaybeError0 = ok(yes(PairingId)),
-        update_remote_message_flags(Db, PairingId, Flags, MaybeError, !IO)
+        MaybeError0 = ok(yes({PairingId, FlagDeltas0})),
+        FlagDeltas = update_flag_deltas(FlagDeltas0, Flags),
+        update_remote_message_flags(Db, PairingId, FlagDeltas, MaybeError, !IO)
     ;
         MaybeError0 = ok(no),
         insert_new_pairing_only_remote_message(Db, MessageId, LocalMailbox,
