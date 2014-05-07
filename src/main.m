@@ -21,7 +21,6 @@
 :- import_module maybe.
 :- import_module pair.
 :- import_module pretty_printer.
-:- import_module require.
 :- import_module solutions.
 :- import_module string.
 
@@ -61,7 +60,7 @@ main(!IO) :-
         open_database(DbFileName, ResOpenDb, !IO),
         (
             ResOpenDb = ok(Db),
-            main_2(Config, Db, !IO),
+            main_1(Config, Db, !IO),
             close_database(Db, !IO)
         ;
             ResOpenDb = error(Error),
@@ -71,9 +70,31 @@ main(!IO) :-
         report_error("unexpected arguments", !IO)
     ).
 
-:- pred main_2(prog_config::in, database::in, io::di, io::uo) is det.
+:- pred main_1(prog_config::in, database::in, io::di, io::uo) is det.
 
-main_2(Config, Db, !IO) :-
+main_1(Config, Db, !IO) :-
+    Config ^ maildir = maildir(MaildirRoot),
+    LocalMailboxPath = local_mailbox_path(MaildirRoot),
+    insert_or_ignore_local_mailbox(Db, LocalMailboxPath, ResInsert, !IO),
+    (
+        ResInsert = ok,
+        lookup_local_mailbox(Db, LocalMailboxPath, ResLookup, !IO),
+        (
+            ResLookup = ok(LocalMailbox),
+            main_2(Config, Db, LocalMailbox, !IO)
+        ;
+            ResLookup = error(Error),
+            report_error(Error, !IO)
+        )
+    ;
+        ResInsert = error(Error),
+        report_error(Error, !IO)
+    ).
+
+:- pred main_2(prog_config::in, database::in, local_mailbox::in,
+    io::di, io::uo) is det.
+
+main_2(Config, Db, LocalMailbox, !IO) :-
     HostPort = Config ^ hostport,
     UserName = Config ^ username,
     Password = Config ^ password,
@@ -88,7 +109,7 @@ main_2(Config, Db, !IO) :-
             ResLogin = ok,
             io.write_string(LoginMessage, !IO),
             io.nl(!IO),
-            logged_in(Config, Db, IMAP, !IO)
+            logged_in(Config, Db, IMAP, LocalMailbox, !IO)
         ;
             ( ResLogin = no
             ; ResLogin = bad
@@ -106,10 +127,10 @@ main_2(Config, Db, !IO) :-
         report_error(Error, !IO)
     ).
 
-:- pred logged_in(prog_config::in, database::in, imap::in, io::di, io::uo)
-    is det.
+:- pred logged_in(prog_config::in, database::in, imap::in, local_mailbox::in,
+    io::di, io::uo) is det.
 
-logged_in(Config, Db, IMAP, !IO) :-
+logged_in(Config, Db, IMAP, LocalMailbox, !IO) :-
     MailboxName = Config ^ mailbox,
     examine(IMAP, MailboxName, result(ResExamine, Text, Alerts), !IO),
     report_alerts(Alerts, !IO),
@@ -133,8 +154,9 @@ logged_in(Config, Db, IMAP, !IO) :-
                     !IO),
                 (
                     ResLookup = found(RemoteMailbox, LastModSeqValzer),
-                    update_db_remote_mailbox(Config, Db, IMAP, RemoteMailbox,
-                        LastModSeqValzer, HighestModSeqValue, ResUpdate, !IO),
+                    update_db_remote_mailbox(Config, Db, IMAP, LocalMailbox,
+                        RemoteMailbox, LastModSeqValzer, HighestModSeqValue,
+                        ResUpdate, !IO),
                     (
                         ResUpdate = ok,
                         download_unpaired_remote_messages(Config, Db, IMAP,
@@ -176,11 +198,11 @@ logged_in(Config, Db, IMAP, !IO) :-
     % since the last known mod-sequence-value.
     %
 :- pred update_db_remote_mailbox(prog_config::in, database::in, imap::in,
-    remote_mailbox::in, mod_seq_valzer::in, mod_seq_value::in,
-    maybe_error::out, io::di, io::uo) is det.
+    local_mailbox::in, remote_mailbox::in, mod_seq_valzer::in,
+    mod_seq_value::in, maybe_error::out, io::di, io::uo) is det.
 
-update_db_remote_mailbox(_Config, Db, IMAP, RemoteMailbox, LastModSeqValzer,
-        HighestModSeqValue, Res, !IO) :-
+update_db_remote_mailbox(_Config, Db, IMAP, LocalMailbox, RemoteMailbox,
+        LastModSeqValzer, HighestModSeqValue, Res, !IO) :-
     % Search for changes which came *after* LastModSeqValzer.
     LastModSeqValzer = mod_seq_valzer(N),
     SearchKey = modseq(mod_seq_valzer(N + one)),
@@ -194,8 +216,9 @@ update_db_remote_mailbox(_Config, Db, IMAP, RemoteMailbox, LastModSeqValzer,
         fetch_remote_message_infos(IMAP, UIDs, ResFetch, !IO),
         (
             ResFetch = ok(RemoteMessageInfos),
-            update_db_with_remote_message_infos(Db, RemoteMailbox,
-                RemoteMessageInfos, HighestModSeqValue, Res, !IO)
+            update_db_with_remote_message_infos(Db, LocalMailbox,
+                RemoteMailbox, RemoteMessageInfos, HighestModSeqValue, Res,
+                !IO)
         ;
             ResFetch = error(Error),
             Res = error(Error)
@@ -268,13 +291,14 @@ make_remote_message_info(_MsgSeqNr - Atts, !Map) :-
 flag_except_recent(flag(Flag), Flag).
 flag_except_recent(recent, _) :- fail.
 
-:- pred update_db_with_remote_message_infos(database::in, remote_mailbox::in,
-    map(uid, remote_message_info)::in, mod_seq_value::in, maybe_error::out,
-    io::di, io::uo) is det.
+:- pred update_db_with_remote_message_infos(database::in, local_mailbox::in,
+    remote_mailbox::in, map(uid, remote_message_info)::in, mod_seq_value::in,
+    maybe_error::out, io::di, io::uo) is det.
 
-update_db_with_remote_message_infos(Db, RemoteMailbox, RemoteMessageInfos,
-        ModSeqValue, Res, !IO) :-
-    map.foldl2(update_db_with_remote_message_info(Db, RemoteMailbox),
+update_db_with_remote_message_infos(Db, LocalMailbox, RemoteMailbox,
+        RemoteMessageInfos, ModSeqValue, Res, !IO) :-
+    map.foldl2(
+        update_db_with_remote_message_info(Db, LocalMailbox, RemoteMailbox),
         RemoteMessageInfos, ok, Res0, !IO),
     (
         Res0 = ok,
@@ -285,52 +309,41 @@ update_db_with_remote_message_infos(Db, RemoteMailbox, RemoteMessageInfos,
         Res = error(Error)
     ).
 
-:- pred update_db_with_remote_message_info(database::in, remote_mailbox::in,
-    uid::in, remote_message_info::in, maybe_error::in, maybe_error::out,
-    io::di, io::uo) is det.
+:- pred update_db_with_remote_message_info(database::in, local_mailbox::in,
+    remote_mailbox::in, uid::in, remote_message_info::in,
+    maybe_error::in, maybe_error::out, io::di, io::uo) is det.
 
-update_db_with_remote_message_info(Db, RemoteMailbox, UID, RemoteMessageInfo,
-        MaybeError0, MaybeError, !IO) :-
+update_db_with_remote_message_info(Db, LocalMailbox, RemoteMailbox, UID,
+        RemoteMessageInfo, MaybeError0, MaybeError, !IO) :-
     (
         MaybeError0 = ok,
-        do_update_db_with_remote_message_info(Db, RemoteMailbox, UID,
-            RemoteMessageInfo, MaybeError, !IO)
+        do_update_db_with_remote_message_info(Db, LocalMailbox, RemoteMailbox,
+            UID, RemoteMessageInfo, MaybeError, !IO)
     ;
         MaybeError0 = error(Error),
         MaybeError = error(Error)
     ).
 
     % XXX probably want a transaction around this
-:- pred do_update_db_with_remote_message_info(database::in, remote_mailbox::in,
-    uid::in, remote_message_info::in, maybe_error::out, io::di, io::uo) is det.
+:- pred do_update_db_with_remote_message_info(database::in, local_mailbox::in,
+    remote_mailbox::in, uid::in, remote_message_info::in, maybe_error::out,
+    io::di, io::uo) is det.
 
-do_update_db_with_remote_message_info(Db, RemoteMailbox, UID, RemoteMessageInfo,
-        MaybeError, !IO) :-
+do_update_db_with_remote_message_info(Db, LocalMailbox, RemoteMailbox, UID,
+        RemoteMessageInfo, MaybeError, !IO) :-
     RemoteMessageInfo = remote_message_info(MessageId, Flags),
-    search_remote_message(Db, RemoteMailbox, UID, MessageId, MaybeError0, !IO),
+    search_pairing_by_remote_message(Db, RemoteMailbox, UID, MessageId,
+        MaybeError0, !IO),
     (
-        MaybeError0 = ok(yes(RemoteMessageId)),
-        update_remote_message_flags(Db, RemoteMessageId, Flags, MaybeError,
-            !IO)
+        MaybeError0 = ok(yes(PairingId)),
+        update_remote_message_flags(Db, PairingId, Flags, MaybeError, !IO)
     ;
         MaybeError0 = ok(no),
-        insert_new_remote_message(Db, RemoteMailbox, UID, MessageId, Flags,
-            MaybeError1, !IO),
+        insert_new_pairing_only_remote_message(Db, MessageId, LocalMailbox,
+            RemoteMailbox, UID, Flags, MaybeError1, !IO),
         (
             MaybeError1 = ok,
-            search_remote_message(Db, RemoteMailbox, UID, MessageId,
-                MaybeError2, !IO),
-            (
-                MaybeError2 = ok(yes(RemoteMessageId)),
-                insert_new_remote_pairing(Db, RemoteMessageId, MaybeError, !IO)
-            ;
-                MaybeError2 = ok(no),
-                unexpected($module, $pred,
-                    "cannot find remote_message just inserted")
-            ;
-                MaybeError2 = error(Error),
-                MaybeError = error(Error)
-            )
+            MaybeError = ok
         ;
             MaybeError1 = error(Error),
             MaybeError = error(Error)
@@ -347,33 +360,34 @@ do_update_db_with_remote_message_info(Db, RemoteMailbox, UID, RemoteMessageInfo,
 
 download_unpaired_remote_messages(Config, Database, IMAP, RemoteMailbox,
         Res, !IO) :-
-    search_messages_without_local_pairing(Database, RemoteMailbox, ResSearch,
-        !IO),
+    search_pairings_without_local_message(Database, RemoteMailbox,
+        ResSearch, !IO),
     (
-        ResSearch = ok(UIDs),
-        download_messages(Config, Database, IMAP, RemoteMailbox, UIDs, Res,
-            !IO)
+        ResSearch = ok(UnpairedUIDs),
+        download_messages(Config, Database, IMAP, RemoteMailbox, UnpairedUIDs,
+            Res, !IO)
     ;
         ResSearch = error(Error),
         Res = error(Error)
     ).
 
 :- pred download_messages(prog_config::in, database::in, imap::in,
-    remote_mailbox::in, list(uid)::in, maybe_error::out, io::di, io::uo)
-    is det.
+    remote_mailbox::in, assoc_list(pairing_id, uid)::in, maybe_error::out,
+    io::di, io::uo) is det.
 
-download_messages(Config, Database, IMAP, RemoteMailbox, UIDs, Res, !IO) :-
+download_messages(Config, Database, IMAP, RemoteMailbox, UnpairedUIDs, Res,
+        !IO) :-
     (
-        UIDs = [],
+        UnpairedUIDs = [],
         Res = ok
     ;
-        UIDs = [UID | RestUIDs],
-        download_message(Config, Database, IMAP, RemoteMailbox, UID,
+        UnpairedUIDs = [PairingId - UID | Rest],
+        download_message(Config, Database, IMAP, RemoteMailbox, PairingId, UID,
             Res0, !IO),
         (
             Res0 = ok,
-            download_messages(Config, Database, IMAP, RemoteMailbox, RestUIDs,
-                Res, !IO)
+            download_messages(Config, Database, IMAP, RemoteMailbox, Rest, Res,
+                !IO)
         ;
             Res0 = error(Error),
             Res = error(Error)
@@ -381,9 +395,11 @@ download_messages(Config, Database, IMAP, RemoteMailbox, UIDs, Res, !IO) :-
     ).
 
 :- pred download_message(prog_config::in, database::in, imap::in,
-    remote_mailbox::in, uid::in, maybe_error::out, io::di, io::uo) is det.
+    remote_mailbox::in, pairing_id::in, uid::in, maybe_error::out,
+    io::di, io::uo) is det.
 
-download_message(Config, _Database, IMAP, _RemoteMailbox, UID, Res, !IO) :-
+download_message(Config, _Database, IMAP, _RemoteMailbox, _PairingId, UID, Res,
+        !IO) :-
     % Need FLAGS for Maildir filename.
     % MODSEQ could be used to update remote_message row.
     Items = atts(rfc822, [flags, modseq]),
