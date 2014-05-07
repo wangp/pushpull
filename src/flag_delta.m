@@ -3,6 +3,7 @@
 :- module flag_delta.
 :- interface.
 
+:- import_module bool.
 :- import_module list.
 :- import_module set.
 
@@ -29,6 +30,8 @@
 
 :- func update_flag_deltas(flag_deltas, list(flag)) = flag_deltas.
 
+:- func require_attn(flag_deltas) = bool.
+
 :- func to_string(flag_deltas) = string.
 
 :- pred from_string(string::in, flag_deltas::out) is semidet.
@@ -54,6 +57,17 @@ update_flag_deltas(Sets0, Flags) = Sets :-
     Plus = difference(Cur, Cur0) `union` intersect(Plus0, Cur),
     Minus = difference(Cur0, Cur) `union` difference(Minus0, Cur),
     Sets = sets(Cur, Plus, Minus).
+
+require_attn(Sets) = Attn :-
+    Sets = sets(_Cur, Plus, Minus),
+    (
+        set.is_empty(Plus),
+        set.is_empty(Minus)
+    ->
+        Attn = no
+    ;
+        Attn = yes
+    ).
 
 % For now.
 

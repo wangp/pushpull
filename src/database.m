@@ -4,6 +4,7 @@
 :- interface.
 
 :- import_module assoc_list.
+:- import_module bool.
 :- import_module io.
 :- import_module list.
 :- import_module maybe.
@@ -77,7 +78,7 @@
     uniquename::in, list(flag)::in, maybe_error::out, io::di, io::uo) is det.
 
 :- pred update_remote_message_flags(database::in, pairing_id::in,
-    flag_deltas::in, maybe_error::out, io::di, io::uo) is det.
+    flag_deltas::in, bool::in, maybe_error::out, io::di, io::uo) is det.
 
 :- pred search_pairings_without_local_message(database::in,
     remote_mailbox::in, maybe_error(assoc_list(pairing_id, uid))::out,
@@ -118,6 +119,11 @@
 
 :- typeclass bind_value(T) where [
     func bind_value(T) = bind_value
+].
+
+:- instance bind_value(bool) where [
+    bind_value(no) = int(0),
+    bind_value(yes) = int(1)
 ].
 
 :- instance bind_value(local_mailbox_id) where [
@@ -234,17 +240,21 @@ create_tables =
                             REFERENCES local_mailbox(local_mailbox_id),
         local_uniquename    TEXT, /* may be NULL */
         local_flags         TEXT NOT NULL,
+        local_flags_attn    INTEGER NOT NULL,
 
         remote_mailbox_id   INTEGER NOT NULL
                             REFERENCES remote_mailbox(remote_mailbox_id),
         remote_uid          INTEGER, /* may be NULL */
         remote_flags        TEXT NOT NULL,
+        remote_flags_attn   INTEGER NOT NULL, /* boolean */
 
         UNIQUE(local_mailbox_id, local_uniquename),
         UNIQUE(remote_mailbox_id, remote_uid)
     );
 
     CREATE INDEX IF NOT EXISTS message_id_index ON pairing(message_id);
+    CREATE INDEX IF NOT EXISTS local_attn_index ON pairing(local_flags_attn);
+    CREATE INDEX IF NOT EXISTS remote_attn_index ON pairing(remote_flags_attn);
 ".
 
 %-----------------------------------------------------------------------------%
@@ -446,11 +456,13 @@ insert_new_pairing_only_remote_message(Db, MessageId, LocalMailbox,
     LocalMailbox = local_mailbox(_, LocalMailboxId),
     RemoteMailbox = remote_mailbox(_, _, RemoteMailboxId),
     Stmt = "INSERT OR FAIL INTO pairing(message_id,"
-        ++ "    local_mailbox_id, local_uniquename, local_flags,"
-        ++ "    remote_mailbox_id, remote_uid, remote_flags)"
+        ++ "    local_mailbox_id, local_uniquename,"
+        ++ "    local_flags, local_flags_attn,"
+        ++ "    remote_mailbox_id, remote_uid,"
+        ++ "    remote_flags, remote_flags_attn)"
         ++ " VALUES(:message_id,"
-        ++ "    :local_mailbox_id, NULL, '',"
-        ++ "    :remote_mailbox_id, :remote_uid, :remote_flags)",
+        ++ "    :local_mailbox_id, NULL, '', 0,"
+        ++ "    :remote_mailbox_id, :remote_uid, :remote_flags, 0);",
     with_stmt(insert_new_remote_message_2, Db, Stmt, [
         name(":message_id") - bind_value(MessageId),
         name(":local_mailbox_id") - bind_value(LocalMailboxId),
@@ -506,13 +518,15 @@ set_pairing_local_message_2(Db, Stmt, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-update_remote_message_flags(Db, PairingId, Flags, Res, !IO) :-
+update_remote_message_flags(Db, PairingId, Flags, Attn, Res, !IO) :-
     Stmt = "UPDATE pairing"
-        ++ " SET remote_flags = :remote_flags"
+        ++ " SET remote_flags = :remote_flags,"
+        ++ "     remote_flags_attn = :remote_flags_attn"
         ++ " WHERE pairing_id = :pairing_id",
     with_stmt(update_remote_message_flags_2, Db, Stmt, [
         name(":pairing_id") - bind_value(PairingId),
-        name(":remote_flags") - bind_value(Flags)
+        name(":remote_flags") - bind_value(Flags),
+        name(":remote_flags_attn") - bind_value(Attn)
     ], Res, !IO).
 
 :- pred update_remote_message_flags_2(db(rw)::in, stmt::in, maybe_error::out,

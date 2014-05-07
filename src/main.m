@@ -338,7 +338,8 @@ do_update_db_with_remote_message_info(Db, LocalMailbox, RemoteMailbox, UID,
     (
         MaybeError0 = ok(yes({PairingId, FlagDeltas0})),
         FlagDeltas = update_flag_deltas(FlagDeltas0, Flags),
-        update_remote_message_flags(Db, PairingId, FlagDeltas, MaybeError, !IO)
+        update_remote_message_flags(Db, PairingId, FlagDeltas,
+            require_attn(FlagDeltas), MaybeError, !IO)
     ;
         MaybeError0 = ok(no),
         insert_new_pairing_only_remote_message(Db, MessageId, LocalMailbox,
