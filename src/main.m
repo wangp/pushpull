@@ -398,7 +398,7 @@ download_messages(Config, Database, IMAP, RemoteMailbox, UnpairedUIDs, Res,
     remote_mailbox::in, pairing_id::in, uid::in, maybe_error::out,
     io::di, io::uo) is det.
 
-download_message(Config, _Database, IMAP, _RemoteMailbox, _PairingId, UID, Res,
+download_message(Config, Database, IMAP, _RemoteMailbox, PairingId, UID, Res,
         !IO) :-
     % Need FLAGS for Maildir filename.
     % MODSEQ could be used to update remote_message row.
@@ -415,9 +415,9 @@ download_message(Config, _Database, IMAP, _RemoteMailbox, _PairingId, UID, Res,
             ->
                 save_raw_message(Config, UID, RawMessage, Flags, ResSave, !IO),
                 (
-                    ResSave = ok(_Unique),
-                    % XXX add local message to database and update pairing
-                    Res = ok
+                    ResSave = ok(Unique),
+                    set_pairing_local_message(Database, PairingId, Unique,
+                        Flags, Res, !IO)
                 ;
                     ResSave = error(Error),
                     Res = error(Error)

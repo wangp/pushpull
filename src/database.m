@@ -10,6 +10,7 @@
 
 :- import_module imap.
 :- import_module imap.types.
+:- import_module maildir.
 
 %-----------------------------------------------------------------------------%
 
@@ -70,6 +71,9 @@
 :- pred insert_new_pairing_only_remote_message(database::in, message_id::in,
     local_mailbox::in, remote_mailbox::in, uid::in, list(flag)::in,
     maybe_error::out, io::di, io::uo) is det.
+
+:- pred set_pairing_local_message(database::in, pairing_id::in,
+    uniquename::in, list(flag)::in, maybe_error::out, io::di, io::uo) is det.
 
 :- pred update_remote_message_flags(database::in, pairing_id::in,
     list(flag)::in, maybe_error::out, io::di, io::uo) is det.
@@ -169,6 +173,10 @@
 
 :- instance bind_value(local_mailbox_path) where [
     bind_value(local_mailbox_path(S)) = bind_value(S)
+].
+
+:- instance bind_value(uniquename) where [
+    bind_value(uniquename(S)) = bind_value(S)
 ].
 
 %-----------------------------------------------------------------------------%
@@ -441,6 +449,35 @@ insert_new_pairing_only_remote_message(Db, MessageId, LocalMailbox,
     maybe_error::out, io::di, io::uo) is det.
 
 insert_new_remote_message_2(Db, Stmt, Res, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
+    (
+        StepResult = done,
+        Res = ok
+    ;
+        StepResult = row,
+        Res = error("unexpected row")
+    ;
+        StepResult = error(Error),
+        Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
+set_pairing_local_message(Db, PairingId, UniqueName, Flags, Res, !IO) :-
+    Stmt = "UPDATE pairing"
+        ++ " SET local_uniquename = :local_uniquename,"
+        ++ "     local_flags = :local_flags"
+        ++ " WHERE pairing_id = :pairing_id",
+    with_stmt(set_pairing_local_message_2, Db, Stmt, [
+        name(":local_uniquename") - bind_value(UniqueName),
+        name(":local_flags") - bind_value(flags_to_string(Flags)),
+        name(":pairing_id") - bind_value(PairingId)
+    ], Res, !IO).
+
+:- pred set_pairing_local_message_2(db(rw)::in, stmt::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+set_pairing_local_message_2(Db, Stmt, Res, !IO) :-
     step(Db, Stmt, StepResult, !IO),
     (
         StepResult = done,
