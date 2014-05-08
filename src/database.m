@@ -29,12 +29,11 @@
 
 :- type remote_mailbox.
 
-:- type local_mailbox_path
-    --->    local_mailbox_path(string). % XXX canonicalise
-
 :- type lookup_remote_mailbox_result
     --->    found(remote_mailbox, mod_seq_valzer)
     ;       error(string).
+
+:- func get_local_mailbox_path(local_mailbox) = local_mailbox_path.
 
     % Insert a local_mailbox row into the database with the given path.
     % If such a row already exists then do nothing.
@@ -85,6 +84,23 @@
 :- pred search_pairings_without_local_message(database::in,
     remote_mailbox::in, maybe_error(assoc_list(pairing_id, uid))::out,
     io::di, io::uo) is det.
+
+:- type pending_flag_deltas
+    --->    pending_flag_deltas(
+                pairing_id,
+                uniquename,
+                flag_deltas(local_mailbox),
+                uid,
+                flag_deltas(remote_mailbox)
+            ).
+
+:- pred search_pending_flag_deltas_from_remote(database::in, local_mailbox::in,
+    remote_mailbox::in, maybe_error(list(pending_flag_deltas))::out,
+    io::di, io::uo) is det.
+
+:- pred record_remote_flag_deltas_applied_to_local(database::in,
+    pairing_id::in, flag_deltas(local_mailbox)::in,
+    flag_deltas(remote_mailbox)::in, maybe_error::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -317,6 +333,8 @@ close_database(Db, !IO) :-
     close(Db, !IO).
 
 %-----------------------------------------------------------------------------%
+
+get_local_mailbox_path(local_mailbox(LocalMailboxPath, _)) = LocalMailboxPath.
 
 insert_or_ignore_local_mailbox(Db, Path, Res, !IO) :-
     Stmt = "INSERT OR IGNORE INTO local_mailbox(path) VALUES (:path)",
@@ -642,15 +660,116 @@ search_pairings_without_local_message_3(Db, Stmt, Res, !UnpairedUIDs, !IO) :-
         Res = ok
     ;
         StepResult = row,
-        column_int(Stmt, column(0), PairingId, !IO),
-        column_text(Stmt, column(1), UIDText, !IO),
-        ( integer.from_string(UIDText) = UIDInteger ->
-            cons(pairing_id(PairingId) - uid(UIDInteger), !UnpairedUIDs),
+        column_int(Stmt, column(0), X0, !IO),
+        column_text(Stmt, column(1), X1, !IO),
+        (
+            convert(X0, PairingId),
+            convert(X1, UID)
+        ->
+            cons(PairingId - UID, !UnpairedUIDs),
             search_pairings_without_local_message_3(Db, Stmt, Res,
                 !UnpairedUIDs, !IO)
         ;
-            Res = error("bad UID")
+            Res = error("database error")
         )
+    ;
+        StepResult = error(Error),
+        Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
+search_pending_flag_deltas_from_remote(Db, LocalMailbox, RemoteMailbox, Res,
+        !IO) :-
+    LocalMailbox = local_mailbox(_, LocalMailboxId),
+    RemoteMailbox = remote_mailbox(_, _, RemoteMailboxId),
+    Stmt = "SELECT pairing_id, local_uniquename, local_flags,"
+        ++ "       remote_uid, remote_flags"
+        ++ "  FROM pairing"
+        ++ " WHERE local_mailbox_id = :local_mailbox_id"
+        ++ "   AND local_uniquename IS NOT NULL"
+        ++ "   AND remote_mailbox_id = :remote_mailbox_id"
+        ++ "   AND remote_flags_attn = 1",
+    with_stmt(search_pending_flag_deltas_from_remote_2, Db, Stmt, [
+        name(":local_mailbox_id") - bind_value(LocalMailboxId),
+        name(":remote_mailbox_id") - bind_value(RemoteMailboxId)
+    ], Res, !IO).
+
+:- pred search_pending_flag_deltas_from_remote_2(db(rw)::in, stmt::in,
+    maybe_error(list(pending_flag_deltas))::out, io::di, io::uo) is det.
+
+search_pending_flag_deltas_from_remote_2(Db, Stmt, Res, !IO) :-
+    search_pending_flag_deltas_from_remote_3(Db, Stmt, Res0, [], Pending, !IO),
+    (
+        Res0 = ok,
+        Res = ok(Pending)
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred search_pending_flag_deltas_from_remote_3(db(rw)::in, stmt::in,
+    maybe_error::out, list(pending_flag_deltas)::in,
+    list(pending_flag_deltas)::out, io::di, io::uo) is det.
+
+search_pending_flag_deltas_from_remote_3(Db, Stmt, Res, !Pending, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
+    (
+        StepResult = done,
+        Res = ok
+    ;
+        StepResult = row,
+        column_int(Stmt, column(0), X0, !IO),
+        column_text(Stmt, column(1), X1, !IO),
+        column_text(Stmt, column(2), X2, !IO),
+        column_text(Stmt, column(3), X3, !IO),
+        column_text(Stmt, column(4), X4, !IO),
+        (
+            convert(X0, PairingId),
+            convert(X1, UniqueName),
+            convert(X2, LocalFlagDeltas),
+            convert(X3, UID),
+            convert(X4, RemoteFlagDeltas)
+        ->
+            Pending = pending_flag_deltas(PairingId, UniqueName,
+                LocalFlagDeltas, UID, RemoteFlagDeltas),
+            cons(Pending, !Pending),
+            search_pending_flag_deltas_from_remote_3(Db, Stmt, Res, !Pending,
+                !IO)
+        ;
+            Res = error("database error")
+        )
+    ;
+        StepResult = error(Error),
+        Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
+record_remote_flag_deltas_applied_to_local(Db, PairingId, LocalFlags,
+        RemoteFlags, Res, !IO) :-
+    Stmt = "UPDATE pairing"
+        ++ " SET local_flags = :local_flags,"
+        ++ "     remote_flags = :remote_flags,"
+        ++ "     remote_flags_attn = 0"
+        ++ " WHERE pairing_id = :pairing_id",
+    with_stmt(record_remote_flag_deltas_applied_to_local, Db, Stmt, [
+        name(":pairing_id") - bind_value(PairingId),
+        name(":local_flags") - bind_value(LocalFlags),
+        name(":remote_flags") - bind_value(RemoteFlags)
+    ], Res, !IO).
+
+:- pred record_remote_flag_deltas_applied_to_local(db(rw)::in, stmt::in,
+    maybe_error::out, io::di, io::uo) is det.
+
+record_remote_flag_deltas_applied_to_local(Db, Stmt, Res, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
+    (
+        StepResult = done,
+        Res = ok
+    ;
+        StepResult = row,
+        Res = error("unexpected row")
     ;
         StepResult = error(Error),
         Res = error(Error)

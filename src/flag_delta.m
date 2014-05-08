@@ -30,6 +30,12 @@
 
 :- func update_flag_deltas(flag_deltas(S), list(flag)) = flag_deltas(S).
 
+    % apply_flag_deltas(!L, !R)
+    % Apply nonconflicting deltas from R to L.
+    %
+:- pred apply_flag_deltas(flag_deltas(L)::in, flag_deltas(L)::out,
+    flag_deltas(R)::in, flag_deltas(R)::out) is det.
+
 :- func require_attn(flag_deltas(S)) = bool.
 
 :- func to_string(flag_deltas(S)) = string.
@@ -57,6 +63,36 @@ update_flag_deltas(Sets0, Flags) = Sets :-
     Plus = difference(Cur, Cur0) `union` intersect(Plus0, Cur),
     Minus = difference(Cur0, Cur) `union` difference(Minus0, Cur),
     Sets = sets(Cur, Plus, Minus).
+
+    %   For L{F +G -H}
+    %
+    %   R{+F}   =>  L{F +G -H}      +F nonconflict, (add F), (remove +F)
+    %   R{+G}   =>  L{F  G -H}      +G nonconflict, (add G), remove +G
+    %   R{+H}   =>  L{F +G -H}      +H conflicts
+    %   R{+I}   =>  L{F +G -H I}    +I nonconflict, add I, (remove +I)
+    %
+    %   R{-F}   =>  L{  +G -H}      -F nonconflict, remove F, (remove -F)
+    %   R{-G}   =>  L{F +G -H}      -G conflicts
+    %   R{-H}   =>  L{F +G   }      -H nonconflict, (remove H), remove -H
+    %   R{-I}   =>  L{F +G -H}      -I nonconflict, (remove I), (remove -I)
+    %
+apply_flag_deltas(L0, L, R0, R) :-
+    R0 = sets(Rcur, Rplus, Rminus),
+    L0 = sets(Lcur0, Lplus0, Lminus0),
+
+    Rplus_conflict = Rplus `intersect` Lminus0,
+    Rminus_conflict = Rminus `intersect` Lplus0,
+
+    Rplus_nonconflict = Rplus `difference` Rplus_conflict,
+    Rminus_nonconflict = Rminus `difference` Rminus_conflict,
+
+    Lcur = (Lcur0 `union` Rplus_nonconflict) `difference` Rminus_nonconflict,
+
+    Lplus = Lplus0 `difference` Rplus_nonconflict,
+    Lminus = Lminus0 `difference` Rminus_nonconflict,
+
+    L = sets(Lcur, Lplus, Lminus),
+    R = sets(Rcur, Rplus_conflict, Rminus_conflict).
 
 require_attn(Sets) = Attn :-
     Sets = sets(_Cur, Plus, Minus),

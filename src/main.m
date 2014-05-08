@@ -162,7 +162,15 @@ logged_in(Config, Db, IMAP, LocalMailbox, !IO) :-
                         download_unpaired_remote_messages(Config, Db, IMAP,
                             RemoteMailbox, ResDownload, !IO),
                         (
-                            ResDownload = ok
+                            ResDownload = ok,
+                            propagate_flag_deltas(Config, Db, LocalMailbox,
+                                RemoteMailbox, ResProp, !IO),
+                            (
+                                ResProp = ok
+                            ;
+                                ResProp = error(Error),
+                                report_error(Error, !IO)
+                            )
                         ;
                             ResDownload = error(Error),
                             report_error(Error, !IO)
@@ -470,13 +478,13 @@ save_raw_message(Config, uid(UID), RawMessage, Flags, Res, !IO) :-
     generate_unique_name(TmpDirName, ResUnique, !IO),
     (
         ResUnique = ok(Unique),
-        Unique = uniquename(UniqueString),
-        TmpPath = TmpDirName / UniqueString,
-        InfoSuffix = info_suffix(Flags),
-        ( InfoSuffix = empty_info_suffix ->
-            DestPath = Maildir / "new" / UniqueString
+        make_tmp_path(Maildir, Unique, TmpPath),
+        InfoSuffix = flags_to_info_suffix(Flags),
+        % XXX don't think this condition is right
+        ( InfoSuffix = info_suffix("") ->
+            make_path(Maildir, new, Unique, no, DestPath)
         ;
-            DestPath = Maildir / "cur" / UniqueString ++ InfoSuffix
+            make_path(Maildir, cur, Unique, yes(InfoSuffix), DestPath)
         ),
         io.format("Saving message UID %s to %s\n",
             [s(to_string(UID)), s(DestPath)], !IO),
@@ -515,6 +523,97 @@ write_imap_string(Stream, IString, !IO) :-
         IString = literal(String)
     ),
     io.write_string(Stream, String, !IO).
+
+%-----------------------------------------------------------------------------%
+
+:- pred propagate_flag_deltas(prog_config::in, database::in, local_mailbox::in,
+    remote_mailbox::in, maybe_error::out, io::di, io::uo) is det.
+
+propagate_flag_deltas(Config, Db, LocalMailbox, RemoteMailbox, Res, !IO) :-
+    % For now only from remote to local.
+    search_pending_flag_deltas_from_remote(Db, LocalMailbox, RemoteMailbox,
+        ResSearch, !IO),
+    (
+        ResSearch = ok(Pendings),
+        list.foldl2(propagate_flag_deltas_2(Config, Db, LocalMailbox,
+            RemoteMailbox), Pendings, ok, Res, !IO)
+    ;
+        ResSearch = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred propagate_flag_deltas_2(prog_config::in, database::in,
+    local_mailbox::in, remote_mailbox::in, pending_flag_deltas::in,
+    maybe_error::in, maybe_error::out, io::di, io::uo) is det.
+
+propagate_flag_deltas_2(Config, Db, LocalMailbox, RemoteMailbox, Pending,
+        Res0, Res, !IO) :-
+    (
+        Res0 = ok,
+        propagate_flag_deltas_for_message(Config, Db, LocalMailbox,
+            RemoteMailbox, Pending, Res, !IO)
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred propagate_flag_deltas_for_message(prog_config::in, database::in,
+    local_mailbox::in, remote_mailbox::in, pending_flag_deltas::in,
+    maybe_error::out, io::di, io::uo) is det.
+
+propagate_flag_deltas_for_message(_Config, Db, LocalMailbox, _RemoteMailbox,
+        Pending, Res, !IO) :-
+    Pending = pending_flag_deltas(_PairingId, Unique, _LocalFlags0, _UID,
+        _RemoteFlags0),
+    find_file(get_local_mailbox_path(LocalMailbox), Unique, ResFind, !IO),
+    (
+        ResFind = ok(Found),
+        Found = found(_, _, _),
+        propagate_flag_deltas_for_message_found(Db, Pending, Found, Res, !IO)
+    ;
+        ResFind = ok(found_but_unexpected(Path)),
+        Res = error("found unique name but unexpected: " ++ Path)
+    ;
+        ResFind = ok(not_found),
+        % Can't find the file; the file was probably deleted since we updated
+        % our database state.
+        % XXX handle this better
+        Unique = uniquename(UniqueString),
+        Res = error("missing file with unique name " ++ UniqueString)
+    ;
+        ResFind = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred propagate_flag_deltas_for_message_found(database::in,
+    pending_flag_deltas::in, find_file_result::in(found), maybe_error::out,
+    io::di, io::uo) is det.
+
+propagate_flag_deltas_for_message_found(Db, Pending, Found, Res, !IO) :-
+    Pending = pending_flag_deltas(PairingId, Unique, LocalFlags0, _UID,
+        RemoteFlags0),
+    apply_flag_deltas(LocalFlags0, LocalFlags, RemoteFlags0, RemoteFlags),
+
+    % XXX retain flags in InfoSuffix0 that we don't care about
+    % Maybe we can keep in "new" if InfoSuffix still empty?
+    Found = found(DirNameSansNewOrCur, OldPath, _MaybeInfoSuffix0),
+    InfoSuffix = flag_set_to_info_suffix(LocalFlags ^ cur_set),
+    make_path(DirNameSansNewOrCur, cur, Unique, yes(InfoSuffix), NewPath),
+    ( OldPath = NewPath ->
+        ResRename = ok
+    ;
+        io.format("Renaming %s to %s\n", [s(OldPath), s(NewPath)], !IO),
+        io.rename_file(OldPath, NewPath, ResRename, !IO)
+    ),
+    (
+        ResRename = ok,
+        % XXX think more carefully about a crash occurring now
+        record_remote_flag_deltas_applied_to_local(Db, PairingId, LocalFlags,
+            RemoteFlags, Res, !IO)
+    ;
+        ResRename = error(Error),
+        Res = error(io.error_message(Error))
+    ).
 
 %-----------------------------------------------------------------------------%
 
