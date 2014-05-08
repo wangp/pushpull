@@ -1034,8 +1034,9 @@ wait_for_complete_response_2(Pipe, Tag, RevUntagged0, Res, !IO) :-
         trace [runtime(env("DEBUG_IMAP")), io(!IO2)] (
             ( string.from_code_unit_list(Bytes, String) ->
                 Stream = io.stderr_stream,
+                io.write_string(Stream, "\x1B\[34;01m", !IO2),
                 io.write_string(Stream, String, !IO2),
-                io.nl(Stream, !IO2)
+                io.write_string(Stream, "\x1B\[0m\n", !IO2)
             ;
                 true
             )
