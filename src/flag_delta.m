@@ -12,7 +12,7 @@
 
 %-----------------------------------------------------------------------------%
 
-:- type flag_deltas
+:- type flag_deltas(S)
     --->    sets(
                 % Set of current flags.
                 cur_set :: set(flag),
@@ -26,15 +26,15 @@
                 minus_set :: set(flag)
             ).
 
-:- func init_flag_deltas(list(flag)) = flag_deltas.
+:- func init_flag_deltas(list(flag)) = flag_deltas(S).
 
-:- func update_flag_deltas(flag_deltas, list(flag)) = flag_deltas.
+:- func update_flag_deltas(flag_deltas(S), list(flag)) = flag_deltas(S).
 
-:- func require_attn(flag_deltas) = bool.
+:- func require_attn(flag_deltas(S)) = bool.
 
-:- func to_string(flag_deltas) = string.
+:- func to_string(flag_deltas(S)) = string.
 
-:- pred from_string(string::in, flag_deltas::out) is semidet.
+:- pred from_string(string::in, flag_deltas(S)::out) is semidet.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%

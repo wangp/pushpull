@@ -67,7 +67,8 @@
 :- type pairing_id.
 
 :- pred search_pairing_by_remote_message(database::in, remote_mailbox::in,
-    uid::in, message_id::in, maybe_error(maybe({pairing_id, flag_deltas}))::out,
+    uid::in, message_id::in,
+    maybe_error(maybe({pairing_id, flag_deltas(remote_mailbox)}))::out,
     io::di, io::uo) is det.
 
 :- pred insert_new_pairing_only_remote_message(database::in, message_id::in,
@@ -78,7 +79,8 @@
     uniquename::in, list(flag)::in, maybe_error::out, io::di, io::uo) is det.
 
 :- pred update_remote_message_flags(database::in, pairing_id::in,
-    flag_deltas::in, bool::in, maybe_error::out, io::di, io::uo) is det.
+    flag_deltas(remote_mailbox)::in, bool::in, maybe_error::out,
+    io::di, io::uo) is det.
 
 :- pred search_pairings_without_local_message(database::in,
     remote_mailbox::in, maybe_error(assoc_list(pairing_id, uid))::out,
@@ -189,7 +191,7 @@
     bind_value(uniquename(S)) = bind_value(S)
 ].
 
-:- instance bind_value(flag_deltas) where [
+:- instance bind_value(flag_deltas(S)) where [
     bind_value(FlagDeltas) = bind_value(to_string(FlagDeltas))
 ].
 
@@ -239,7 +241,7 @@
     convert(S, uniquename(S))
 ].
 
-:- instance convert(string, flag_deltas) where [
+:- instance convert(string, flag_deltas(S)) where [
     convert(S, FlagDeltas) :-
         from_string(S, FlagDeltas)
 ].
@@ -480,7 +482,8 @@ search_pairing_by_remote_message(Db, RemoteMailbox, UID, MessageId, Res, !IO)
     ], Res, !IO).
 
 :- pred search_pairing_by_remote_message_2(db(rw)::in, stmt::in,
-    maybe_error(maybe({pairing_id, flag_deltas}))::out, io::di, io::uo) is det.
+    maybe_error(maybe({pairing_id, flag_deltas(remote_mailbox)}))::out,
+    io::di, io::uo) is det.
 
 search_pairing_by_remote_message_2(Db, Stmt, Res, !IO) :-
     step(Db, Stmt, StepResult, !IO),
@@ -510,6 +513,8 @@ insert_new_pairing_only_remote_message(Db, MessageId, LocalMailbox,
         RemoteMailbox, UID, Flags, Res, !IO) :-
     LocalMailbox = local_mailbox(_, LocalMailboxId),
     RemoteMailbox = remote_mailbox(_, _, RemoteMailboxId),
+    RemoteFlagDeltas = init_flag_deltas(Flags) : flag_deltas(remote_mailbox),
+
     Stmt = "INSERT OR FAIL INTO pairing(message_id,"
         ++ "    local_mailbox_id, local_uniquename,"
         ++ "    local_flags, local_flags_attn,"
@@ -523,7 +528,7 @@ insert_new_pairing_only_remote_message(Db, MessageId, LocalMailbox,
         name(":local_mailbox_id") - bind_value(LocalMailboxId),
         name(":remote_mailbox_id") - bind_value(RemoteMailboxId),
         name(":remote_uid") - bind_value(UID),
-        name(":remote_flags") - bind_value(init_flag_deltas(Flags))
+        name(":remote_flags") - bind_value(RemoteFlagDeltas)
     ], Res, !IO).
 
 :- pred insert_new_remote_message_2(db(rw)::in, stmt::in,
@@ -545,13 +550,14 @@ insert_new_remote_message_2(Db, Stmt, Res, !IO) :-
 %-----------------------------------------------------------------------------%
 
 set_pairing_local_message(Db, PairingId, UniqueName, Flags, Res, !IO) :-
+    LocalFlagDeltas = init_flag_deltas(Flags) : flag_deltas(local_mailbox),
     Stmt = "UPDATE pairing"
         ++ " SET local_uniquename = :local_uniquename,"
         ++ "     local_flags = :local_flags"
         ++ " WHERE pairing_id = :pairing_id",
     with_stmt(set_pairing_local_message_2, Db, Stmt, [
         name(":local_uniquename") - bind_value(UniqueName),
-        name(":local_flags") - bind_value(init_flag_deltas(Flags)),
+        name(":local_flags") - bind_value(LocalFlagDeltas),
         name(":pairing_id") - bind_value(PairingId)
     ], Res, !IO).
 
