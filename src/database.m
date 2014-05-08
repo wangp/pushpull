@@ -89,6 +89,7 @@
 
 :- implementation.
 
+:- import_module int.
 :- import_module integer.
 :- import_module maybe.
 :- import_module pair.
@@ -190,6 +191,57 @@
 
 :- instance bind_value(flag_deltas) where [
     bind_value(FlagDeltas) = bind_value(to_string(FlagDeltas))
+].
+
+%-----------------------------------------------------------------------------%
+
+:- typeclass convert(T, U) where [
+    pred convert(T::in, U::out) is semidet
+].
+
+:- instance convert(int, local_mailbox_id) where [
+    convert(I, local_mailbox_id(I)) :- I > 0
+].
+
+:- instance convert(int, remote_mailbox_id) where [
+    convert(I, remote_mailbox_id(I)) :- I > 0
+].
+
+:- instance convert(int, pairing_id) where [
+    convert(I, pairing_id(I)) :- I > 0
+].
+
+:- instance convert(string, uid) where [
+    convert(S, uid(Integer)) :-
+    (
+        Integer = integer.from_string(S),
+        Integer > zero
+    )
+].
+
+:- instance convert(string, mod_seq_value) where [
+    convert(S, mod_seq_value(Integer)) :-
+    (
+        Integer = integer.from_string(S),
+        Integer > zero
+    )
+].
+
+:- instance convert(string, mod_seq_valzer) where [
+    convert(S, mod_seq_valzer(Integer)) :-
+    (
+        Integer = integer.from_string(S),
+        Integer >= zero
+    )
+].
+
+:- instance convert(string, uniquename) where [
+    convert(S, uniquename(S))
+].
+
+:- instance convert(string, flag_deltas) where [
+    convert(S, FlagDeltas) :-
+        from_string(S, FlagDeltas)
 ].
 
 %-----------------------------------------------------------------------------%
@@ -306,9 +358,13 @@ lookup_local_mailbox_2(Path, Db, Stmt, Res, !IO) :-
         Res = error("local_mailbox not found")
     ;
         StepResult = row,
-        column_int(Stmt, column(0), MailboxId, !IO),
-        LocalMailbox = local_mailbox(Path, local_mailbox_id(MailboxId)),
-        Res = ok(LocalMailbox)
+        column_int(Stmt, column(0), X0, !IO),
+        ( convert(X0, MailboxId) ->
+            LocalMailbox = local_mailbox(Path, MailboxId),
+            Res = ok(LocalMailbox)
+        ;
+            Res = error("database error")
+        )
     ;
         StepResult = error(Error),
         Res = error(Error)
@@ -364,18 +420,16 @@ lookup_remote_mailbox_2(Mailbox, UIDValidity, Db, Stmt, Res, !IO) :-
         Res = error("remote_mailbox not found")
     ;
         StepResult = row,
-        column_int(Stmt, column(0), MailboxId, !IO),
-        RemoteMailbox = remote_mailbox(Mailbox, UIDValidity,
-            remote_mailbox_id(MailboxId)),
-
-        column_text(Stmt, column(1), String, !IO),
+        column_int(Stmt, column(0), X0, !IO),
+        column_text(Stmt, column(1), X1, !IO),
         (
-            Integer = integer.from_string(String),
-            Integer >= zero
+            convert(X0, MailboxId),
+            convert(X1, ModSeqValzer)
         ->
-            Res = found(RemoteMailbox, mod_seq_valzer(Integer))
+            RemoteMailbox = remote_mailbox(Mailbox, UIDValidity, MailboxId),
+            Res = found(RemoteMailbox, ModSeqValzer)
         ;
-            Res = error("invalid mod sequence value")
+            Res = error("database error")
         )
     ;
         StepResult = error(Error),
@@ -435,14 +489,15 @@ search_pairing_by_remote_message_2(Db, Stmt, Res, !IO) :-
         Res = ok(no)
     ;
         StepResult = row,
-        column_int(Stmt, column(0), Id, !IO),
-        PairingId = pairing_id(Id),
-
-        column_text(Stmt, column(1), FlagsText, !IO),
-        ( from_string(FlagsText, FlagsSet) ->
-            Res = ok(yes({PairingId, FlagsSet}))
+        column_int(Stmt, column(0), X0, !IO),
+        column_text(Stmt, column(1), X1, !IO),
+        (
+            convert(X0, PairingId),
+            convert(X1, FlagDeltas)
+        ->
+            Res = ok(yes({PairingId, FlagDeltas}))
         ;
-            Res = error("remote_flags bad syntax")
+            Res = error("database error")
         )
     ;
         StepResult = error(Error),
