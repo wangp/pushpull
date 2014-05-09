@@ -3,8 +3,8 @@
 :- module maildir.
 :- interface.
 
+:- import_module char.
 :- import_module io.
-:- import_module list.
 :- import_module maybe.
 :- import_module set.
 
@@ -24,14 +24,10 @@
     ;       cur.
 
 :- type info_suffix
-    --->    info_suffix(string). % everything after ":2,"; may be empty
+    --->    info_suffix(set(char), string). % after ":2,"; may be empty
 
 :- pred generate_unique_name(string::in, maybe_error(uniquename)::out,
     io::di, io::uo) is det.
-
-:- func flag_set_to_info_suffix(set(flag)) = info_suffix.
-
-:- func flags_to_info_suffix(list(flag)) = info_suffix.
 
 :- pred make_tmp_path(string::in, uniquename::in, string::out) is det.
 
@@ -53,23 +49,26 @@
 :- pred find_file(local_mailbox_path::in, uniquename::in,
     maybe_error(find_file_result)::out, io::di, io::uo) is det.
 
+:- func flags_to_info_suffix(set(flag)) = info_suffix.
+
+:- pred update_standard_flags(set(flag)::in, info_suffix::in, info_suffix::out)
+    is det.
+
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
 :- implementation.
 
 :- import_module bool.
-:- import_module char.
 :- import_module dir.
 :- import_module int.
+:- import_module list.
 :- import_module maybe.
+:- import_module pair.
 :- import_module string.
 
 :- import_module gettimeofday.
 :- import_module sys_util.
-
-:- inst standard_maildir_flag
-    --->    'R' ; 'F' ; 'T' ; 'S' ; 'D'.
 
 %-----------------------------------------------------------------------------%
 
@@ -131,48 +130,14 @@ safe_gethostname(HostName, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-flag_set_to_info_suffix(Flags) =
-    flags_to_info_suffix(set.to_sorted_list(Flags)).
-
-flags_to_info_suffix(Flags) = info_suffix(Suffix) :-
-    list.filter_map(flag_char, Flags, Chars0),
-    % Chars must be in ASCII order.
-    list.sort(Chars0, Chars),
-    Suffix = string.from_char_list(Chars).
-
-:- pred flag_char(flag::in, char::out) is semidet.
-
-flag_char(system(Flag), Char) :-
-    require_complete_switch [Flag]
-    (
-        Flag = answered,
-        Char = 'R'
-    ;
-        Flag = flagged,
-        Char = 'F'
-    ;
-        Flag = deleted,
-        Char = 'T'
-    ;
-        Flag = seen,
-        Char = 'S'
-    ;
-        Flag = draft,
-        Char = 'D'
-    ;
-        Flag = extension(_),
-        fail
-    ).
-
-%-----------------------------------------------------------------------------%
-
 make_tmp_path(DirName, uniquename(Unique), Path) :-
     Path = DirName / "tmp" / Unique.
 
 make_path(DirName, NewOrCur, uniquename(Unique), MaybeInfoSuffix, Path) :-
     (
-        MaybeInfoSuffix = yes(info_suffix(Suffix)),
-        BaseName = Unique ++ ":2," ++ Suffix
+        MaybeInfoSuffix = yes(info_suffix(FlagChars, Rest)),
+        Flags = string.from_char_list(to_sorted_list(FlagChars)),
+        BaseName = string.append_list([Unique, ":2,", Flags, Rest])
     ;
         MaybeInfoSuffix = no,
         BaseName = Unique
@@ -214,8 +179,10 @@ find_file_2(UniqueName, DirName, BaseName, FileType, Continue, !Found, !IO) :-
             dir.split_name(DirName, DirNameSansNewOrCur, NewOrCur),
             is_new_or_cur(NewOrCur)
         ->
-            ( plausible_info_suffix(AfterUnique, MaybeInfoSuffix) ->
-                !:Found = found(DirNameSansNewOrCur, Path, MaybeInfoSuffix)
+            ( AfterUnique = "" ->
+                !:Found = found(DirNameSansNewOrCur, Path, no)
+            ; parse_info_suffix(AfterUnique, InfoSuffix) ->
+                !:Found = found(DirNameSansNewOrCur, Path, yes(InfoSuffix))
             ;
                 !:Found = found_but_unexpected(Path)
             )
@@ -236,20 +203,78 @@ maybe_regular_file(unknown).
 match_uniquename(uniquename(Unique), BaseName, AfterUnique) :-
     string.remove_prefix(Unique, BaseName, AfterUnique).
 
-:- pred plausible_info_suffix(string::in, maybe(info_suffix)::out) is semidet.
-
-plausible_info_suffix(AfterUnique, MaybeInfoSuffix) :-
-    ( AfterUnique = "" ->
-        MaybeInfoSuffix = no
-    ;
-        string.remove_prefix(":2,", AfterUnique, Tail),
-        MaybeInfoSuffix = yes(info_suffix(Tail))
-    ).
-
 :- pred is_new_or_cur(string::in) is semidet.
 
 is_new_or_cur("new").
 is_new_or_cur("cur").
+
+%-----------------------------------------------------------------------------%
+
+flags_to_info_suffix(Flags) = InfoSuffix :-
+    list.foldl(update_standard_flag(Flags), standard_flags, init, Chars),
+    InfoSuffix = info_suffix(Chars, "").
+
+update_standard_flags(HaveFlags, InfoSuffix0, InfoSuffix) :-
+    InfoSuffix0 = info_suffix(Chars0, Rest),
+    list.foldl(update_standard_flag(HaveFlags), standard_flags, Chars0, Chars),
+    InfoSuffix = info_suffix(Chars, Rest).
+
+:- pred update_standard_flag(set(flag)::in, pair(flag, char)::in,
+    set(char)::in, set(char)::out) is det.
+
+update_standard_flag(HaveFlags, Flag - FlagChar, !Set) :-
+    ( set.contains(HaveFlags, Flag) ->
+        set.insert(FlagChar, !Set)
+    ;
+        set.delete(FlagChar, !Set)
+    ).
+
+:- func standard_flags = list(pair(flag, char)).
+
+standard_flags = [
+    system(answered) - 'R',
+    system(flagged) - 'F',
+    system(deleted) - 'T',
+    system(seen) - 'S',
+    system(draft) - 'D'
+].
+
+:- pred parse_info_suffix(string::in, info_suffix::out) is semidet.
+
+parse_info_suffix(String, InfoSuffix) :-
+    string.prefix(String, ":2,"),
+    grab_flag_chars(String, 3, StopPos, [], RevFlagChars),
+    string.unsafe_between(String, StopPos, length(String), Rest),
+    Flags = set.from_list(RevFlagChars),
+    InfoSuffix = info_suffix(Flags, Rest).
+
+:- pred grab_flag_chars(string::in, int::in, int::out,
+    list(char)::in, list(char)::out) is semidet.
+
+grab_flag_chars(String, !Pos, !RevFlagChars) :-
+    (
+        string.unsafe_index_next(String, !Pos, Char),
+        % Dovecot defines an extension where non-standard fields may follow a
+        % comma (but doesn't use it?)
+        Char \= (',')
+    ->
+        % ASCII seems to be implied.
+        char.to_int(Char, I),
+        0 < I, I =< 0x7f,
+        % Flags are supposed to be in ASCII order.
+        later(Char, !.RevFlagChars),
+        cons(Char, !RevFlagChars),
+        grab_flag_chars(String, !Pos, !RevFlagChars)
+    ;
+        % End of flags.
+        true
+    ).
+
+:- pred later(char::in, list(char)::in) is semidet.
+
+later(_, []).
+later(C, [X | _]) :-
+    to_int(C) > to_int(X).
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

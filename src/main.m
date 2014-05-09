@@ -20,6 +20,7 @@
 :- import_module map.
 :- import_module maybe.
 :- import_module pair.
+:- import_module set.
 :- import_module solutions.
 :- import_module string.
 
@@ -479,9 +480,9 @@ save_raw_message(Config, uid(UID), RawMessage, Flags, Res, !IO) :-
     (
         ResUnique = ok(Unique),
         make_tmp_path(Maildir, Unique, TmpPath),
-        InfoSuffix = flags_to_info_suffix(Flags),
+        InfoSuffix = flags_to_info_suffix(set.from_list(Flags)),
         % XXX don't think this condition is right
-        ( InfoSuffix = info_suffix("") ->
+        ( InfoSuffix = info_suffix(set.init, "") ->
             make_path(Maildir, new, Unique, no, DestPath)
         ;
             make_path(Maildir, cur, Unique, yes(InfoSuffix), DestPath)
@@ -594,10 +595,15 @@ propagate_flag_deltas_for_message_found(Db, Pending, Found, Res, !IO) :-
         RemoteFlags0),
     apply_flag_deltas(LocalFlags0, LocalFlags, RemoteFlags0, RemoteFlags),
 
-    % XXX retain flags in InfoSuffix0 that we don't care about
     % Maybe we can keep in "new" if InfoSuffix still empty?
-    Found = found(DirNameSansNewOrCur, OldPath, _MaybeInfoSuffix0),
-    InfoSuffix = flag_set_to_info_suffix(LocalFlags ^ cur_set),
+    Found = found(DirNameSansNewOrCur, OldPath, MaybeInfoSuffix0),
+    (
+        MaybeInfoSuffix0 = no,
+        InfoSuffix = flags_to_info_suffix(LocalFlags ^ cur_set)
+    ;
+        MaybeInfoSuffix0 = yes(InfoSuffix0),
+        update_standard_flags(LocalFlags ^ cur_set, InfoSuffix0, InfoSuffix)
+    ),
     make_path(DirNameSansNewOrCur, cur, Unique, yes(InfoSuffix), NewPath),
     ( OldPath = NewPath ->
         ResRename = ok
