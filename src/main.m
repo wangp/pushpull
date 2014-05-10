@@ -29,6 +29,7 @@
 :- import_module imap.
 :- import_module imap.types.
 :- import_module maildir.
+:- import_module message_file.
 :- import_module signal.
 
 :- type prog_config
@@ -82,14 +83,7 @@ main_1(Config, Db, !IO) :-
         lookup_local_mailbox(Db, LocalMailboxPath, ResLookup, !IO),
         (
             ResLookup = ok(LocalMailbox),
-            update_db_local_mailbox(Db, LocalMailbox, ResUpdate, !IO),
-            (
-                ResUpdate = ok,
-                main_2(Config, Db, LocalMailbox, !IO)
-            ;
-                ResUpdate = error(Error),
-                report_error(Error, !IO)
-            )
+            main_2(Config, Db, LocalMailbox, !IO)
         ;
             ResLookup = error(Error),
             report_error(Error, !IO)
@@ -162,29 +156,13 @@ logged_in(Config, Db, IMAP, LocalMailbox, !IO) :-
                     !IO),
                 (
                     ResLookup = found(RemoteMailbox, LastModSeqValzer),
-                    update_db_remote_mailbox(Config, Db, IMAP, LocalMailbox,
+                    have_remote_mailbox(Config, Db, IMAP, LocalMailbox,
                         RemoteMailbox, LastModSeqValzer, HighestModSeqValue,
-                        ResUpdate, !IO),
+                        Res, !IO),
                     (
-                        ResUpdate = ok,
-                        download_unpaired_remote_messages(Config, Db, IMAP,
-                            RemoteMailbox, ResDownload, !IO),
-                        (
-                            ResDownload = ok,
-                            propagate_flag_deltas(Config, Db, LocalMailbox,
-                                RemoteMailbox, ResProp, !IO),
-                            (
-                                ResProp = ok
-                            ;
-                                ResProp = error(Error),
-                                report_error(Error, !IO)
-                            )
-                        ;
-                            ResDownload = error(Error),
-                            report_error(Error, !IO)
-                        )
+                        Res = ok
                     ;
-                        ResUpdate = error(Error),
+                        Res = error(Error),
                         report_error(Error, !IO)
                     )
                 ;
@@ -208,55 +186,101 @@ logged_in(Config, Db, IMAP, LocalMailbox, !IO) :-
         report_error(Text, !IO)
     ).
 
+:- pred have_remote_mailbox(prog_config::in, database::in, imap::in,
+    local_mailbox::in, remote_mailbox::in, mod_seq_valzer::in,
+    mod_seq_value::in, maybe_error::out, io::di, io::uo) is det.
+
+have_remote_mailbox(Config, Db, IMAP, LocalMailbox, RemoteMailbox,
+        LastModSeqValzer, HighestModSeqValue, Res, !IO) :-
+    update_db_remote_mailbox(Config, Db, IMAP, LocalMailbox, RemoteMailbox,
+        LastModSeqValzer, HighestModSeqValue, ResUpdate, !IO),
+    (
+        ResUpdate = ok,
+        update_db_local_mailbox(Db, LocalMailbox, RemoteMailbox,
+            ResUpdateLocal, !IO),
+        (
+            ResUpdateLocal = ok,
+            download_unpaired_remote_messages(Config, Db, IMAP, RemoteMailbox,
+                ResDownload, !IO),
+            (
+                ResDownload = ok,
+                propagate_flag_deltas(Config, Db, LocalMailbox, RemoteMailbox,
+                    ResProp, !IO),
+                (
+                    ResProp = ok,
+                    Res = ok
+                ;
+                    ResProp = error(Error),
+                    Res = error(Error)
+                )
+            ;
+                ResDownload = error(Error),
+                Res = error(Error)
+            )
+        ;
+            ResUpdateLocal = error(Error),
+            Res = error(Error)
+        )
+    ;
+        ResUpdate = error(Error),
+        Res = error(Error)
+    ).
+
 %-----------------------------------------------------------------------------%
 
 :- pred update_db_local_mailbox(database::in, local_mailbox::in,
-    maybe_error::out, io::di, io::uo) is det.
+    remote_mailbox::in, maybe_error::out, io::di, io::uo) is det.
 
-update_db_local_mailbox(Db, LocalMailbox, Res, !IO) :-
+update_db_local_mailbox(Db, LocalMailbox, RemoteMailbox, Res, !IO) :-
     list_files(get_local_mailbox_path(LocalMailbox), ResList, !IO),
     (
         ResList = ok(Files),
-        update_db_local_message_files(Db, LocalMailbox, Files, Res, !IO)
+        update_db_local_message_files(Db, LocalMailbox, RemoteMailbox, Files,
+            Res, !IO)
     ;
         ResList = error(Error),
         Res = error(Error)
     ).
 
 :- pred update_db_local_message_files(database::in, local_mailbox::in,
-    list(local_file)::in, maybe_error::out, io::di, io::uo) is det.
+    remote_mailbox::in, list(local_file)::in, maybe_error::out, io::di, io::uo)
+    is det.
 
-update_db_local_message_files(_Db, _LocalMailbox, [], ok, !IO).
-update_db_local_message_files(Db, LocalMailbox, [File | Files], Res, !IO) :-
-    update_db_local_message_file(Db, LocalMailbox, File, Res0, !IO),
+update_db_local_message_files(_Db, _LocalMailbox, _RemoteMailbox, [], ok, !IO).
+update_db_local_message_files(Db, LocalMailbox, RemoteMailbox, [File | Files],
+        Res, !IO) :-
+    update_db_local_message_file(Db, LocalMailbox, RemoteMailbox, File, Res0,
+        !IO),
     (
         Res0 = ok,
-        update_db_local_message_files(Db, LocalMailbox, Files, Res, !IO)
+        update_db_local_message_files(Db, LocalMailbox, RemoteMailbox, Files,
+            Res, !IO)
     ;
         Res0 = error(Error),
         Res = error(Error)
     ).
 
 :- pred update_db_local_message_file(database::in, local_mailbox::in,
-    local_file::in, maybe_error::out, io::di, io::uo) is det.
+    remote_mailbox::in, local_file::in, maybe_error::out, io::di, io::uo)
+    is det.
 
-update_db_local_message_file(Db, LocalMailbox, File, Res, !IO) :-
-    File = local_file(BaseName),
+update_db_local_message_file(Db, LocalMailbox, RemoteMailbox, File, Res, !IO) :-
+    File = local_file(_Path, BaseName),
     ( parse_basename(BaseName, Unique, Flags) ->
-        update_db_local_message_file_2(Db, LocalMailbox, File, Unique, Flags,
-            Res, !IO)
+        update_db_local_message_file_2(Db, LocalMailbox, RemoteMailbox, File,
+            Unique, Flags, Res, !IO)
     ;
         % Should just skip.
         Res = error("cannot parse message filename: " ++ BaseName)
     ).
 
 :- pred update_db_local_message_file_2(database::in, local_mailbox::in,
-    local_file::in, uniquename::in, set(flag)::in, maybe_error::out,
-    io::di, io::uo) is det.
+    remote_mailbox::in, local_file::in, uniquename::in, set(flag)::in,
+    maybe_error::out, io::di, io::uo) is det.
 
-update_db_local_message_file_2(Db, LocalMailbox, File, Unique, Flags, Res, !IO)
-        :-
-    File = local_file(BaseName),
+update_db_local_message_file_2(Db, LocalMailbox, RemoteMailbox, File, Unique,
+        Flags, Res, !IO) :-
+    File = local_file(Path, BaseName),
     search_pairing_by_local_message(Db, LocalMailbox, Unique, ResSearch, !IO),
     (
         ResSearch = ok(yes({PairingId, LocalFlagDeltas0})),
@@ -275,13 +299,37 @@ update_db_local_message_file_2(Db, LocalMailbox, File, Unique, Flags, Res, !IO)
         )
     ;
         ResSearch = ok(no),
-        % XXX add unknown file (but it may not be a message file)
-        io.write_string("Unknown file: " ++ BaseName ++ "\n", !IO),
-        Res = ok
+        read_message_id(Path, ResRead, !IO),
+        (
+            ResRead = yes(MessageId),
+            % There may already be an unpaired remote message in the database
+            % for this local message.  We will download the remote message to
+            % compare, as we don't want to assume that Message-Ids are unique.
+            % At that time we will notice that the local and remote message
+            % contents match, then delete one of the two pairings (this one) in
+            % favour of the other.
+            insert_new_pairing_only_local_message(Db, imap_message_id(MessageId),
+                LocalMailbox, RemoteMailbox, Unique, Flags, Res, !IO)
+        ;
+            ResRead = no,
+            io.format("skipping %s: missing Message-Id\n", [s(BaseName)], !IO),
+            Res = ok
+        ;
+            ResRead = format_error(Error),
+            io.format("skipping %s: %s\n", [s(BaseName), s(Error)], !IO),
+            Res = ok
+        ;
+            ResRead = error(Error),
+            Res = error(io.error_message(Error))
+        )
     ;
         ResSearch = error(Error),
         Res = error(Error)
     ).
+
+:- func imap_message_id(string) = imap.types.message_id.
+
+imap_message_id(S) = message_id(yes(quoted(S))).
 
 %-----------------------------------------------------------------------------%
 

@@ -76,6 +76,10 @@
     maybe_error(maybe({pairing_id, flag_deltas(remote_mailbox)}))::out,
     io::di, io::uo) is det.
 
+:- pred insert_new_pairing_only_local_message(database::in, message_id::in,
+    local_mailbox::in, remote_mailbox::in, uniquename::in, set(flag)::in,
+    maybe_error::out, io::di, io::uo) is det.
+
 :- pred insert_new_pairing_only_remote_message(database::in, message_id::in,
     local_mailbox::in, remote_mailbox::in, uid::in, set(flag)::in,
     maybe_error::out, io::di, io::uo) is det.
@@ -568,6 +572,46 @@ search_pairing_by_remote_message_2(Db, Stmt, Res, !IO) :-
         ;
             Res = error("database error")
         )
+    ;
+        StepResult = error(Error),
+        Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
+insert_new_pairing_only_local_message(Db, MessageId, LocalMailbox,
+        RemoteMailbox, Unique, Flags, Res, !IO) :-
+    LocalMailbox = local_mailbox(_, LocalMailboxId),
+    RemoteMailbox = remote_mailbox(_, _, RemoteMailboxId),
+    LocalFlagDeltas = init_flags(Flags) : flag_deltas(local_mailbox),
+
+    Stmt = "INSERT OR FAIL INTO pairing(message_id,"
+        ++ "    local_mailbox_id, local_uniquename,"
+        ++ "    local_flags, local_flags_attn,"
+        ++ "    remote_mailbox_id, remote_uid,"
+        ++ "    remote_flags, remote_flags_attn)"
+        ++ " VALUES(:message_id,"
+        ++ "    :local_mailbox_id, :local_uniquename, :local_flags, 0,"
+        ++ "    :remote_mailbox_id, NULL, '', 0);",
+    with_stmt(insert_new_local_message_2, Db, Stmt, [
+        name(":message_id") - bind_value(MessageId),
+        name(":local_mailbox_id") - bind_value(LocalMailboxId),
+        name(":local_uniquename") - bind_value(Unique),
+        name(":local_flags") - bind_value(LocalFlagDeltas),
+        name(":remote_mailbox_id") - bind_value(RemoteMailboxId)
+    ], Res, !IO).
+
+:- pred insert_new_local_message_2(db(rw)::in, stmt::in,
+    maybe_error::out, io::di, io::uo) is det.
+
+insert_new_local_message_2(Db, Stmt, Res, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
+    (
+        StepResult = done,
+        Res = ok
+    ;
+        StepResult = row,
+        Res = error("unexpected row")
     ;
         StepResult = error(Error),
         Res = error(Error)

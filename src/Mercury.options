@@ -10,6 +10,7 @@ MCFLAGS += --optimise-constructor-last-call
 # Module-specific options.
 MCFLAGS-signal += --no-ansi-c
 MCFLAGS-subprocess += --no-ansi-c
+CFLAGS-string_util += -D_GNU_SOURCE
 CFLAGS-sys_util += -D_BSD_SOURCE
 
 # Add workspace-specific options here.

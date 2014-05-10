@@ -51,7 +51,10 @@
     maybe_error(find_file_result)::out, io::di, io::uo) is det.
 
 :- type local_file
-    --->    local_file(basename :: string).
+    --->    local_file(
+                local_path :: string,
+                basename :: string
+            ).
 
 :- pred list_files(local_mailbox_path::in, maybe_error(list(local_file))::out,
     io::di, io::uo) is det.
@@ -238,7 +241,9 @@ list_files_2(DirName, BaseName, FileType, Continue, !Acc, !IO) :-
         dir.split_name(DirName, _DirNameSansNewOrCur, NewOrCur),
         is_new_or_cur(NewOrCur)
     ->
-        cons(local_file(BaseName), !Acc)
+        Path = DirName / BaseName,
+        LocalFile = local_file(Path, BaseName),
+        cons(LocalFile, !Acc)
     ;
         true
     ),
