@@ -49,7 +49,7 @@
 
 :- type remote_message_info
     --->    remote_message_info(
-                message_id  :: message_id,  % may be NIL
+                message_id  :: maybe_message_id,
                 flags       :: set(flag)    % does not include \Recent
             ).
 
@@ -310,10 +310,12 @@ update_db_local_message_file_2(Db, LocalMailbox, RemoteMailbox, File, Unique,
             % At that time we will notice that the local and remote message
             % contents match, then delete one of the two pairings (this one) in
             % favour of the other.
-            insert_new_pairing_only_local_message(Db, imap_message_id(MessageId),
+            insert_new_pairing_only_local_message(Db, message_id(MessageId),
                 LocalMailbox, RemoteMailbox, Unique, Flags, Res, !IO)
         ;
             ResRead = no,
+            % XXX we could add this file to the database, but we want to have
+            % more indicators that it really is a message file
             io.format("skipping %s: missing Message-Id\n", [s(BaseName)], !IO),
             Res = ok
         ;
@@ -328,10 +330,6 @@ update_db_local_message_file_2(Db, LocalMailbox, RemoteMailbox, File, Unique,
         ResSearch = error(Error),
         Res = error(Error)
     ).
-
-:- func imap_message_id(string) = imap.types.message_id.
-
-imap_message_id(S) = message_id(yes(quoted(S))).
 
 %-----------------------------------------------------------------------------%
 
@@ -572,12 +570,12 @@ download_message(Config, Database, IMAP, LocalMailbox, _RemoteMailbox,
                 (
                     (
                         ResMessageId = yes(ReadMessageId),
-                        HaveMessageId = yes(ReadMessageId)
+                        HaveMessageId = message_id(ReadMessageId)
                     ;
                         ResMessageId = no,
-                        HaveMessageId = no
+                        HaveMessageId = nil
                     ),
-                    ( equal_message_id(ExpectedMessageId, HaveMessageId) ->
+                    ( ExpectedMessageId = HaveMessageId ->
                         save_message_and_pair(Config, Database, LocalMailbox,
                             UnpairedRemote, RawMessageLf, Flags, InternalDate,
                             Res, !IO)
@@ -636,13 +634,6 @@ get_internaldate(Atts, DateTime) :-
     solutions(pred(X::out) is nondet :- member(internaldate(X), Atts),
         [DateTime]).
 
-:- pred equal_message_id(imap.types.message_id::in, maybe(string)::in)
-    is semidet.
-
-equal_message_id(message_id(no), no).
-equal_message_id(message_id(yes(A)), yes(B)) :-
-    from_imap_string(A) = B.
-
 :- pred save_message_and_pair(prog_config::in, database::in, local_mailbox::in,
     unpaired_remote_message::in, string::in, set(flag)::in, date_time::in,
     maybe_error::out, io::di, io::uo) is det.
@@ -692,7 +683,7 @@ save_message_and_pair(_Config, Database, LocalMailbox, UnpairedRemote,
     ).
 
 :- pred match_unpaired_local_message(database::in, local_mailbox::in,
-    message_id::in, string::in,
+    maybe_message_id::in, string::in,
     maybe_error(maybe(unpaired_local_message))::out, io::di, io::uo) is det.
 
 match_unpaired_local_message(Database, LocalMailbox, MessageId, RawMessageLf,

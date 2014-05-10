@@ -71,17 +71,17 @@
     io::di, io::uo) is det.
 
 :- pred search_pairing_by_remote_message(database::in, remote_mailbox::in,
-    uid::in, message_id::in,
+    uid::in, maybe_message_id::in,
     maybe_error(maybe({pairing_id, flag_deltas(remote_mailbox)}))::out,
     io::di, io::uo) is det.
 
-:- pred insert_new_pairing_only_local_message(database::in, message_id::in,
-    local_mailbox::in, remote_mailbox::in, uniquename::in, set(flag)::in,
-    maybe_error::out, io::di, io::uo) is det.
+:- pred insert_new_pairing_only_local_message(database::in,
+    maybe_message_id::in, local_mailbox::in, remote_mailbox::in,
+    uniquename::in, set(flag)::in, maybe_error::out, io::di, io::uo) is det.
 
-:- pred insert_new_pairing_only_remote_message(database::in, message_id::in,
-    local_mailbox::in, remote_mailbox::in, uid::in, set(flag)::in,
-    maybe_error::out, io::di, io::uo) is det.
+:- pred insert_new_pairing_only_remote_message(database::in,
+    maybe_message_id::in, local_mailbox::in, remote_mailbox::in, uid::in,
+    set(flag)::in, maybe_error::out, io::di, io::uo) is det.
 
 :- pred delete_pairing(database::in, pairing_id::in,
     maybe_error::out, io::di, io::uo) is det.
@@ -105,7 +105,7 @@
     --->    unpaired_remote_message(
                 pairing_id,
                 uid,
-                message_id
+                maybe_message_id
             ).
 
 :- pred search_unpaired_remote_messages(database::in, remote_mailbox::in,
@@ -118,7 +118,7 @@
             ).
 
 :- pred search_unpaired_local_messages_by_message_id(database::in,
-    local_mailbox::in, message_id::in,
+    local_mailbox::in, maybe_message_id::in,
     maybe_error(list(unpaired_local_message))::out, io::di, io::uo) is det.
 
 :- type pending_flag_deltas
@@ -228,11 +228,10 @@
     bind_value(literal(S)) = bind_value(S)
 ].
 
-:- instance bind_value(message_id) where [
-    % We will treat the lack of a Message-Id header field the same as
-    % Message-Id header field with empty string for the value.
-    bind_value(message_id(no)) = bind_value(""),
-    bind_value(message_id(yes(S))) = bind_value(S)
+:- instance bind_value(maybe_message_id) where [
+    % Message-Id values have a form that can never be confused with "NIL".
+    bind_value(nil) = bind_value("NIL"),
+    bind_value(message_id(S)) = bind_value(S)
 ].
 
 :- instance bind_value(local_mailbox_path) where [
@@ -293,10 +292,13 @@
     convert(S, uniquename(S))
 ].
 
-:- instance convert(string, message_id) where [
-    % We treated a lack of Message-Id the same as empty string
-    % so this might be a problem.
-    convert(S, message_id(yes(quoted(S))))
+:- instance convert(string, maybe_message_id) where [
+    convert(S, MessageId) :-
+        ( S = "NIL" ->
+            MessageId = nil
+        ;
+            MessageId = message_id(S)
+        )
 ].
 
 :- instance convert(string, flag_deltas(S)) where [

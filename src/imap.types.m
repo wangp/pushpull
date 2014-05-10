@@ -182,11 +182,12 @@
                 cc          :: list(address),
                 bcc         :: list(address),
                 in_reply_to :: nstring,
-                message_id  :: message_id
+                message_id  :: maybe_message_id
             ).
 
-:- type message_id
-    --->    message_id(nstring).
+:- type maybe_message_id
+    --->    message_id(string)
+    ;       nil.
 
 :- type address
     --->    address(

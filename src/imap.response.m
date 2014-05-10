@@ -884,8 +884,7 @@ envelope(Src, Env, !PS, !IO) :-
     nstring(Src, Env ^ in_reply_to, !PS, !IO),
     det_sp(Src, !PS),
 
-    nstring(Src, MessageId,  !PS, !IO),
-    Env ^ message_id = message_id(MessageId),
+    maybe_message_id(Src, Env ^ message_id,  !PS, !IO),
 
     det_next_char(Src, ')', !PS).
 
@@ -944,6 +943,19 @@ maybe_address(Src, MaybeAddress, !PS, !IO) :-
         MaybeAddress = yes(Address)
     ;
         MaybeAddress = no
+    ).
+
+:- pred maybe_message_id(src::in, maybe_message_id::out, ps::in, ps::out,
+    io::di, io::uo) is det.
+
+maybe_message_id(Src, MessageId, !PS, !IO) :-
+    nstring(Src, NString, !PS, !IO),
+    (
+        NString = no,
+        MessageId = nil
+    ;
+        NString = yes(S),
+        MessageId = message_id(from_imap_string(S))
     ).
 
 :- pred date_time(src::in, date_time::out, ps::in, ps::out) is semidet.
