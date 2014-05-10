@@ -681,7 +681,11 @@ write_imap_string(Stream, IString, !IO) :-
     ;
         IString = literal(String)
     ),
-    io.write_string(Stream, String, !IO).
+    io.write_string(Stream, crlf_to_lf(String), !IO).
+
+:- func crlf_to_lf(string) = string.
+
+crlf_to_lf(S) = string.replace_all(S, "\r\n", "\n").
 
 %-----------------------------------------------------------------------------%
 
