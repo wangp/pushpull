@@ -47,7 +47,7 @@
 :- type remote_message_info
     --->    remote_message_info(
                 message_id  :: message_id,  % may be NIL
-                flags       :: list(flag)   % does not include \Recent
+                flags       :: set(flag)    % does not include \Recent
             ).
 
 %-----------------------------------------------------------------------------%
@@ -82,7 +82,14 @@ main_1(Config, Db, !IO) :-
         lookup_local_mailbox(Db, LocalMailboxPath, ResLookup, !IO),
         (
             ResLookup = ok(LocalMailbox),
-            main_2(Config, Db, LocalMailbox, !IO)
+            update_db_local_mailbox(Db, LocalMailbox, ResUpdate, !IO),
+            (
+                ResUpdate = ok,
+                main_2(Config, Db, LocalMailbox, !IO)
+            ;
+                ResUpdate = error(Error),
+                report_error(Error, !IO)
+            )
         ;
             ResLookup = error(Error),
             report_error(Error, !IO)
@@ -203,6 +210,81 @@ logged_in(Config, Db, IMAP, LocalMailbox, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
+:- pred update_db_local_mailbox(database::in, local_mailbox::in,
+    maybe_error::out, io::di, io::uo) is det.
+
+update_db_local_mailbox(Db, LocalMailbox, Res, !IO) :-
+    list_files(get_local_mailbox_path(LocalMailbox), ResList, !IO),
+    (
+        ResList = ok(Files),
+        update_db_local_message_files(Db, LocalMailbox, Files, Res, !IO)
+    ;
+        ResList = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred update_db_local_message_files(database::in, local_mailbox::in,
+    list(local_file)::in, maybe_error::out, io::di, io::uo) is det.
+
+update_db_local_message_files(_Db, _LocalMailbox, [], ok, !IO).
+update_db_local_message_files(Db, LocalMailbox, [File | Files], Res, !IO) :-
+    update_db_local_message_file(Db, LocalMailbox, File, Res0, !IO),
+    (
+        Res0 = ok,
+        update_db_local_message_files(Db, LocalMailbox, Files, Res, !IO)
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred update_db_local_message_file(database::in, local_mailbox::in,
+    local_file::in, maybe_error::out, io::di, io::uo) is det.
+
+update_db_local_message_file(Db, LocalMailbox, File, Res, !IO) :-
+    File = local_file(BaseName),
+    ( parse_basename(BaseName, Unique, Flags) ->
+        update_db_local_message_file_2(Db, LocalMailbox, File, Unique, Flags,
+            Res, !IO)
+    ;
+        % Should just skip.
+        Res = error("cannot parse message filename: " ++ BaseName)
+    ).
+
+:- pred update_db_local_message_file_2(database::in, local_mailbox::in,
+    local_file::in, uniquename::in, set(flag)::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+update_db_local_message_file_2(Db, LocalMailbox, File, Unique, Flags, Res, !IO)
+        :-
+    File = local_file(BaseName),
+    search_pairing_by_local_message(Db, LocalMailbox, Unique, ResSearch, !IO),
+    (
+        ResSearch = ok(yes({PairingId, LocalFlagDeltas0})),
+        update_maildir_standard_flags(Flags, LocalFlagDeltas0, LocalFlagDeltas,
+            IsChanged),
+        (
+            IsChanged = yes,
+            Unique = uniquename(UniqueString),
+            io.format("Updating local message flags %s: %s\n",
+                [s(UniqueString), s(string(LocalFlagDeltas))], !IO),
+            update_local_message_flags(Db, PairingId, LocalFlagDeltas,
+                require_attn(LocalFlagDeltas), Res, !IO)
+        ;
+            IsChanged = no,
+            Res = ok
+        )
+    ;
+        ResSearch = ok(no),
+        % XXX add unknown file (but it may not be a message file)
+        io.write_string("Unknown file: " ++ BaseName ++ "\n", !IO),
+        Res = ok
+    ;
+        ResSearch = error(Error),
+        Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
     % Update the database's knowledge of the remote mailbox state,
     % since the last known mod-sequence-value.
     %
@@ -290,7 +372,8 @@ make_remote_message_info(_MsgSeqNr - Atts, !Map) :-
 
     solutions((pred(F::out) is nondet :- member(flags(F), Atts)),
         [Flags0]),
-    list.filter_map(flag_except_recent, Flags0, Flags),
+    list.filter_map(flag_except_recent, Flags0, Flags1),
+    set.list_to_set(Flags1, Flags),
 
     % I guess the server should not send multiple results for the same UID.
     map.insert(UID, remote_message_info(MessageId, Flags), !Map).
@@ -345,9 +428,15 @@ do_update_db_with_remote_message_info(Db, LocalMailbox, RemoteMailbox, UID,
         MaybeError0, !IO),
     (
         MaybeError0 = ok(yes({PairingId, FlagDeltas0})),
-        FlagDeltas = update_flag_deltas(FlagDeltas0, Flags),
-        update_remote_message_flags(Db, PairingId, FlagDeltas,
-            require_attn(FlagDeltas), MaybeError, !IO)
+        update_flags(Flags, FlagDeltas0, FlagDeltas, IsChanged),
+        (
+            IsChanged = yes,
+            update_remote_message_flags(Db, PairingId, FlagDeltas,
+                require_attn(FlagDeltas), MaybeError, !IO)
+        ;
+            IsChanged = no,
+            MaybeError = ok
+        )
     ;
         MaybeError0 = ok(no),
         insert_new_pairing_only_remote_message(Db, MessageId, LocalMailbox,
@@ -464,14 +553,15 @@ get_rfc822_att(Atts, String) :-
     solutions(pred(X::out) is nondet :- member(rfc822(X), Atts), [NString]),
     NString = yes(String).
 
-:- pred get_flags(msg_atts::in, list(flag)::out) is semidet.
+:- pred get_flags(msg_atts::in, set(flag)::out) is semidet.
 
 get_flags(Atts, Flags) :-
     solutions(pred(X::out) is nondet :- member(flags(X), Atts), [Flags0]),
-    list.filter_map(flag_except_recent, Flags0, Flags).
+    list.filter_map(flag_except_recent, Flags0, Flags1),
+    set.list_to_set(Flags1, Flags).
 
 :- pred save_raw_message(prog_config::in, uid::in, imap_string::in,
-    list(flag)::in, maybe_error(uniquename)::out, io::di, io::uo) is det.
+    set(flag)::in, maybe_error(uniquename)::out, io::di, io::uo) is det.
 
 save_raw_message(Config, uid(UID), RawMessage, Flags, Res, !IO) :-
     Config ^ maildir = maildir(Maildir),
@@ -480,7 +570,7 @@ save_raw_message(Config, uid(UID), RawMessage, Flags, Res, !IO) :-
     (
         ResUnique = ok(Unique),
         make_tmp_path(Maildir, Unique, TmpPath),
-        InfoSuffix = flags_to_info_suffix(set.from_list(Flags)),
+        InfoSuffix = flags_to_info_suffix(Flags),
         % XXX don't think this condition is right
         ( InfoSuffix = info_suffix(set.init, "") ->
             make_path(Maildir, new, Unique, no, DestPath)

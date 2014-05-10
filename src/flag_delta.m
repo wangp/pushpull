@@ -4,7 +4,6 @@
 :- interface.
 
 :- import_module bool.
-:- import_module list.
 :- import_module set.
 
 :- import_module imap.
@@ -26,9 +25,20 @@
                 minus_set :: set(flag)
             ).
 
-:- func init_flag_deltas(list(flag)) = flag_deltas(S).
+:- func init_flags(set(flag)) = flag_deltas(S).
 
-:- func update_flag_deltas(flag_deltas(S), list(flag)) = flag_deltas(S).
+    % update_flags(Flags, !FlagDeltas, IsChanged)
+    % Assuming Flags contains the entire set of flags update !FlagDeltas.
+    %
+:- pred update_flags(set(flag)::in,
+    flag_deltas(S)::in, flag_deltas(S)::out, bool::out) is det.
+
+    % update_maildir_standard_flags(Flags, !FlagDeltas, IsChanged)
+    % Assuming Flags contains the entire set of maildir-standard flags
+    % update !FlagDeltas.
+    %
+:- pred update_maildir_standard_flags(set(flag)::in,
+    flag_deltas(S)::in, flag_deltas(S)::out, bool::out) is det.
 
     % apply_flag_deltas(!L, !R)
     % Apply nonconflicting deltas from R to L.
@@ -48,21 +58,42 @@
 :- implementation.
 
 :- import_module io.
+:- import_module list.
 :- import_module string.
 
 %-----------------------------------------------------------------------------%
 
-init_flag_deltas(Flags) = sets(Cur, Plus, Minus) :-
-    Cur = set.from_list(Flags),
+init_flags(Flags) = sets(Flags, Plus, Minus) :-
     Plus = set.init,
     Minus = set.init.
 
-update_flag_deltas(Sets0, Flags) = Sets :-
+update_flags(Flags, Sets0, Sets, IsChanged) :-
     Sets0 = sets(Cur0, Plus0, Minus0),
-    Cur = set.from_list(Flags),
-    Plus = difference(Cur, Cur0) `union` intersect(Plus0, Cur),
-    Minus = difference(Cur0, Cur) `union` difference(Minus0, Cur),
-    Sets = sets(Cur, Plus, Minus).
+    ( Cur0 = Flags ->
+        Sets = Sets0,
+        IsChanged = no
+    ;
+        Cur = Flags,
+        Plus = difference(Cur, Cur0) `union` intersect(Plus0, Cur),
+        Minus = difference(Cur0, Cur) `union` difference(Minus0, Cur),
+        Sets = sets(Cur, Plus, Minus),
+        IsChanged = yes
+    ).
+
+update_maildir_standard_flags(Flags, Sets0, Sets, IsChanged) :-
+    Sets0 = sets(Cur0, _, _),
+    Cur = difference(Cur0, maildir_standard_flags) `union` Flags,
+    update_flags(Cur, Sets0, Sets, IsChanged).
+
+:- func maildir_standard_flags = set(flag).
+
+maildir_standard_flags = set.from_list([
+    system(answered),
+    system(flagged),
+    system(deleted),
+    system(seen),
+    system(draft)
+]).
 
     %   For L{F +G -H}
     %
