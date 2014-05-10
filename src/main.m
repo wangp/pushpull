@@ -14,7 +14,6 @@
 
 :- import_module assoc_list.
 :- import_module bool.
-:- import_module dir.
 :- import_module integer.
 :- import_module list.
 :- import_module map.
@@ -648,7 +647,7 @@ equal_message_id(message_id(yes(A)), yes(B)) :-
     unpaired_remote_message::in, string::in, set(flag)::in, date_time::in,
     maybe_error::out, io::di, io::uo) is det.
 
-save_message_and_pair(Config, Database, LocalMailbox, UnpairedRemote,
+save_message_and_pair(_Config, Database, LocalMailbox, UnpairedRemote,
         RawMessageLf, Flags, InternalDate, Res, !IO) :-
     UnpairedRemote = unpaired_remote_message(PairingId, UID, MessageId),
     % Avoid duplicating an existing local mailbox.
@@ -656,7 +655,7 @@ save_message_and_pair(Config, Database, LocalMailbox, UnpairedRemote,
         RawMessageLf, ResMatch, !IO),
     (
         ResMatch = ok(no),
-        save_raw_message(Config, UID, RawMessageLf, Flags, InternalDate,
+        save_raw_message(LocalMailbox, UID, RawMessageLf, Flags, InternalDate,
             ResSave, !IO),
         (
             ResSave = ok(Unique),
@@ -744,7 +743,7 @@ verify_unpaired_local_message(LocalMailbox, UnpairedLocal, RawMessageLf,
     UnpairedLocal = unpaired_local_message(_PairingId, Unique),
     find_file(get_local_mailbox_path(LocalMailbox), Unique, ResFind, !IO),
     (
-        ResFind = ok(found(_DirNameSansNewOrCur, Path, _InfoSuffix)),
+        ResFind = ok(found(_MailboxPath, Path, _InfoSuffix)),
         verify_file(Path, RawMessageLf, Res, !IO)
     ;
         ResFind = ok(found_but_unexpected(Path)),
@@ -757,24 +756,21 @@ verify_unpaired_local_message(LocalMailbox, UnpairedLocal, RawMessageLf,
         Res = error(Error)
     ).
 
-    % XXX this should save to local_mailbox_path not Config ^ maildir
-:- pred save_raw_message(prog_config::in, uid::in, string::in, set(flag)::in,
+:- pred save_raw_message(local_mailbox::in, uid::in, string::in, set(flag)::in,
     date_time::in,  maybe_error(uniquename)::out, io::di, io::uo) is det.
 
-save_raw_message(Config, uid(UID), RawMessageLf, Flags, InternalDate, Res, !IO)
-        :-
-    Config ^ maildir = maildir(Maildir),
-    TmpDirName = Maildir / "tmp",
-    generate_unique_name(TmpDirName, ResUnique, !IO),
+save_raw_message(LocalMailbox, uid(UID), RawMessageLf, Flags, InternalDate,
+        Res, !IO) :-
+    LocalMailboxPath = get_local_mailbox_path(LocalMailbox),
+    generate_unique_tmp_path(LocalMailboxPath, ResUnique, !IO),
     (
-        ResUnique = ok(Unique),
-        make_tmp_path(Maildir, Unique, TmpPath),
+        ResUnique = ok({Unique, TmpPath}),
         InfoSuffix = flags_to_info_suffix(Flags),
         % XXX don't think this condition is right
         ( InfoSuffix = info_suffix(set.init, "") ->
-            make_path(Maildir, new, Unique, no, DestPath)
+            make_path(LocalMailboxPath, new, Unique, no, DestPath)
         ;
-            make_path(Maildir, cur, Unique, yes(InfoSuffix), DestPath)
+            make_path(LocalMailboxPath, cur, Unique, yes(InfoSuffix), DestPath)
         ),
         io.format("Saving message UID %s to %s\n",
             [s(to_string(UID)), s(DestPath)], !IO),
@@ -885,7 +881,7 @@ propagate_flag_deltas_for_message_found(Db, Pending, Found, Res, !IO) :-
     apply_flag_deltas(LocalFlags0, LocalFlags, RemoteFlags0, RemoteFlags),
 
     % Maybe we can keep in "new" if InfoSuffix still empty?
-    Found = found(DirNameSansNewOrCur, OldPath, MaybeInfoSuffix0),
+    Found = found(FolderPath, OldPath, MaybeInfoSuffix0),
     (
         MaybeInfoSuffix0 = no,
         InfoSuffix = flags_to_info_suffix(LocalFlags ^ cur_set)
@@ -893,7 +889,7 @@ propagate_flag_deltas_for_message_found(Db, Pending, Found, Res, !IO) :-
         MaybeInfoSuffix0 = yes(InfoSuffix0),
         update_standard_flags(LocalFlags ^ cur_set, InfoSuffix0, InfoSuffix)
     ),
-    make_path(DirNameSansNewOrCur, cur, Unique, yes(InfoSuffix), NewPath),
+    make_path(FolderPath, cur, Unique, yes(InfoSuffix), NewPath),
     ( OldPath = NewPath ->
         ResRename = ok
     ;

@@ -14,6 +14,9 @@
 
 %-----------------------------------------------------------------------------%
 
+    % Path to a Maildir directory, also known as a mail folder.
+    % It should have tmp/new/cur subdirectories.
+    %
 :- type local_mailbox_path
     --->    local_mailbox_path(string). % XXX canonicalise
 
@@ -27,19 +30,17 @@
 :- type info_suffix
     --->    info_suffix(set(char), string). % after ":2,"; may be empty
 
-:- pred generate_unique_name(string::in, maybe_error(uniquename)::out,
-    io::di, io::uo) is det.
+:- pred generate_unique_tmp_path(local_mailbox_path::in,
+    maybe_error({uniquename, string})::out, io::di, io::uo) is det.
 
-:- pred make_tmp_path(string::in, uniquename::in, string::out) is det.
-
-:- pred make_path(string::in, new_or_cur::in, uniquename::in,
+:- pred make_path(local_mailbox_path::in, new_or_cur::in, uniquename::in,
     maybe(info_suffix)::in, string::out) is det.
 
 :- type find_file_result
     --->    found(
-                dirname_sans_new_cur:: string, % not including new/cur
-                path                :: string, % entire path to file
-                info_suf            :: maybe(info_suffix)
+                mailbox_path :: local_mailbox_path,
+                path         :: string, % entire path to file
+                info_suf     :: maybe(info_suffix)
             )
     ;       found_but_unexpected(string)
     ;       not_found.
@@ -47,6 +48,9 @@
 :- inst found
     --->    found(ground, ground, ground).
 
+    % Search for a file in the given mailbox (including sub-mailboxes) with the
+    % given uniquename.
+    %
 :- pred find_file(local_mailbox_path::in, uniquename::in,
     maybe_error(find_file_result)::out, io::di, io::uo) is det.
 
@@ -83,15 +87,15 @@
 
 %-----------------------------------------------------------------------------%
 
-generate_unique_name(DirName, Res, !IO) :-
+generate_unique_tmp_path(local_mailbox_path(DirName), Res, !IO) :-
     % We follow the Dovecot file name generation algorithm
     % (also notmuch insert).
     get_pid(Pid, !IO),
     safe_gethostname(HostName, !IO),
-    generate_unique_name_2(DirName, Pid, HostName, Res, !IO).
+    generate_unique_name_2(DirName / "tmp", Pid, HostName, Res, !IO).
 
 :- pred generate_unique_name_2(string::in, int::in, string::in,
-    maybe_error(uniquename)::out, io::di, io::uo) is det.
+    maybe_error({uniquename, string})::out, io::di, io::uo) is det.
 
 generate_unique_name_2(DirName, Pid, HostName, Res, !IO) :-
     gettimeofday(Sec, Usec, !IO),
@@ -101,7 +105,7 @@ generate_unique_name_2(DirName, Pid, HostName, Res, !IO) :-
     open_excl(Path, Fd, AlreadyExists, !IO),
     ( Fd >= 0 ->
         close(Fd, !IO),
-        Res = ok(uniquename(UniqueName))
+        Res = ok({uniquename(UniqueName), Path})
     ; AlreadyExists = yes ->
         generate_unique_name_2(DirName, Pid, HostName, Res, !IO)
     ;
@@ -141,10 +145,8 @@ safe_gethostname(HostName, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-make_tmp_path(DirName, uniquename(Unique), Path) :-
-    Path = DirName / "tmp" / Unique.
-
-make_path(DirName, NewOrCur, uniquename(Unique), MaybeInfoSuffix, Path) :-
+make_path(local_mailbox_path(DirName), NewOrCur, uniquename(Unique),
+        MaybeInfoSuffix, Path) :-
     (
         MaybeInfoSuffix = yes(info_suffix(FlagChars, Rest)),
         Flags = string.from_char_list(to_sorted_list(FlagChars)),
@@ -191,12 +193,13 @@ find_file_2(uniquename(Unique), DirName, BaseName, FileType, Continue,
             dir.split_name(DirName, DirNameSansNewOrCur, NewOrCur),
             is_new_or_cur(NewOrCur)
         ->
+            MailboxPath = local_mailbox_path(DirNameSansNewOrCur),
             string.length(Unique, Pos0),
             string.length(BaseName, EndPos),
             ( Pos0 = EndPos ->
-                !:Found = found(DirNameSansNewOrCur, Path, no)
+                !:Found = found(MailboxPath, Path, no)
             ; parse_info_suffix(BaseName, Pos0, InfoSuffix) ->
-                !:Found = found(DirNameSansNewOrCur, Path, yes(InfoSuffix))
+                !:Found = found(MailboxPath, Path, yes(InfoSuffix))
             ;
                 !:Found = found_but_unexpected(Path)
             )
