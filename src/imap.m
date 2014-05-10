@@ -9,6 +9,7 @@
 :- import_module maybe.
 :- import_module pair.
 
+:- include_module imap.time.
 :- include_module imap.types.
 
 :- import_module imap.types.

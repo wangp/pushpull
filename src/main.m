@@ -27,10 +27,12 @@
 :- import_module database.
 :- import_module flag_delta.
 :- import_module imap.
+:- import_module imap.time.
 :- import_module imap.types.
 :- import_module maildir.
 :- import_module message_file.
 :- import_module signal.
+:- import_module utime.
 
 :- type prog_config
     --->    prog_config(
@@ -549,8 +551,9 @@ download_messages(Config, Database, IMAP, RemoteMailbox, UnpairedUIDs, Res,
 download_message(Config, Database, IMAP, _RemoteMailbox, PairingId, UID, Res,
         !IO) :-
     % Need FLAGS for Maildir filename.
+    % INTERNALDATE for setting mtime on new files.
     % MODSEQ could be used to update remote_message row.
-    Items = atts(rfc822, [flags, modseq]),
+    Items = atts(rfc822, [flags, modseq, internaldate]),
     uid_fetch(IMAP, singleton_sequence_set(UID), Items, no,
         result(ResFetch, Text, Alerts), !IO),
     report_alerts(Alerts, !IO),
@@ -559,9 +562,11 @@ download_message(Config, Database, IMAP, _RemoteMailbox, PairingId, UID, Res,
         ( find_uid_fetch_result(FetchResults, UID, Atts) ->
             (
                 get_rfc822_att(Atts, RawMessage),
-                get_flags(Atts, Flags)
+                get_flags(Atts, Flags),
+                get_internaldate(Atts, InternalDate)
             ->
-                save_raw_message(Config, UID, RawMessage, Flags, ResSave, !IO),
+                save_raw_message(Config, UID, RawMessage, Flags, InternalDate,
+                    ResSave, !IO),
                 (
                     ResSave = ok(Unique),
                     set_pairing_local_message(Database, PairingId, Unique,
@@ -608,10 +613,18 @@ get_flags(Atts, Flags) :-
     list.filter_map(flag_except_recent, Flags0, Flags1),
     set.list_to_set(Flags1, Flags).
 
-:- pred save_raw_message(prog_config::in, uid::in, imap_string::in,
-    set(flag)::in, maybe_error(uniquename)::out, io::di, io::uo) is det.
+:- pred get_internaldate(msg_atts::in, date_time::out) is semidet.
 
-save_raw_message(Config, uid(UID), RawMessage, Flags, Res, !IO) :-
+get_internaldate(Atts, DateTime) :-
+    solutions(pred(X::out) is nondet :- member(internaldate(X), Atts),
+        [DateTime]).
+
+:- pred save_raw_message(prog_config::in, uid::in, imap_string::in,
+    set(flag)::in, date_time::in,  maybe_error(uniquename)::out,
+    io::di, io::uo) is det.
+
+save_raw_message(Config, uid(UID), RawMessage, Flags, InternalDate, Res, !IO)
+        :-
     Config ^ maildir = maildir(Maildir),
     TmpDirName = Maildir / "tmp",
     generate_unique_name(TmpDirName, ResUnique, !IO),
@@ -633,13 +646,20 @@ save_raw_message(Config, uid(UID), RawMessage, Flags, Res, !IO) :-
             % XXX catch exceptions during write and fsync
             write_imap_string(Stream, RawMessage, !IO),
             io.close_output(Stream, !IO),
-            io.rename_file(TmpPath, DestPath, ResRename, !IO),
+            set_file_atime_mtime(TmpPath, mktime(InternalDate), ResTime, !IO),
             (
-                ResRename = ok,
-                Res = ok(Unique)
+                ResTime = ok,
+                io.rename_file(TmpPath, DestPath, ResRename, !IO),
+                (
+                    ResRename = ok,
+                    Res = ok(Unique)
+                ;
+                    ResRename = error(Error),
+                    io.remove_file(TmpPath, _, !IO),
+                    Res = error(io.error_message(Error))
+                )
             ;
-                ResRename = error(Error),
-                io.remove_file(TmpPath, _, !IO),
+                ResTime = error(Error),
                 Res = error(io.error_message(Error))
             )
         ;
