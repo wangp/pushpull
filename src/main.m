@@ -33,6 +33,7 @@
 :- import_module message_file.
 :- import_module signal.
 :- import_module utime.
+:- import_module verify_file.
 
 :- type prog_config
     --->    prog_config(
@@ -202,8 +203,8 @@ have_remote_mailbox(Config, Db, IMAP, LocalMailbox, RemoteMailbox,
             ResUpdateLocal, !IO),
         (
             ResUpdateLocal = ok,
-            download_unpaired_remote_messages(Config, Db, IMAP, RemoteMailbox,
-                ResDownload, !IO),
+            download_unpaired_remote_messages(Config, Db, IMAP, LocalMailbox,
+                RemoteMailbox, ResDownload, !IO),
             (
                 ResDownload = ok,
                 propagate_flag_deltas(Config, Db, LocalMailbox, RemoteMailbox,
@@ -506,38 +507,38 @@ do_update_db_with_remote_message_info(Db, LocalMailbox, RemoteMailbox, UID,
 %-----------------------------------------------------------------------------%
 
 :- pred download_unpaired_remote_messages(prog_config::in, database::in,
-    imap::in, remote_mailbox::in, maybe_error::out, io::di, io::uo) is det.
+    imap::in, local_mailbox::in, remote_mailbox::in, maybe_error::out,
+    io::di, io::uo) is det.
 
-download_unpaired_remote_messages(Config, Database, IMAP, RemoteMailbox,
-        Res, !IO) :-
-    search_pairings_without_local_message(Database, RemoteMailbox,
-        ResSearch, !IO),
+download_unpaired_remote_messages(Config, Database, IMAP, LocalMailbox,
+        RemoteMailbox, Res, !IO) :-
+    search_unpaired_remote_messages(Database, RemoteMailbox, ResSearch, !IO),
     (
-        ResSearch = ok(UnpairedUIDs),
-        download_messages(Config, Database, IMAP, RemoteMailbox, UnpairedUIDs,
-            Res, !IO)
+        ResSearch = ok(Unpaireds),
+        download_messages(Config, Database, IMAP, LocalMailbox, RemoteMailbox,
+            Unpaireds, Res, !IO)
     ;
         ResSearch = error(Error),
         Res = error(Error)
     ).
 
 :- pred download_messages(prog_config::in, database::in, imap::in,
-    remote_mailbox::in, assoc_list(pairing_id, uid)::in, maybe_error::out,
-    io::di, io::uo) is det.
+    local_mailbox::in, remote_mailbox::in, list(unpaired_remote_message)::in,
+    maybe_error::out, io::di, io::uo) is det.
 
-download_messages(Config, Database, IMAP, RemoteMailbox, UnpairedUIDs, Res,
-        !IO) :-
+download_messages(Config, Database, IMAP, LocalMailbox, RemoteMailbox,
+        Unpaireds, Res, !IO) :-
     (
-        UnpairedUIDs = [],
+        Unpaireds = [],
         Res = ok
     ;
-        UnpairedUIDs = [PairingId - UID | Rest],
-        download_message(Config, Database, IMAP, RemoteMailbox, PairingId, UID,
-            Res0, !IO),
+        Unpaireds = [H | T],
+        download_message(Config, Database, IMAP, LocalMailbox, RemoteMailbox,
+            H, Res0, !IO),
         (
             Res0 = ok,
-            download_messages(Config, Database, IMAP, RemoteMailbox, Rest, Res,
-                !IO)
+            download_messages(Config, Database, IMAP, LocalMailbox,
+                RemoteMailbox, T, Res, !IO)
         ;
             Res0 = error(Error),
             Res = error(Error)
@@ -545,11 +546,13 @@ download_messages(Config, Database, IMAP, RemoteMailbox, UnpairedUIDs, Res,
     ).
 
 :- pred download_message(prog_config::in, database::in, imap::in,
-    remote_mailbox::in, pairing_id::in, uid::in, maybe_error::out,
-    io::di, io::uo) is det.
+    local_mailbox::in, remote_mailbox::in, unpaired_remote_message::in,
+    maybe_error::out, io::di, io::uo) is det.
 
-download_message(Config, Database, IMAP, _RemoteMailbox, PairingId, UID, Res,
-        !IO) :-
+download_message(Config, Database, IMAP, LocalMailbox, _RemoteMailbox,
+        UnpairedRemote, Res, !IO) :-
+    UnpairedRemote = unpaired_remote_message(_PairingId, UID,
+        ExpectedMessageId),
     % Need FLAGS for Maildir filename.
     % INTERNALDATE for setting mtime on new files.
     % MODSEQ could be used to update remote_message row.
@@ -561,22 +564,36 @@ download_message(Config, Database, IMAP, _RemoteMailbox, PairingId, UID, Res,
         ResFetch = ok_with_data(FetchResults),
         ( find_uid_fetch_result(FetchResults, UID, Atts) ->
             (
-                get_rfc822_att(Atts, RawMessage),
+                get_rfc822_att(Atts, RawMessageCrLf),
                 get_flags(Atts, Flags),
                 get_internaldate(Atts, InternalDate)
             ->
-                save_raw_message(Config, UID, RawMessage, Flags, InternalDate,
-                    ResSave, !IO),
+                RawMessageLf = crlf_to_lf(RawMessageCrLf),
+                read_message_id_from_string(RawMessageLf, ResMessageId),
                 (
-                    ResSave = ok(Unique),
-                    set_pairing_local_message(Database, PairingId, Unique,
-                        Flags, Res, !IO)
+                    (
+                        ResMessageId = yes(ReadMessageId),
+                        HaveMessageId = yes(ReadMessageId)
+                    ;
+                        ResMessageId = no,
+                        HaveMessageId = no
+                    ),
+                    ( equal_message_id(ExpectedMessageId, HaveMessageId) ->
+                        save_message_and_pair(Config, Database, LocalMailbox,
+                            UnpairedRemote, RawMessageLf, Flags, InternalDate,
+                            Res, !IO)
+                    ;
+                        Res = error("unexpected Message-Id")
+                    )
                 ;
-                    ResSave = error(Error),
-                    Res = error(Error)
+                    ResMessageId = format_error(Error),
+                    Res = error("format error in RFC822 response: " ++ Error)
+                ;
+                    ResMessageId = error(Error),
+                    Res = error(io.error_message(Error))
                 )
             ;
-                Res = error("missing RFC822 response")
+                Res = error("problem with UID FETCH response")
             )
         ;
             % Message no longer exists on server?
@@ -600,11 +617,12 @@ find_uid_fetch_result(FetchResults, UID, MsgAtts) :-
         (pred(_ - Atts::in) is semidet :- list.member(uid(UID), Atts)),
         FetchResults, _MsgSeqNr - MsgAtts).
 
-:- pred get_rfc822_att(msg_atts::in, imap_string::out) is semidet.
+:- pred get_rfc822_att(msg_atts::in, string::out) is semidet.
 
 get_rfc822_att(Atts, String) :-
     solutions(pred(X::out) is nondet :- member(rfc822(X), Atts), [NString]),
-    NString = yes(String).
+    NString = yes(IString),
+    String = from_imap_string(IString).
 
 :- pred get_flags(msg_atts::in, set(flag)::out) is semidet.
 
@@ -619,11 +637,131 @@ get_internaldate(Atts, DateTime) :-
     solutions(pred(X::out) is nondet :- member(internaldate(X), Atts),
         [DateTime]).
 
-:- pred save_raw_message(prog_config::in, uid::in, imap_string::in,
-    set(flag)::in, date_time::in,  maybe_error(uniquename)::out,
+:- pred equal_message_id(imap.types.message_id::in, maybe(string)::in)
+    is semidet.
+
+equal_message_id(message_id(no), no).
+equal_message_id(message_id(yes(A)), yes(B)) :-
+    from_imap_string(A) = B.
+
+:- pred save_message_and_pair(prog_config::in, database::in, local_mailbox::in,
+    unpaired_remote_message::in, string::in, set(flag)::in, date_time::in,
+    maybe_error::out, io::di, io::uo) is det.
+
+save_message_and_pair(Config, Database, LocalMailbox, UnpairedRemote,
+        RawMessageLf, Flags, InternalDate, Res, !IO) :-
+    UnpairedRemote = unpaired_remote_message(PairingId, UID, MessageId),
+    % Avoid duplicating an existing local mailbox.
+    match_unpaired_local_message(Database, LocalMailbox, MessageId,
+        RawMessageLf, ResMatch, !IO),
+    (
+        ResMatch = ok(no),
+        save_raw_message(Config, UID, RawMessageLf, Flags, InternalDate,
+            ResSave, !IO),
+        (
+            ResSave = ok(Unique),
+            set_pairing_local_message(Database, PairingId, Unique,
+                init_flags(Flags), Res, !IO)
+        ;
+            ResSave = error(Error),
+            Res = error(Error)
+        )
+    ;
+        ResMatch = ok(yes(UnpairedLocal)),
+        UnpairedLocal = unpaired_local_message(OtherPairingId, Unique),
+        % XXX use a transaction around this sequence
+        lookup_local_message_flags(Database, OtherPairingId, ResLocalFlags,
+            !IO),
+        delete_pairing(Database, OtherPairingId, ResDeleteOther, !IO),
+        (
+            ResDeleteOther = ok,
+            (
+                ResLocalFlags = ok(LocalFlags),
+                set_pairing_local_message(Database, PairingId, Unique,
+                    LocalFlags, Res, !IO)
+            ;
+                ResLocalFlags = error(Error),
+                Res = error(Error)
+            )
+        ;
+            ResDeleteOther = error(Error),
+            Res = error(Error)
+        )
+    ;
+        ResMatch = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred match_unpaired_local_message(database::in, local_mailbox::in,
+    message_id::in, string::in,
+    maybe_error(maybe(unpaired_local_message))::out, io::di, io::uo) is det.
+
+match_unpaired_local_message(Database, LocalMailbox, MessageId, RawMessageLf,
+        Res, !IO) :-
+    search_unpaired_local_messages_by_message_id(Database, LocalMailbox,
+        MessageId, ResSearch, !IO),
+    (
+        ResSearch = ok(UnpairedLocals),
+        verify_unpaired_local_messages(LocalMailbox, UnpairedLocals,
+            RawMessageLf, Res, !IO)
+    ;
+        ResSearch = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred verify_unpaired_local_messages(local_mailbox::in,
+    list(unpaired_local_message)::in, string::in,
+    maybe_error(maybe(unpaired_local_message))::out, io::di, io::uo) is det.
+
+verify_unpaired_local_messages(LocalMailbox, UnpairedLocals, RawMessageLf,
+        Res, !IO) :-
+    (
+        UnpairedLocals = [],
+        Res = ok(no)
+    ;
+        UnpairedLocals = [UnpairedLocal | RestUnpairedLocals],
+        verify_unpaired_local_message(LocalMailbox, UnpairedLocal,
+            RawMessageLf, ResVerify, !IO),
+        (
+            ResVerify = ok(yes),
+            Res = ok(yes(UnpairedLocal))
+        ;
+            ResVerify = ok(no),
+            verify_unpaired_local_messages(LocalMailbox, RestUnpairedLocals,
+                RawMessageLf, Res, !IO)
+        ;
+            ResVerify = error(Error),
+            Res = error(Error)
+        )
+    ).
+
+:- pred verify_unpaired_local_message(local_mailbox::in,
+    unpaired_local_message::in, string::in, maybe_error(bool)::out,
     io::di, io::uo) is det.
 
-save_raw_message(Config, uid(UID), RawMessage, Flags, InternalDate, Res, !IO)
+verify_unpaired_local_message(LocalMailbox, UnpairedLocal, RawMessageLf,
+        Res, !IO) :-
+    UnpairedLocal = unpaired_local_message(_PairingId, Unique),
+    find_file(get_local_mailbox_path(LocalMailbox), Unique, ResFind, !IO),
+    (
+        ResFind = ok(found(_DirNameSansNewOrCur, Path, _InfoSuffix)),
+        verify_file(Path, RawMessageLf, Res, !IO)
+    ;
+        ResFind = ok(found_but_unexpected(Path)),
+        Res = error("found unique name but unexpected: " ++ Path)
+    ;
+        ResFind = ok(not_found),
+        Res = ok(no)
+    ;
+        ResFind = error(Error),
+        Res = error(Error)
+    ).
+
+    % XXX this should save to local_mailbox_path not Config ^ maildir
+:- pred save_raw_message(prog_config::in, uid::in, string::in, set(flag)::in,
+    date_time::in,  maybe_error(uniquename)::out, io::di, io::uo) is det.
+
+save_raw_message(Config, uid(UID), RawMessageLf, Flags, InternalDate, Res, !IO)
         :-
     Config ^ maildir = maildir(Maildir),
     TmpDirName = Maildir / "tmp",
@@ -644,7 +782,7 @@ save_raw_message(Config, uid(UID), RawMessage, Flags, InternalDate, Res, !IO)
         (
             ResOpen = ok(Stream),
             % XXX catch exceptions during write and fsync
-            write_imap_string(Stream, RawMessage, !IO),
+            io.write_string(Stream, RawMessageLf, !IO),
             io.close_output(Stream, !IO),
             set_file_atime_mtime(TmpPath, mktime(InternalDate), ResTime, !IO),
             (
@@ -671,17 +809,6 @@ save_raw_message(Config, uid(UID), RawMessage, Flags, InternalDate, Res, !IO)
         ResUnique = error(Error),
         Res = error(Error)
     ).
-
-:- pred write_imap_string(io.output_stream::in, imap_string::in,
-    io::di, io::uo) is det.
-
-write_imap_string(Stream, IString, !IO) :-
-    (
-        IString = quoted(String)
-    ;
-        IString = literal(String)
-    ),
-    io.write_string(Stream, crlf_to_lf(String), !IO).
 
 :- func crlf_to_lf(string) = string.
 

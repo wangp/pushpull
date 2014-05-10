@@ -14,6 +14,11 @@
 :- pred read_message_id(string::in, read_message_id_result::out,
     io::di, io::uo) is det.
 
+    % The input string is assumed to use LF endings.
+    %
+:- pred read_message_id_from_string(string::in, read_message_id_result::out)
+    is det.
+
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
@@ -86,6 +91,19 @@ chop_crlf_or_lf(Line0, Line) :-
         string.remove_suffix(Line0, "\n", Line1),
         Line = Line1
     ).
+
+%-----------------------------------------------------------------------------%
+
+read_message_id_from_string(Input, Res) :-
+    ( string.sub_string_search(Input, "\n\n", HeaderEndPos) ->
+        string.unsafe_between(Input, 0, HeaderEndPos, Header),
+        Lines = string.split_at_string("\n", Header),
+        extract_message_id(Lines, no, Res)
+    ;
+        Res = format_error("missing header and body separator line")
+    ).
+
+%-----------------------------------------------------------------------------%
 
 :- pred extract_message_id(list(string)::in, maybe(message_id)::in,
     read_message_id_result::out) is det.

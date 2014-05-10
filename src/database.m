@@ -3,7 +3,6 @@
 :- module database.
 :- interface.
 
-:- import_module assoc_list.
 :- import_module bool.
 :- import_module io.
 :- import_module list.
@@ -84,8 +83,15 @@
     local_mailbox::in, remote_mailbox::in, uid::in, set(flag)::in,
     maybe_error::out, io::di, io::uo) is det.
 
+:- pred delete_pairing(database::in, pairing_id::in,
+    maybe_error::out, io::di, io::uo) is det.
+
 :- pred set_pairing_local_message(database::in, pairing_id::in,
-    uniquename::in, set(flag)::in, maybe_error::out, io::di, io::uo) is det.
+    uniquename::in, flag_deltas(local_mailbox)::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+:- pred lookup_local_message_flags(database::in, pairing_id::in,
+    maybe_error(flag_deltas(local_mailbox))::out, io::di, io::uo) is det.
 
 :- pred update_local_message_flags(database::in, pairing_id::in,
     flag_deltas(local_mailbox)::in, bool::in, maybe_error::out,
@@ -95,9 +101,25 @@
     flag_deltas(remote_mailbox)::in, bool::in, maybe_error::out,
     io::di, io::uo) is det.
 
-:- pred search_pairings_without_local_message(database::in,
-    remote_mailbox::in, maybe_error(assoc_list(pairing_id, uid))::out,
-    io::di, io::uo) is det.
+:- type unpaired_remote_message
+    --->    unpaired_remote_message(
+                pairing_id,
+                uid,
+                message_id
+            ).
+
+:- pred search_unpaired_remote_messages(database::in, remote_mailbox::in,
+    maybe_error(list(unpaired_remote_message))::out, io::di, io::uo) is det.
+
+:- type unpaired_local_message
+    --->    unpaired_local_message(
+                pairing_id,
+                uniquename
+            ).
+
+:- pred search_unpaired_local_messages_by_message_id(database::in,
+    local_mailbox::in, message_id::in,
+    maybe_error(list(unpaired_local_message))::out, io::di, io::uo) is det.
 
 :- type pending_flag_deltas
     --->    pending_flag_deltas(
@@ -269,6 +291,12 @@
 
 :- instance convert(string, uniquename) where [
     convert(S, uniquename(S))
+].
+
+:- instance convert(string, message_id) where [
+    % We treated a lack of Message-Id the same as empty string
+    % so this might be a problem.
+    convert(S, message_id(yes(quoted(S))))
 ].
 
 :- instance convert(string, flag_deltas(S)) where [
@@ -659,15 +687,39 @@ insert_new_remote_message_2(Db, Stmt, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-set_pairing_local_message(Db, PairingId, UniqueName, Flags, Res, !IO) :-
-    LocalFlagDeltas = init_flags(Flags) : flag_deltas(local_mailbox),
+delete_pairing(Db, PairingId, Res, !IO) :-
+    Stmt = "DELETE FROM pairing"
+        ++ " WHERE pairing_id = :pairing_id",
+    with_stmt(delete_pairing_2, Db, Stmt, [
+        name(":pairing_id") - bind_value(PairingId)
+    ], Res, !IO).
+
+:- pred delete_pairing_2(db(rw)::in, stmt::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+delete_pairing_2(Db, Stmt, Res, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
+    (
+        StepResult = done,
+        Res = ok
+    ;
+        StepResult = row,
+        Res = error("unexpected row")
+    ;
+        StepResult = error(Error),
+        Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
+set_pairing_local_message(Db, PairingId, UniqueName, FlagDeltas, Res, !IO) :-
     Stmt = "UPDATE pairing"
         ++ " SET local_uniquename = :local_uniquename,"
         ++ "     local_flags = :local_flags"
         ++ " WHERE pairing_id = :pairing_id",
     with_stmt(set_pairing_local_message_2, Db, Stmt, [
         name(":local_uniquename") - bind_value(UniqueName),
-        name(":local_flags") - bind_value(LocalFlagDeltas),
+        name(":local_flags") - bind_value(FlagDeltas),
         name(":pairing_id") - bind_value(PairingId)
     ], Res, !IO).
 
@@ -682,6 +734,36 @@ set_pairing_local_message_2(Db, Stmt, Res, !IO) :-
     ;
         StepResult = row,
         Res = error("unexpected row")
+    ;
+        StepResult = error(Error),
+        Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
+lookup_local_message_flags(Db, PairingId, Res, !IO) :-
+    Stmt = "SELECT local_flags FROM pairing"
+        ++ " WHERE pairing_id = :pairing_id",
+    with_stmt(lookup_local_message_flags_2, Db, Stmt, [
+        name(":pairing_id") - bind_value(PairingId)
+    ], Res, !IO).
+
+:- pred lookup_local_message_flags_2(db(rw)::in, stmt::in,
+    maybe_error(flag_deltas(local_mailbox))::out, io::di, io::uo) is det.
+
+lookup_local_message_flags_2(Db, Stmt, Res, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
+    (
+        StepResult = done,
+        Res = error("pairing not found")
+    ;
+        StepResult = row,
+        column_text(Stmt, column(0), X0, !IO),
+        ( convert(X0, Flags) ->
+            Res = ok(Flags)
+        ;
+            Res = error("database error")
+        )
     ;
         StepResult = error(Error),
         Res = error(Error)
@@ -747,34 +829,90 @@ update_remote_message_flags_2(Db, Stmt, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-search_pairings_without_local_message(Db, RemoteMailbox, Res, !IO) :-
+search_unpaired_remote_messages(Db, RemoteMailbox, Res, !IO) :-
     RemoteMailbox = remote_mailbox(_, _, RemoteMailboxId),
-    Stmt = "SELECT pairing_id, remote_uid FROM pairing"
+    Stmt = "SELECT pairing_id, remote_uid, message_id FROM pairing"
         ++ " WHERE remote_mailbox_id = :remote_mailbox_id"
         ++ "   AND local_uniquename IS NULL",
-    with_stmt(search_pairings_without_local_message_2, Db, Stmt, [
+    with_stmt(search_unpaired_remote_messages_2, Db, Stmt, [
         name(":remote_mailbox_id") - bind_value(RemoteMailboxId)
     ], Res, !IO).
 
-:- pred search_pairings_without_local_message_2(db(rw)::in, stmt::in,
-    maybe_error(assoc_list(pairing_id, uid))::out, io::di, io::uo) is det.
+:- pred search_unpaired_remote_messages_2(db(rw)::in, stmt::in,
+    maybe_error(list(unpaired_remote_message))::out, io::di, io::uo) is det.
 
-search_pairings_without_local_message_2(Db, Stmt, Res, !IO) :-
-    search_pairings_without_local_message_3(Db, Stmt, Res0, [], UnpairedUIDs,
-        !IO),
+search_unpaired_remote_messages_2(Db, Stmt, Res, !IO) :-
+    search_unpaired_remote_messages_3(Db, Stmt, Res0, [], Unpaired, !IO),
     (
         Res0 = ok,
-        Res = ok(UnpairedUIDs)
+        Res = ok(Unpaired)
     ;
         Res0 = error(Error),
         Res = error(Error)
     ).
 
-:- pred search_pairings_without_local_message_3(db(rw)::in, stmt::in,
-    maybe_error::out, assoc_list(pairing_id, uid)::in,
-    assoc_list(pairing_id, uid)::out, io::di, io::uo) is det.
+:- pred search_unpaired_remote_messages_3(db(rw)::in, stmt::in,
+    maybe_error::out, list(unpaired_remote_message)::in,
+    list(unpaired_remote_message)::out, io::di, io::uo) is det.
 
-search_pairings_without_local_message_3(Db, Stmt, Res, !UnpairedUIDs, !IO) :-
+search_unpaired_remote_messages_3(Db, Stmt, Res, !Unpaired, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
+    (
+        StepResult = done,
+        Res = ok
+    ;
+        StepResult = row,
+        column_int(Stmt, column(0), X0, !IO),
+        column_text(Stmt, column(1), X1, !IO),
+        column_text(Stmt, column(2), X2, !IO),
+        (
+            convert(X0, PairingId),
+            convert(X1, UID),
+            convert(X2, MessageId)
+        ->
+            Unpaired = unpaired_remote_message(PairingId, UID, MessageId),
+            cons(Unpaired, !Unpaired),
+            search_unpaired_remote_messages_3(Db, Stmt, Res, !Unpaired, !IO)
+        ;
+            Res = error("database error")
+        )
+    ;
+        StepResult = error(Error),
+        Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
+search_unpaired_local_messages_by_message_id(Db, LocalMailbox, MessageId, Res,
+        !IO) :-
+    LocalMailbox = local_mailbox(_, LocalMailboxId),
+    Stmt = "SELECT pairing_id, local_uniquename FROM pairing"
+        ++ " WHERE local_mailbox_id = :local_mailbox_id"
+        ++ "   AND message_id = :message_id"
+        ++ "   AND remote_uid IS NULL",
+    with_stmt(search_unpaired_local_messages_2, Db, Stmt, [
+        name(":local_mailbox_id") - bind_value(LocalMailboxId),
+        name(":message_id") - bind_value(MessageId)
+    ], Res, !IO).
+
+:- pred search_unpaired_local_messages_2(db(rw)::in, stmt::in,
+    maybe_error(list(unpaired_local_message))::out, io::di, io::uo) is det.
+
+search_unpaired_local_messages_2(Db, Stmt, Res, !IO) :-
+    search_unpaired_local_messages_3(Db, Stmt, Res0, [], Unpaired, !IO),
+    (
+        Res0 = ok,
+        Res = ok(Unpaired)
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred search_unpaired_local_messages_3(db(rw)::in, stmt::in,
+    maybe_error::out, list(unpaired_local_message)::in,
+    list(unpaired_local_message)::out, io::di, io::uo) is det.
+
+search_unpaired_local_messages_3(Db, Stmt, Res, !Unpaired, !IO) :-
     step(Db, Stmt, StepResult, !IO),
     (
         StepResult = done,
@@ -785,11 +923,11 @@ search_pairings_without_local_message_3(Db, Stmt, Res, !UnpairedUIDs, !IO) :-
         column_text(Stmt, column(1), X1, !IO),
         (
             convert(X0, PairingId),
-            convert(X1, UID)
+            convert(X1, Unique)
         ->
-            cons(PairingId - UID, !UnpairedUIDs),
-            search_pairings_without_local_message_3(Db, Stmt, Res,
-                !UnpairedUIDs, !IO)
+            Unpaired = unpaired_local_message(PairingId, Unique),
+            cons(Unpaired, !Unpaired),
+            search_unpaired_local_messages_3(Db, Stmt, Res, !Unpaired, !IO)
         ;
             Res = error("database error")
         )

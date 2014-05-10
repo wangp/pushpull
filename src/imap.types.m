@@ -221,6 +221,8 @@
 
 :- func make_astring(string) = astring.
 
+:- func from_imap_string(imap_string) = string.
+
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
@@ -251,6 +253,9 @@ make_astring(S) = AString :-
     ;
         AString = imap_string(literal(S))
     ).
+
+from_imap_string(quoted(S)) = S.
+from_imap_string(literal(S)) = S.
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et
