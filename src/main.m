@@ -22,6 +22,7 @@
 :- import_module set.
 :- import_module solutions.
 :- import_module string.
+:- import_module time.
 
 :- import_module database.
 :- import_module flag_delta.
@@ -51,6 +52,12 @@
     --->    remote_message_info(
                 message_id  :: maybe_message_id,
                 flags       :: set(flag)    % does not include \Recent
+            ).
+
+:- type file_data
+    --->    file_data(
+                content :: string,
+                modtime :: time_t
             ).
 
 %-----------------------------------------------------------------------------%
@@ -136,7 +143,7 @@ main_2(Config, Db, LocalMailbox, !IO) :-
 
 logged_in(Config, Db, IMAP, LocalMailbox, !IO) :-
     MailboxName = Config ^ mailbox,
-    examine(IMAP, MailboxName, result(ResExamine, Text, Alerts), !IO),
+    select(IMAP, MailboxName, result(ResExamine, Text, Alerts), !IO),
     report_alerts(Alerts, !IO),
     (
         ResExamine = ok,
@@ -206,13 +213,21 @@ have_remote_mailbox(Config, Db, IMAP, LocalMailbox, RemoteMailbox,
                 RemoteMailbox, ResDownload, !IO),
             (
                 ResDownload = ok,
-                propagate_flag_deltas(Config, Db, LocalMailbox, RemoteMailbox,
-                    ResProp, !IO),
+                upload_unpaired_local_messages(Config, Db, IMAP, LocalMailbox,
+                    RemoteMailbox, ResUpload, !IO),
                 (
-                    ResProp = ok,
-                    Res = ok
+                    ResUpload = ok,
+                    propagate_flag_deltas(Config, Db, LocalMailbox,
+                        RemoteMailbox, ResProp, !IO),
+                    (
+                        ResProp = ok,
+                        Res = ok
+                    ;
+                        ResProp = error(Error),
+                        Res = error(Error)
+                    )
                 ;
-                    ResProp = error(Error),
+                    ResUpload = error(Error),
                     Res = error(Error)
                 )
             ;
@@ -800,6 +815,251 @@ save_raw_message(LocalMailbox, uid(UID), RawMessageLf, Flags, InternalDate,
 :- func crlf_to_lf(string) = string.
 
 crlf_to_lf(S) = string.replace_all(S, "\r\n", "\n").
+
+%-----------------------------------------------------------------------------%
+
+:- pred upload_unpaired_local_messages(prog_config::in, database::in, imap::in,
+    local_mailbox::in, remote_mailbox::in, maybe_error::out, io::di, io::uo)
+    is det.
+
+upload_unpaired_local_messages(Config, Database, IMAP, LocalMailbox,
+        RemoteMailbox, Res, !IO) :-
+    % Currently we download unpaired remote messages first and try to pair them
+    % with existing local messages, so the remaining unpaired local messages
+    % should actually not have remote counterparts.
+    search_unpaired_local_messages(Database, LocalMailbox, ResSearch, !IO),
+    (
+        ResSearch = ok(UnpairedLocals),
+        upload_messages(Config, Database, IMAP, LocalMailbox, RemoteMailbox,
+            UnpairedLocals, Res, !IO)
+    ;
+        ResSearch = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred upload_messages(prog_config::in, database::in, imap::in,
+    local_mailbox::in, remote_mailbox::in, list(unpaired_local_message)::in,
+    maybe_error::out, io::di, io::uo) is det.
+
+upload_messages(Config, Database, IMAP, LocalMailbox, RemoteMailbox,
+        UnpairedLocals, Res, !IO) :-
+    (
+        UnpairedLocals = [],
+        Res = ok
+    ;
+        UnpairedLocals = [H | T],
+        upload_message(Config, Database, IMAP, LocalMailbox, RemoteMailbox,
+            H, Res0, !IO),
+        (
+            Res0 = ok,
+            upload_messages(Config, Database, IMAP, LocalMailbox,
+                RemoteMailbox, T, Res, !IO)
+        ;
+            Res0 = error(Error),
+            Res = error(Error)
+        )
+    ).
+
+:- pred upload_message(prog_config::in, database::in, imap::in,
+    local_mailbox::in, remote_mailbox::in, unpaired_local_message::in,
+    maybe_error::out, io::di, io::uo) is det.
+
+upload_message(_Config, Database, IMAP, LocalMailbox, RemoteMailbox,
+        UnpairedLocal, Res, !IO) :-
+    LocalMailboxPath = get_local_mailbox_path(LocalMailbox),
+    UnpairedLocal = unpaired_local_message(PairingId, Unique),
+    find_file(LocalMailboxPath, Unique, ResFind, !IO),
+    (
+        ResFind = ok(found(_MailboxPath, Path, _InfoSuffix)),
+        lookup_local_message_flags(Database, PairingId, ResFlags, !IO),
+        (
+            ResFlags = ok(LocalFlagDeltas),
+            get_file_data(Path, ResFileData, !IO),
+            (
+                ResFileData = ok(FileData),
+                LocalFlags = LocalFlagDeltas ^ cur_set,
+                do_upload_message(IMAP, RemoteMailbox, FileData, LocalFlags,
+                    ResUpload, !IO),
+                (
+                    ResUpload = ok(MaybeUID),
+                    (
+                        MaybeUID = yes(UID),
+                        % XXX is it okay to assume RemoteFlags?
+                        RemoteFlags = init_flags(LocalFlags),
+                        set_pairing_remote_message(Database, PairingId, UID,
+                            RemoteFlags, Res, !IO)
+                    ;
+                        MaybeUID = no,
+                        % We don't know the UID of the appended message.
+                        % At the next sync we should notice the new message
+                        % and, after downloading it, pair it up with the local
+                        % message.
+                        Res = ok
+                    )
+                ;
+                    ResUpload = error(Error),
+                    Res = error(Error)
+                )
+            ;
+                ResFileData = error(Error),
+                Res = error(io.error_message(Error))
+            )
+        ;
+            ResFlags = error(Error),
+            Res = error(Error)
+        )
+    ;
+        ResFind = ok(found_but_unexpected(Path)),
+        Res = error("found unique name but unexpected: " ++ Path)
+    ;
+        ResFind = ok(not_found),
+        % Maybe deleted since.
+        Res = ok
+    ;
+        ResFind = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred get_file_data(string::in, io.res(file_data)::out, io::di, io::uo)
+    is det.
+
+get_file_data(Path, Res, !IO) :-
+    io.file_modification_time(Path, ResTime, !IO),
+    (
+        ResTime = ok(ModTime),
+        io.open_input(Path, ResOpen, !IO),
+        (
+            ResOpen = ok(Stream),
+            io.read_file_as_string(Stream, ResRead, !IO),
+            io.close_input(Stream, !IO),
+            (
+                ResRead = ok(Content),
+                Res = ok(file_data(Content, ModTime))
+            ;
+                ResRead = error(_, Error),
+                Res = error(Error)
+            )
+        ;
+            ResOpen = error(Error),
+            Res = error(Error)
+        )
+    ;
+        ResTime = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred do_upload_message(imap::in, remote_mailbox::in, file_data::in,
+    set(flag)::in, maybe_error(maybe(uid))::out, io::di, io::uo) is det.
+
+do_upload_message(IMAP, RemoteMailbox, FileData, Flags, Res, !IO) :-
+    MailboxName = get_remote_mailbox_name(RemoteMailbox),
+    UIDValidity = get_remote_mailbox_uidvalidity(RemoteMailbox),
+    % Try to get an older mod-seq-value prior to APPEND if appending to the
+    % selected mailbox.
+    get_selected_mailbox_uidvalidity(IMAP, SelectedUIDValidity, !IO),
+    get_selected_mailbox_highest_modseqvalue(IMAP, HighestModSeqValue, !IO),
+    (
+        SelectedUIDValidity = yes(UIDValidity),
+        HighestModSeqValue = yes(highestmodseq(ModSeqValue))
+    ->
+        PriorModSeqValue = yes(ModSeqValue)
+    ;
+        PriorModSeqValue = no
+    ),
+
+    FileData = file_data(Content, ModTime),
+    DateTime = make_date_time(ModTime),
+    append(IMAP, MailboxName, to_sorted_list(Flags), yes(DateTime), Content,
+        result(ResAppend, Text, Alerts), !IO),
+    report_alerts(Alerts, !IO),
+    (
+        ResAppend = ok_with_data(MaybeAppendUID),
+        io.write_string(Text, !IO),
+        io.nl(!IO),
+        get_appended_uid(IMAP, RemoteMailbox, MaybeAppendUID, Content,
+            PriorModSeqValue, Res, !IO)
+    ;
+        ( ResAppend = no
+        ; ResAppend = bad
+        ; ResAppend = bye
+        ; ResAppend = continue
+        ; ResAppend = error
+        ),
+        Res = error("unexpected response to APPEND: " ++ Text)
+    ).
+
+:- pred get_appended_uid(imap::in, remote_mailbox::in, maybe(appenduid)::in,
+    string::in, maybe(mod_seq_value)::in, maybe_error(maybe(uid))::out,
+    io::di, io::uo) is det.
+
+get_appended_uid(IMAP, RemoteMailbox, MaybeAppendUID, Content,
+        PriorModSeqValue, Res, !IO) :-
+    % In the best case the server sent an APPENDUID response with the UID.
+    % Otherwise we search the mailbox for the Message-Id (if it's unique).
+    % Otherwise we give up.
+    UIDValidity = get_remote_mailbox_uidvalidity(RemoteMailbox),
+    (
+        MaybeAppendUID = yes(appenduid(UIDValidity, UIDSet)),
+        is_singleton_set(UIDSet, UID)
+    ->
+        Res = ok(yes(UID))
+    ;
+        get_appended_uid_fallback(IMAP, Content, PriorModSeqValue, Res, !IO)
+    ).
+
+:- pred get_appended_uid_fallback(imap::in, string::in,
+    maybe(mod_seq_value)::in, maybe_error(maybe(uid))::out, io::di, io::uo)
+    is det.
+
+get_appended_uid_fallback(IMAP, Content, PriorModSeqValue, Res, !IO) :-
+    read_message_id_from_string(Content, ReadMessageId),
+    (
+        ReadMessageId = yes(MessageId),
+        SearchKey0 = header(make_astring("Message-Id"),
+            make_astring(MessageId)),
+        % If we know a mod-seq-value prior to the APPEND then we can restrict
+        % the search.
+        (
+            PriorModSeqValue = yes(mod_seq_value(ModSeqValue)),
+            SearchKey = and(modseq(mod_seq_valzer(ModSeqValue)), [SearchKey0])
+        ;
+            PriorModSeqValue = no,
+            SearchKey = SearchKey0
+        ),
+        uid_search(IMAP, SearchKey, result(ResSearch, Text, Alerts), !IO),
+        report_alerts(Alerts, !IO),
+        (
+            ResSearch = ok_with_data(UIDs - _HighestModSeqValueOfFound),
+            io.write_string(Text, !IO),
+            io.nl(!IO),
+            ( UIDs = [UID] ->
+                Res = ok(yes(UID))
+            ;
+                Res = ok(no)
+            )
+        ;
+            ( ResSearch = no
+            ; ResSearch = bad
+            ; ResSearch = bye
+            ; ResSearch = continue
+            ; ResSearch = error
+            ),
+            Res = error("unexpected response to UID SEARCH: " ++ Text)
+        )
+    ;
+        ( ReadMessageId = no
+        ; ReadMessageId = format_error(_)
+        ; ReadMessageId = error(_)
+        ),
+        Res = ok(no)
+    ).
+
+:- pred is_singleton_set(uid_set::in, uid::out) is semidet.
+
+is_singleton_set(Set, UID) :-
+    solutions(
+        (pred(X::out) is nondet :- member(uid_range(X, X), Set)),
+        [UID]).
 
 %-----------------------------------------------------------------------------%
 

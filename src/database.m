@@ -29,11 +29,11 @@
 
 :- type remote_mailbox.
 
-:- type lookup_remote_mailbox_result
-    --->    found(remote_mailbox, mod_seq_valzer)
-    ;       error(string).
-
 :- func get_local_mailbox_path(local_mailbox) = local_mailbox_path.
+
+:- func get_remote_mailbox_name(remote_mailbox) = imap.types.mailbox.
+
+:- func get_remote_mailbox_uidvalidity(remote_mailbox) = imap.types.uidvalidity.
 
     % Insert a local_mailbox row into the database with the given path.
     % If such a row already exists then do nothing.
@@ -51,6 +51,10 @@
     %
 :- pred insert_or_ignore_remote_mailbox(database::in, mailbox::in,
     uidvalidity::in, maybe_error::out, io::di, io::uo) is det.
+
+:- type lookup_remote_mailbox_result
+    --->    found(remote_mailbox, mod_seq_valzer)
+    ;       error(string).
 
     % Lookup the remote_mailbox in the database with the given mailbox name
     % and uidvalidity value.
@@ -90,6 +94,10 @@
     uniquename::in, flag_deltas(local_mailbox)::in, maybe_error::out,
     io::di, io::uo) is det.
 
+:- pred set_pairing_remote_message(database::in, pairing_id::in,
+    uid::in, flag_deltas(remote_mailbox)::in, maybe_error::out,
+    io::di, io::uo) is det.
+
 :- pred lookup_local_message_flags(database::in, pairing_id::in,
     maybe_error(flag_deltas(local_mailbox))::out, io::di, io::uo) is det.
 
@@ -116,6 +124,9 @@
                 pairing_id,
                 uniquename
             ).
+
+:- pred search_unpaired_local_messages(database::in, local_mailbox::in,
+    maybe_error(list(unpaired_local_message))::out, io::di, io::uo) is det.
 
 :- pred search_unpaired_local_messages_by_message_id(database::in,
     local_mailbox::in, maybe_message_id::in,
@@ -379,6 +390,13 @@ close_database(Db, !IO) :-
 %-----------------------------------------------------------------------------%
 
 get_local_mailbox_path(local_mailbox(LocalMailboxPath, _)) = LocalMailboxPath.
+
+get_remote_mailbox_name(remote_mailbox(Mailbox, _, _)) = Mailbox.
+
+get_remote_mailbox_uidvalidity(remote_mailbox(_, UIDValidity, _))
+    = UIDValidity.
+
+%-----------------------------------------------------------------------------%
 
 insert_or_ignore_local_mailbox(Db, Path, Res, !IO) :-
     Stmt = "INSERT OR IGNORE INTO local_mailbox(path) VALUES (:path)",
@@ -743,6 +761,35 @@ set_pairing_local_message_2(Db, Stmt, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
+set_pairing_remote_message(Db, PairingId, UID, FlagDeltas, Res, !IO) :-
+    Stmt = "UPDATE pairing"
+        ++ " SET remote_uid = :remote_uid,"
+        ++ "     remote_flags = :remote_flags"
+        ++ " WHERE pairing_id = :pairing_id",
+    with_stmt(set_pairing_remote_message_2, Db, Stmt, [
+        name(":remote_uid") - bind_value(UID),
+        name(":remote_flags") - bind_value(FlagDeltas),
+        name(":pairing_id") - bind_value(PairingId)
+    ], Res, !IO).
+
+:- pred set_pairing_remote_message_2(db(rw)::in, stmt::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+set_pairing_remote_message_2(Db, Stmt, Res, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
+    (
+        StepResult = done,
+        Res = ok
+    ;
+        StepResult = row,
+        Res = error("unexpected row")
+    ;
+        StepResult = error(Error),
+        Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
 lookup_local_message_flags(Db, PairingId, Res, !IO) :-
     Stmt = "SELECT local_flags FROM pairing"
         ++ " WHERE pairing_id = :pairing_id",
@@ -835,6 +882,7 @@ search_unpaired_remote_messages(Db, RemoteMailbox, Res, !IO) :-
     RemoteMailbox = remote_mailbox(_, _, RemoteMailboxId),
     Stmt = "SELECT pairing_id, remote_uid, message_id FROM pairing"
         ++ " WHERE remote_mailbox_id = :remote_mailbox_id"
+        ++ "   AND remote_uid IS NOT NULL"
         ++ "   AND local_uniquename IS NULL",
     with_stmt(search_unpaired_remote_messages_2, Db, Stmt, [
         name(":remote_mailbox_id") - bind_value(RemoteMailboxId)
@@ -885,13 +933,24 @@ search_unpaired_remote_messages_3(Db, Stmt, Res, !Unpaired, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
+search_unpaired_local_messages(Db, LocalMailbox, Res, !IO) :-
+    LocalMailbox = local_mailbox(_, LocalMailboxId),
+    Stmt = "SELECT pairing_id, local_uniquename FROM pairing"
+        ++ " WHERE local_mailbox_id = :local_mailbox_id"
+        ++ "   AND local_uniquename IS NOT NULL"
+        ++ "   AND remote_uid IS NULL",
+    with_stmt(search_unpaired_local_messages_2, Db, Stmt, [
+        name(":local_mailbox_id") - bind_value(LocalMailboxId)
+    ], Res, !IO).
+
 search_unpaired_local_messages_by_message_id(Db, LocalMailbox, MessageId, Res,
         !IO) :-
     LocalMailbox = local_mailbox(_, LocalMailboxId),
     Stmt = "SELECT pairing_id, local_uniquename FROM pairing"
         ++ " WHERE local_mailbox_id = :local_mailbox_id"
-        ++ "   AND message_id = :message_id"
-        ++ "   AND remote_uid IS NULL",
+        ++ "   AND local_uniquename IS NOT NULL"
+        ++ "   AND remote_uid IS NULL"
+        ++ "   AND message_id = :message_id",
     with_stmt(search_unpaired_local_messages_2, Db, Stmt, [
         name(":local_mailbox_id") - bind_value(LocalMailboxId),
         name(":message_id") - bind_value(MessageId)
