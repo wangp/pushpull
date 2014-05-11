@@ -141,11 +141,19 @@
                 flag_deltas(remote_mailbox)
             ).
 
+:- pred search_pending_flag_deltas_from_local(database::in, local_mailbox::in,
+    remote_mailbox::in, maybe_error(list(pending_flag_deltas))::out,
+    io::di, io::uo) is det.
+
 :- pred search_pending_flag_deltas_from_remote(database::in, local_mailbox::in,
     remote_mailbox::in, maybe_error(list(pending_flag_deltas))::out,
     io::di, io::uo) is det.
 
 :- pred record_remote_flag_deltas_applied_to_local(database::in,
+    pairing_id::in, flag_deltas(local_mailbox)::in,
+    flag_deltas(remote_mailbox)::in, maybe_error::out, io::di, io::uo) is det.
+
+:- pred record_local_flag_deltas_applied_to_remote(database::in,
     pairing_id::in, flag_deltas(local_mailbox)::in,
     flag_deltas(remote_mailbox)::in, maybe_error::out, io::di, io::uo) is det.
 
@@ -999,6 +1007,22 @@ search_unpaired_local_messages_3(Db, Stmt, Res, !Unpaired, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
+search_pending_flag_deltas_from_local(Db, LocalMailbox, RemoteMailbox, Res,
+        !IO) :-
+    LocalMailbox = local_mailbox(_, LocalMailboxId),
+    RemoteMailbox = remote_mailbox(_, _, RemoteMailboxId),
+    Stmt = "SELECT pairing_id, local_uniquename, local_flags,"
+        ++ "       remote_uid, remote_flags"
+        ++ "  FROM pairing"
+        ++ " WHERE local_mailbox_id = :local_mailbox_id"
+        ++ "   AND local_uniquename IS NOT NULL"
+        ++ "   AND remote_mailbox_id = :remote_mailbox_id"
+        ++ "   AND local_flags_attn = 1",
+    with_stmt(accum_pending_flag_deltas, Db, Stmt, [
+        name(":local_mailbox_id") - bind_value(LocalMailboxId),
+        name(":remote_mailbox_id") - bind_value(RemoteMailboxId)
+    ], Res, !IO).
+
 search_pending_flag_deltas_from_remote(Db, LocalMailbox, RemoteMailbox, Res,
         !IO) :-
     LocalMailbox = local_mailbox(_, LocalMailboxId),
@@ -1010,16 +1034,16 @@ search_pending_flag_deltas_from_remote(Db, LocalMailbox, RemoteMailbox, Res,
         ++ "   AND local_uniquename IS NOT NULL"
         ++ "   AND remote_mailbox_id = :remote_mailbox_id"
         ++ "   AND remote_flags_attn = 1",
-    with_stmt(search_pending_flag_deltas_from_remote_2, Db, Stmt, [
+    with_stmt(accum_pending_flag_deltas, Db, Stmt, [
         name(":local_mailbox_id") - bind_value(LocalMailboxId),
         name(":remote_mailbox_id") - bind_value(RemoteMailboxId)
     ], Res, !IO).
 
-:- pred search_pending_flag_deltas_from_remote_2(db(rw)::in, stmt::in,
+:- pred accum_pending_flag_deltas(db(rw)::in, stmt::in,
     maybe_error(list(pending_flag_deltas))::out, io::di, io::uo) is det.
 
-search_pending_flag_deltas_from_remote_2(Db, Stmt, Res, !IO) :-
-    search_pending_flag_deltas_from_remote_3(Db, Stmt, Res0, [], Pending, !IO),
+accum_pending_flag_deltas(Db, Stmt, Res, !IO) :-
+    accum_pending_flag_deltas_2(Db, Stmt, Res0, [], Pending, !IO),
     (
         Res0 = ok,
         Res = ok(Pending)
@@ -1028,11 +1052,11 @@ search_pending_flag_deltas_from_remote_2(Db, Stmt, Res, !IO) :-
         Res = error(Error)
     ).
 
-:- pred search_pending_flag_deltas_from_remote_3(db(rw)::in, stmt::in,
+:- pred accum_pending_flag_deltas_2(db(rw)::in, stmt::in,
     maybe_error::out, list(pending_flag_deltas)::in,
     list(pending_flag_deltas)::out, io::di, io::uo) is det.
 
-search_pending_flag_deltas_from_remote_3(Db, Stmt, Res, !Pending, !IO) :-
+accum_pending_flag_deltas_2(Db, Stmt, Res, !Pending, !IO) :-
     step(Db, Stmt, StepResult, !IO),
     (
         StepResult = done,
@@ -1054,8 +1078,7 @@ search_pending_flag_deltas_from_remote_3(Db, Stmt, Res, !Pending, !IO) :-
             Pending = pending_flag_deltas(PairingId, UniqueName,
                 LocalFlagDeltas, UID, RemoteFlagDeltas),
             cons(Pending, !Pending),
-            search_pending_flag_deltas_from_remote_3(Db, Stmt, Res, !Pending,
-                !IO)
+            accum_pending_flag_deltas_2(Db, Stmt, Res, !Pending, !IO)
         ;
             Res = error("database error")
         )
@@ -1073,16 +1096,29 @@ record_remote_flag_deltas_applied_to_local(Db, PairingId, LocalFlags,
         ++ "     remote_flags = :remote_flags,"
         ++ "     remote_flags_attn = 0"
         ++ " WHERE pairing_id = :pairing_id",
-    with_stmt(record_remote_flag_deltas_applied_to_local, Db, Stmt, [
+    with_stmt(record_flag_deltas_applied_2, Db, Stmt, [
         name(":pairing_id") - bind_value(PairingId),
         name(":local_flags") - bind_value(LocalFlags),
         name(":remote_flags") - bind_value(RemoteFlags)
     ], Res, !IO).
 
-:- pred record_remote_flag_deltas_applied_to_local(db(rw)::in, stmt::in,
+record_local_flag_deltas_applied_to_remote(Db, PairingId, LocalFlags,
+        RemoteFlags, Res, !IO) :-
+    Stmt = "UPDATE pairing"
+        ++ " SET local_flags = :local_flags,"
+        ++ "     remote_flags = :remote_flags,"
+        ++ "     local_flags_attn = 0"
+        ++ " WHERE pairing_id = :pairing_id",
+    with_stmt(record_flag_deltas_applied_2, Db, Stmt, [
+        name(":pairing_id") - bind_value(PairingId),
+        name(":local_flags") - bind_value(LocalFlags),
+        name(":remote_flags") - bind_value(RemoteFlags)
+    ], Res, !IO).
+
+:- pred record_flag_deltas_applied_2(db(rw)::in, stmt::in,
     maybe_error::out, io::di, io::uo) is det.
 
-record_remote_flag_deltas_applied_to_local(Db, Stmt, Res, !IO) :-
+record_flag_deltas_applied_2(Db, Stmt, Res, !IO) :-
     step(Db, Stmt, StepResult, !IO),
     (
         StepResult = done,

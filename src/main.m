@@ -217,13 +217,21 @@ have_remote_mailbox(Config, Db, IMAP, LocalMailbox, RemoteMailbox,
                     RemoteMailbox, ResUpload, !IO),
                 (
                     ResUpload = ok,
-                    propagate_flag_deltas(Config, Db, LocalMailbox,
-                        RemoteMailbox, ResProp, !IO),
+                    propagate_flag_deltas_from_remote(Config, Db, LocalMailbox,
+                        RemoteMailbox, ResPropRemote, !IO),
                     (
-                        ResProp = ok,
-                        Res = ok
+                        ResPropRemote = ok,
+                        propagate_flag_deltas_from_local(Config, Db, IMAP,
+                            LocalMailbox, RemoteMailbox, ResPropLocal, !IO),
+                        (
+                            ResPropLocal = ok,
+                            Res = ok
+                        ;
+                            ResPropLocal = error(Error),
+                            Res = error(Error)
+                        )
                     ;
-                        ResProp = error(Error),
+                        ResPropRemote = error(Error),
                         Res = error(Error)
                     )
                 ;
@@ -1063,42 +1071,43 @@ is_singleton_set(Set, UID) :-
 
 %-----------------------------------------------------------------------------%
 
-:- pred propagate_flag_deltas(prog_config::in, database::in, local_mailbox::in,
-    remote_mailbox::in, maybe_error::out, io::di, io::uo) is det.
+:- pred propagate_flag_deltas_from_remote(prog_config::in, database::in,
+    local_mailbox::in, remote_mailbox::in, maybe_error::out, io::di, io::uo)
+    is det.
 
-propagate_flag_deltas(Config, Db, LocalMailbox, RemoteMailbox, Res, !IO) :-
-    % For now only from remote to local.
+propagate_flag_deltas_from_remote(Config, Db, LocalMailbox, RemoteMailbox,
+        Res, !IO) :-
     search_pending_flag_deltas_from_remote(Db, LocalMailbox, RemoteMailbox,
         ResSearch, !IO),
     (
         ResSearch = ok(Pendings),
-        list.foldl2(propagate_flag_deltas_2(Config, Db, LocalMailbox,
-            RemoteMailbox), Pendings, ok, Res, !IO)
+        list.foldl2(propagate_flag_deltas_from_remote_2(Config, Db,
+            LocalMailbox, RemoteMailbox), Pendings, ok, Res, !IO)
     ;
         ResSearch = error(Error),
         Res = error(Error)
     ).
 
-:- pred propagate_flag_deltas_2(prog_config::in, database::in,
+:- pred propagate_flag_deltas_from_remote_2(prog_config::in, database::in,
     local_mailbox::in, remote_mailbox::in, pending_flag_deltas::in,
     maybe_error::in, maybe_error::out, io::di, io::uo) is det.
 
-propagate_flag_deltas_2(Config, Db, LocalMailbox, RemoteMailbox, Pending,
-        Res0, Res, !IO) :-
+propagate_flag_deltas_from_remote_2(Config, Db, LocalMailbox, RemoteMailbox,
+        Pending, Res0, Res, !IO) :-
     (
         Res0 = ok,
-        propagate_flag_deltas_for_message(Config, Db, LocalMailbox,
+        propagate_flag_deltas_from_remote_3(Config, Db, LocalMailbox,
             RemoteMailbox, Pending, Res, !IO)
     ;
         Res0 = error(Error),
         Res = error(Error)
     ).
 
-:- pred propagate_flag_deltas_for_message(prog_config::in, database::in,
+:- pred propagate_flag_deltas_from_remote_3(prog_config::in, database::in,
     local_mailbox::in, remote_mailbox::in, pending_flag_deltas::in,
     maybe_error::out, io::di, io::uo) is det.
 
-propagate_flag_deltas_for_message(_Config, Db, LocalMailbox, _RemoteMailbox,
+propagate_flag_deltas_from_remote_3(_Config, Db, LocalMailbox, _RemoteMailbox,
         Pending, Res, !IO) :-
     Pending = pending_flag_deltas(_PairingId, Unique, _LocalFlags0, _UID,
         _RemoteFlags0),
@@ -1155,6 +1164,93 @@ propagate_flag_deltas_for_message_found(Db, Pending, Found, Res, !IO) :-
     ;
         ResRename = error(Error),
         Res = error(io.error_message(Error))
+    ).
+
+%-----------------------------------------------------------------------------%
+
+:- pred propagate_flag_deltas_from_local(prog_config::in, database::in,
+    imap::in, local_mailbox::in, remote_mailbox::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+propagate_flag_deltas_from_local(_Config, Db, IMAP, LocalMailbox, RemoteMailbox,
+        Res, !IO) :-
+    search_pending_flag_deltas_from_local(Db, LocalMailbox, RemoteMailbox,
+        ResSearch, !IO),
+    (
+        ResSearch = ok(Pendings),
+        list.foldl2(propagate_flag_deltas_from_local_2(Db, IMAP),
+            Pendings, ok, Res, !IO)
+    ;
+        ResSearch = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred propagate_flag_deltas_from_local_2(database::in, imap::in,
+    pending_flag_deltas::in, maybe_error::in, maybe_error::out, io::di, io::uo)
+    is det.
+
+propagate_flag_deltas_from_local_2(Db, IMAP, Pending, Res0, Res, !IO) :-
+    (
+        Res0 = ok,
+        propagate_flag_deltas_from_local_3(Db, IMAP, Pending, Res, !IO)
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred propagate_flag_deltas_from_local_3(database::in, imap::in,
+    pending_flag_deltas::in, maybe_error::out, io::di, io::uo) is det.
+
+propagate_flag_deltas_from_local_3(Db, IMAP, Pending, Res, !IO) :-
+    Pending = pending_flag_deltas(PairingId, _Unique, LocalFlags0, UID,
+        RemoteFlags0),
+    apply_flag_deltas(RemoteFlags0, RemoteFlags, LocalFlags0, LocalFlags),
+
+    Flags0 = RemoteFlags0 ^ cur_set,
+    Flags = RemoteFlags ^ cur_set,
+    AddFlags = Flags `difference` Flags0,
+    RemoveFlags = Flags0 `difference` Flags,
+
+    % Would it be preferable to read back the actual flags from the server?
+    store_remote_flags(IMAP, UID, remove, RemoveFlags, Res0, !IO),
+    (
+        Res0 = ok,
+        store_remote_flags(IMAP, UID, add, AddFlags, Res1, !IO),
+        (
+            Res1 = ok,
+            record_local_flag_deltas_applied_to_remote(Db, PairingId,
+                LocalFlags, RemoteFlags, Res, !IO)
+        ;
+            Res1 = error(Error),
+            Res = error(Error)
+        )
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred store_remote_flags(imap::in, uid::in, store_operation::in,
+    set(flag)::in, maybe_error::out, io::di, io::uo) is det.
+
+store_remote_flags(IMAP, UID, Operation, ChangeFlags, Res, !IO) :-
+    ( set.empty(ChangeFlags) ->
+        Res = ok
+    ;
+        uid_store(IMAP, singleton_sequence_set(UID), Operation, silent,
+            to_sorted_list(ChangeFlags), result(ResAdd, Text, Alerts), !IO),
+        report_alerts(Alerts, !IO),
+        (
+            ResAdd = ok_with_data(_),
+            Res = ok
+        ;
+            ( ResAdd = no
+            ; ResAdd = bad
+            ; ResAdd = bye
+            ; ResAdd = continue
+            ; ResAdd = error
+            ),
+            Res = error("unexpected response to UID STORE: " ++ Text)
+        )
     ).
 
 %-----------------------------------------------------------------------------%
