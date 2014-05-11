@@ -225,6 +225,15 @@
 :- type uid_range
     --->    uid_range(uid, uid).    % low, high (inclusive)
 
+:- type store_operation
+    --->    replace
+    ;       add
+    ;       remove.
+
+:- type store_silence
+    --->    silent
+    ;       not_silent.
+
 %-----------------------------------------------------------------------------%
 
 :- func singleton_sequence_set(T) = sequence_set(T).

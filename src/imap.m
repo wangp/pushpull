@@ -90,6 +90,11 @@
     imap_result(assoc_list(message_seq_nr, msg_atts))::out, io::di, io::uo)
     is det.
 
+:- pred uid_store(imap::in, sequence_set(uid)::in, store_operation::in,
+    store_silence::in, list(flag)::in,
+    imap_result(assoc_list(message_seq_nr, msg_atts))::out, io::di, io::uo)
+    is det.
+
     % Expected result is continue, not ok.
     %
 :- pred idle(imap::in, imap_result::out, io::di, io::uo) is det.
@@ -933,6 +938,44 @@ apply_uid_fetch_response(Response, Result, !State, unit, unit, !IO) :-
     ),
     FinalRespText = resp_text(_MaybeResponseCode, Text),
     Result = result(Res, Text, Alerts).
+
+%-----------------------------------------------------------------------------%
+
+uid_store(IMAP, SequenceSet, Operation, Silence, Flags, Res, !IO) :-
+    command_wrapper_low(do_uid_store(SequenceSet, Operation, Silence, Flags),
+        [selected], IMAP, MaybeRes, !IO),
+    (
+        MaybeRes = ok(Res)
+    ;
+        MaybeRes = error(Error),
+        Res = result(error, Error, [])
+    ).
+
+:- pred do_uid_store(sequence_set(uid)::in, store_operation::in,
+    store_silence::in, list(flag)::in, imap::in,
+    imap_result(assoc_list(message_seq_nr, msg_atts))::out, io::di, io::uo)
+    is det.
+
+do_uid_store(SequenceSet, Operation, Silence, Flags, IMAP, Res, !IO) :-
+    get_new_tag(IMAP, Pipe, Tag, !IO),
+    Command = uid_store(SequenceSet, Operation, Silence, Flags),
+    make_command_stream(Tag - command_select(Command), CommandStream),
+    write_command_stream(Pipe, Tag, CommandStream, Res0, !IO),
+    (
+        Res0 = ok,
+        wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
+        (
+            MaybeResponse = ok(Response),
+            update_state(apply_uid_fetch_response, IMAP, Response, Res,
+                unit, _ : unit, !IO)
+        ;
+            MaybeResponse = error(Error),
+            Res = result(error, Error, [])
+        )
+    ;
+        Res0 = error(Error),
+        Res = result(error, Error, [])
+    ).
 
 %-----------------------------------------------------------------------------%
 

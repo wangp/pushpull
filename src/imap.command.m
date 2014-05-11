@@ -51,6 +51,8 @@
     ;       uid_fetch(sequence_set(uid), fetch_items,
                 maybe(fetch_modifier))
     %;      store(sequence_set, ...)
+    ;       uid_store(sequence_set(uid), store_operation, store_silence,
+                list(flag))
     ;       search(search)
     ;       uid_search(search).
 
@@ -93,6 +95,13 @@ make_command_stream(Command, List) :-
     List = list(Acc).
 
 idle_done_command_stream = ["DONE"].
+
+:- pred add_sp_sep_list(list(T)::in, acc::in, acc::out) is det <= add(T).
+
+add_sp_sep_list([], !Acc).
+add_sp_sep_list([X | Xs], !Acc) :-
+    add(X, !Acc),
+    list.foldl(add_sp_then, Xs, !Acc).
 
 :- pred add_sp_then(T::in, acc::in, acc::out) is det <= add(T).
 
@@ -236,10 +245,9 @@ escape_for_quoted_string(S0) = S :-
         (
             Flags = []
         ;
-            Flags = [Flag | MoreFlags],
+            Flags = [_ | _],
             add(" (", !Acc),
-            add(Flag, !Acc),
-            list.foldl(add_sp_then, MoreFlags, !Acc),
+            add_sp_sep_list(Flags, !Acc),
             add(")", !Acc)
         ),
         (
@@ -313,6 +321,30 @@ escape_for_quoted_string(S0) = S :-
         ;
             MaybeModifier = no
         )
+    ;
+        Command = uid_store(SequenceSet, Operation, Silence, Flags),
+        add("UID STORE ", !Acc),
+        add(SequenceSet, !Acc),
+        add(sp, !Acc),
+        (
+            Operation = replace,
+            add("FLAGS", !Acc)
+        ;
+            Operation = add,
+            add("+FLAGS", !Acc)
+        ;
+            Operation = remove,
+            add("-FLAGS", !Acc)
+        ),
+        (
+            Silence = silent,
+            add(".SILENT", !Acc)
+        ;
+            Silence = not_silent
+        ),
+        add(" (", !Acc),
+        add_sp_sep_list(Flags, !Acc),
+        add(")", !Acc)
     ;
         (
             Command = search(search(MaybeCharset, SearchKey)),
@@ -429,10 +461,9 @@ escape_for_quoted_string(S0) = S :-
         add(sp, !Acc),
         add(KeyB, !Acc)
     ;
-        SearchKey = and(KeyA, Keys),
+        SearchKey = and(Key, Keys),
         add("(", !Acc),
-        add(KeyA, !Acc),
-        list.foldl(add_sp_then, Keys, !Acc),
+        add_sp_sep_list([Key | Keys], !Acc),
         add(")", !Acc)
     ;
         % RFC 4551
@@ -461,8 +492,7 @@ escape_for_quoted_string(S0) = S :-
         ;
             Atts = [_ | _],
             add("(", !Acc),
-            add(Att, !Acc),
-            list.foldl(add_sp_then, Atts, !Acc),
+            add_sp_sep_list([Att | Atts], !Acc),
             add(")", !Acc)
         )
     )
