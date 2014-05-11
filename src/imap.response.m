@@ -73,6 +73,7 @@
     ;       unseen(message_seq_nr)
     ;       highestmodseq(mod_seq_value)
     ;       nomodseq
+    ;       appenduid(appenduid)
     ;       other(atom, maybe(string)).
 
 :- inst mailbox_response_code
@@ -157,7 +158,9 @@
 :- implementation.
 
 :- import_module exception.
+:- import_module integer.
 :- import_module require.
+:- import_module set.
 :- import_module string.
 
 :- import_module imap.charclass.
@@ -542,6 +545,14 @@ standard_resp_text_code(Src, atom(Atom), Code, !PS) :-
         % RFC 4551
         Atom = "NOMODSEQ",
         Code = nomodseq
+    ;
+        % RFC 4315
+        Atom = "APPENDUID",
+        sp(Src, !PS),
+        nz_number(Src, Number, !PS),
+        sp(Src, !PS),
+        uid_set(Src, UIDSet, !PS),
+        Code = appenduid(appenduid(uidvalidity(Number), UIDSet))
     ).
 
 :- pred other_resp_text_code(src::in, atom::in, resp_text_code::out,
@@ -993,23 +1004,6 @@ date_month(Src, Month, !PS) :-
     string.from_char_list(Chars, String),
     month(String, Month).
 
-:- pred month(string, month).
-:- mode month(in, out) is semidet.
-:- mode month(out, in) is det.
-
-month("JAN", jan).
-month("FEB", feb).
-month("MAR", mar).
-month("APR", apr).
-month("MAY", may).
-month("JUN", jun).
-month("JUL", jul).
-month("AUG", aug).
-month("SEP", sep).
-month("OCT", oct).
-month("NOV", nov).
-month("DEC", dec).
-
 :- pred date_year(src::in, int::out, ps::in, ps::out) is semidet.
 
 date_year(Src, Year, !PS) :-
@@ -1042,6 +1036,42 @@ zone(Src, Zone, !PS) :-
 
 uniqueid(Src, uid(Number), !PS) :-
     nz_number(Src, Number, !PS).
+
+:- pred uid_set(src::in, uid_set::out, ps::in, ps::out) is semidet.
+
+uid_set(Src, Set, !PS) :-
+    uid_set_2(Src, set.init, Set, !PS).
+
+:- pred uid_set_2(src::in, uid_set::in, uid_set::out, ps::in, ps::out)
+    is semidet.
+
+uid_set_2(Src, !Set, !PS) :-
+    uniqueid(Src, First, !PS),
+    ( next_char(Src, ':', !PS) ->
+        uniqueid(Src, Second, !PS),
+        ( First =< Second ->
+            Low = First,
+            High = Second
+        ;
+            Low = Second,
+            High = First
+        ),
+        Range = uid_range(Low, High)
+    ;
+        Range = uid_range(First, First)
+    ),
+    set.insert(Range, !Set),
+    ( next_char(Src, ',', !PS) ->
+        uid_set_2(Src, !Set, !PS)
+    ;
+        true
+    ).
+
+:- pred uid =< uid.
+:- mode in =< in is semidet.
+
+uid(X) =< uid(Y) :-
+    X =< Y.
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

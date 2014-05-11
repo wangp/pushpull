@@ -4,6 +4,7 @@
 :- interface.
 
 :- import_module integer.
+:- import_module set.
 
 :- type atom
     --->    atom(string).           % 1*ATOM-CHAR (keep uppercased)
@@ -216,6 +217,16 @@
 :- type zone
     --->    zone(string).   % +HHMM or -HHMM
 
+:- type appenduid
+    --->    appenduid(uidvalidity, uid_set).
+
+:- type uid_set == set(uid_range).
+
+:- type uid_range
+    --->    uid_range(uid, uid).    % low, high (inclusive)
+
+%-----------------------------------------------------------------------------%
+
 :- func singleton_sequence_set(T) = sequence_set(T).
 
 :- pred make_sequence_set(list(T)::in, sequence_set(T)::out) is semidet.
@@ -223,6 +234,10 @@
 :- func make_astring(string) = astring.
 
 :- func from_imap_string(imap_string) = string.
+
+:- pred month(string, month).
+:- mode month(in, out) is semidet.
+:- mode month(out, in) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -257,6 +272,19 @@ make_astring(S) = AString :-
 
 from_imap_string(quoted(S)) = S.
 from_imap_string(literal(S)) = S.
+
+month("JAN", jan).
+month("FEB", feb).
+month("MAR", mar).
+month("APR", apr).
+month("MAY", may).
+month("JUN", jun).
+month("JUL", jul).
+month("AUG", aug).
+month("SEP", sep).
+month("OCT", oct).
+month("NOV", nov).
+month("DEC", dec).
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

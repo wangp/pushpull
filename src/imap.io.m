@@ -9,7 +9,7 @@
 :- pred read_bytes(pipe::in, int::in, io.res(list(int))::out,
     io::di, io::uo) is det.
 
-:- pred write_command_stream(pipe::in, list(string)::in,
+:- pred write_command_stream(pipe::in, tag::in, list(string)::in,
     maybe_error::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
@@ -18,6 +18,9 @@
 :- implementation.
 
 :- import_module require.
+
+:- inst open
+    --->    open(ground).
 
 %-----------------------------------------------------------------------------%
 
@@ -87,34 +90,68 @@ read_bytes(closed, _NumOctets, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-write_command_stream(open(Pipe), Xs, Res, !IO) :-
+write_command_stream(open(Pipe), Tag, Xs, Res, !IO) :-
     trace [runtime(env("DEBUG_IMAP")), io(!IO2)] (
         Stream = io.stderr_stream,
         io.write_string(Stream, "\x1B\[32;01m", !IO2),
         list.foldl(io.write_string(Stream), Xs, !IO2),
         io.write_string(Stream, "\x1B\[0m\n", !IO2)
     ),
-    write_command_stream_2(Pipe, Xs, Res, !IO),
+    write_command_stream_2(open(Pipe), Tag, Xs, Res, !IO),
     flush_output(Pipe, !IO).
 
-write_command_stream(closed, _, Res, !IO) :-
+write_command_stream(closed, _, _, Res, !IO) :-
     Res = error("session closed").
 
-:- pred write_command_stream_2(subprocess::in, list(string)::in,
+:- pred write_command_stream_2(pipe::in(open), tag::in, list(string)::in,
     maybe_error::out, io::di, io::uo) is det.
 
-write_command_stream_2(Pipe, [], Res, !IO) :-
+write_command_stream_2(open(Pipe), _Tag, [], Res, !IO) :-
     write_string(Pipe, crlf, Res, !IO).
-write_command_stream_2(Pipe, [X | Xs], Res, !IO) :-
+write_command_stream_2(OpenPipe, Tag, [X | Xs], Res, !IO) :-
+    OpenPipe = open(Pipe),
     write_string(Pipe, X, Res0, !IO),
     (
         Res0 = ok,
         ( X = crlf ->
-            % XXX Wait for continuation request from server.
             flush_output(Pipe, !IO),
-            write_command_stream_2(Pipe, Xs, Res, !IO)
+            wait_for_continuation_request(OpenPipe, Tag, ResContinue, !IO),
+            (
+                ResContinue = ok,
+                write_command_stream_2(OpenPipe, Tag, Xs, Res, !IO)
+            ;
+                ResContinue = error(Error),
+                Res = error(Error)
+            )
         ;
-            write_command_stream_2(Pipe, Xs, Res, !IO)
+            write_command_stream_2(OpenPipe, Tag, Xs, Res, !IO)
+        )
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred wait_for_continuation_request(pipe::in(open), tag::in,
+    maybe_error::out, io::di, io::uo) is det.
+
+wait_for_continuation_request(Pipe, Tag, Res, !IO) :-
+    wait_for_complete_response(Pipe, Tag, Res0, !IO),
+    (
+        Res0 = ok(Response),
+        % XXX do something with the rest of the response
+        Response = complete_response(_, FinalMaybeTag, _),
+        (
+            FinalMaybeTag = continue,
+            Res = ok
+        ;
+            ( FinalMaybeTag = tagged(_, ok)
+            ; FinalMaybeTag = tagged(_, no)
+            ; FinalMaybeTag = tagged(_, bad)
+            ),
+            Res = error("expected continuation request")
+        ;
+            FinalMaybeTag = bye,
+            Res = error("received BYE")
         )
     ;
         Res0 = error(Error),

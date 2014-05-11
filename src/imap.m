@@ -78,6 +78,9 @@
 :- pred get_selected_mailbox_highest_modseqvalue(imap::in,
     maybe(highestmodseq)::out, io::di, io::uo) is det.
 
+:- pred append(imap::in, mailbox::in, list(flag)::in, maybe(date_time)::in,
+    string::in, imap_result(maybe(appenduid))::out, io::di, io::uo) is det.
+
 :- pred uid_search(imap::in, search_key::in,
     imap_result(pair(list(uid), maybe(mod_seq_value)))::out, io::di, io::uo)
     is det.
@@ -190,7 +193,8 @@
     pred handle_search_results(list(integer)::in, maybe(mod_seq_value)::in,
         T::in, T::out) is det,
     pred handle_fetch_results(message_seq_nr::in, msg_atts::in, T::in, T::out)
-        is det
+        is det,
+    pred handle_appenduid(appenduid::in, T::in, T::out) is det
 ].
 
 %-----------------------------------------------------------------------------%
@@ -286,6 +290,7 @@ handle_greeting_resp_text(RespText, MaybeCaps, Alerts) :-
             ; ResponseCode = unseen(_)
             ; ResponseCode = highestmodseq(_)
             ; ResponseCode = nomodseq
+            ; ResponseCode = appenduid(_)
             ; ResponseCode = other(_, _)
             ),
             MaybeCaps = no,
@@ -455,7 +460,7 @@ capability(IMAP, Res, !IO) :-
 do_capability(IMAP, Res, !IO) :-
     get_new_tag(IMAP, Pipe, Tag, !IO),
     make_command_stream(Tag - command_any(capability), CommandStream),
-    write_command_stream(Pipe, CommandStream, Res0, !IO),
+    write_command_stream(Pipe, Tag, CommandStream, Res0, !IO),
     (
         Res0 = ok,
         wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
@@ -528,7 +533,7 @@ do_login(username(UserName), password(Password), IMAP, Res, !IO) :-
     get_new_tag(IMAP, Pipe, Tag, !IO),
     Login = login(make_astring(UserName), make_astring(Password)),
     make_command_stream(Tag - command_nonauth(Login), CommandStream),
-    write_command_stream(Pipe, CommandStream, Res0, !IO),
+    write_command_stream(Pipe, Tag, CommandStream, Res0, !IO),
     (
         Res0 = ok,
         wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
@@ -579,7 +584,7 @@ logout(IMAP, Res, !IO) :-
 do_logout(IMAP, Res, !IO) :-
     get_new_tag(IMAP, Pipe, Tag, !IO),
     make_command_stream(Tag - command_any(logout), CommandStream),
-    write_command_stream(Pipe, CommandStream, Res0, !IO),
+    write_command_stream(Pipe, Tag, CommandStream, Res0, !IO),
     (
         Res0 = ok,
         wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
@@ -649,7 +654,7 @@ do_select_or_examine(DoSelect, Mailbox, IMAP, Res, !IO) :-
         Command = examine(Mailbox)
     ),
     make_command_stream(Tag - command_auth(Command), CommandStream),
-    write_command_stream(Pipe, CommandStream, Res0, !IO),
+    write_command_stream(Pipe, Tag, CommandStream, Res0, !IO),
     (
         Res0 = ok,
         wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
@@ -729,6 +734,70 @@ get_selected_mailbox_highest_modseqvalue(IMAP, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
+append(IMAP, Mailbox, Flags, MaybeDateTime, Content, Res, !IO) :-
+    command_wrapper_low(do_append(Mailbox, Flags, MaybeDateTime, Content),
+        [authenticated, selected], IMAP, MaybeRes, !IO),
+    (
+        MaybeRes = ok(Res)
+    ;
+        MaybeRes = error(Error),
+        Res = result(error, Error, [])
+    ).
+
+:- pred do_append(mailbox::in, list(flag)::in, maybe(date_time)::in,
+    string::in, imap::in, imap_result(maybe(appenduid))::out, io::di, io::uo)
+    is det.
+
+do_append(Mailbox, Flags, MaybeDateTime, Content, IMAP, Res, !IO) :-
+    get_new_tag(IMAP, Pipe, Tag, !IO),
+    Command = append(Mailbox, Flags, MaybeDateTime, Content),
+    make_command_stream(Tag - command_auth(Command), CommandStream),
+    write_command_stream(Pipe, Tag, CommandStream, Res0, !IO),
+    (
+        Res0 = ok,
+        wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
+        (
+            MaybeResponse = ok(Response),
+            update_state(apply_append_response, IMAP, Response, Res,
+                unit, _ : unit, !IO)
+        ;
+            MaybeResponse = error(Error),
+            Res = result(error, Error, [])
+        )
+    ;
+        Res0 = error(Error),
+        Res = result(error, Error, [])
+    ).
+
+:- pred apply_append_response(complete_response::in,
+    imap_result(maybe(appenduid))::out, imap_state::in, imap_state::out,
+    unit::in, unit::out, io::di, io::uo) is det.
+
+apply_append_response(Response, Result, !State, unit, unit, !IO) :-
+    apply_complete_response(Response, !State, [], Alerts,
+        accept_appenduid(no), accept_appenduid(MaybeAppendUID), !IO),
+    Response = complete_response(_, FinalMaybeTag, FinalRespText),
+    (
+        FinalMaybeTag = tagged(_, ok),
+        Res = ok_with_data(MaybeAppendUID)
+    ;
+        FinalMaybeTag = tagged(_, no),
+        Res = no
+    ;
+        FinalMaybeTag = tagged(_, bad),
+        Res = bad
+    ;
+        FinalMaybeTag = bye,
+        Res = bye
+    ;
+        FinalMaybeTag = continue,
+        Res = continue
+    ),
+    FinalRespText = resp_text(_MaybeResponseCode, Text),
+    Result = result(Res, Text, Alerts).
+
+%-----------------------------------------------------------------------------%
+
 uid_search(IMAP, SearchKey, Res, !IO) :-
     command_wrapper_low(do_uid_search(SearchKey), [selected], IMAP, MaybeRes,
         !IO),
@@ -747,7 +816,7 @@ do_uid_search(SearchKey, IMAP, Res, !IO) :-
     get_new_tag(IMAP, Pipe, Tag, !IO),
     Command = command_select(uid_search(search(no, SearchKey))),
     make_command_stream(Tag - Command, CommandStream),
-    write_command_stream(Pipe, CommandStream, Res0, !IO),
+    write_command_stream(Pipe, Tag, CommandStream, Res0, !IO),
     (
         Res0 = ok,
         wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
@@ -819,7 +888,7 @@ do_uid_fetch(SequenceSet, Items, MaybeModifier, IMAP, Res, !IO) :-
     get_new_tag(IMAP, Pipe, Tag, !IO),
     Command = command_select(uid_fetch(SequenceSet, Items, MaybeModifier)),
     make_command_stream(Tag - Command, CommandStream),
-    write_command_stream(Pipe, CommandStream, Res0, !IO),
+    write_command_stream(Pipe, Tag, CommandStream, Res0, !IO),
     (
         Res0 = ok,
         wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
@@ -881,7 +950,7 @@ idle(IMAP, Res, !IO) :-
 do_idle(IMAP, Res, !IO) :-
     get_new_tag(IMAP, Pipe, Tag, !IO),
     make_command_stream(Tag - command_auth(idle), CommandStream),
-    write_command_stream(Pipe, CommandStream, Res0, !IO),
+    write_command_stream(Pipe, Tag, CommandStream, Res0, !IO),
     (
         Res0 = ok,
         wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
@@ -969,7 +1038,7 @@ idle_done(IMAP, Res, !IO) :-
 
 do_idle_done(IMAP, Tag, ResumeConnState, Res, !IO) :-
     get_pipe(IMAP, Pipe, !IO),
-    write_command_stream(Pipe, idle_done_command_stream, Res0, !IO),
+    write_command_stream(Pipe, Tag, idle_done_command_stream, Res0, !IO),
     (
         Res0 = ok,
         wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
@@ -1219,6 +1288,9 @@ apply_cond_or_bye_2(Cond, ResponseCode, Text, !State, !Alerts, !R) :-
             )
         )
     ;
+        ResponseCode = appenduid(AppendUID),
+        handle_appenduid(AppendUID, !R)
+    ;
         ( ResponseCode = badcharset(_)
         ; ResponseCode = parse
         ; ResponseCode = trycreate
@@ -1324,7 +1396,8 @@ decrement_exists(Sel0, Sel) :-
 :- instance handle_results(accept_search_results) where [
     handle_search_results(Numbers, MaybeModSeqValue, _, Results) :-
         Results = accept_search_results(Numbers, MaybeModSeqValue),
-    handle_fetch_results(_, _, !Results)
+    handle_fetch_results(_, _, !Results),
+    handle_appenduid(_, !Results)
 ].
 
 %-----------------------------------------------------------------------------%
@@ -1337,14 +1410,28 @@ decrement_exists(Sel0, Sel) :-
 
     handle_fetch_results(MsgSeqNr, Atts,
         accept_fetch_results(Results0), accept_fetch_results(Results)) :-
-        cons(MsgSeqNr - Atts, Results0, Results)
+        cons(MsgSeqNr - Atts, Results0, Results),
+
+    handle_appenduid(_, !Results)
+].
+
+%-----------------------------------------------------------------------------%
+
+:- type accept_appenduid
+    --->    accept_appenduid(maybe(appenduid)).
+
+:- instance handle_results(accept_appenduid) where [
+    handle_search_results(_, _, !Results),
+    handle_fetch_results(_, _, !Results),
+    handle_appenduid(AppendUID, _, accept_appenduid(yes(AppendUID)))
 ].
 
 %-----------------------------------------------------------------------------%
 
 :- instance handle_results(unit) where [
     handle_search_results(_, _, unit, unit),
-    handle_fetch_results(_, _, unit, unit)
+    handle_fetch_results(_, _, unit, unit),
+    handle_appenduid(_, unit, unit)
 ].
 
 %-----------------------------------------------------------------------------%

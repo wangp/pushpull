@@ -20,10 +20,10 @@
 
     % Valid only in Authenticated or Selected state.
 :- type command_auth
-    %--->   append
+    --->    append(mailbox, list(flag), maybe(date_time), string)
     %;      create
     %;      delete
-    --->    select(mailbox)
+    ;       select(mailbox)
     ;       examine(mailbox)
     %;      list
     %;      lsub
@@ -228,6 +228,30 @@ escape_for_quoted_string(S0) = S :-
 ].
 
 :- instance add(command_auth) where [
+    add(append(Mailbox, Flags, MaybeDateTime, Literal), !Acc) :-
+    (
+        add("APPEND", !Acc),
+        add(sp, !Acc),
+        add(Mailbox, !Acc),
+        (
+            Flags = []
+        ;
+            Flags = [Flag | MoreFlags],
+            add(" (", !Acc),
+            add(Flag, !Acc),
+            list.foldl(add_sp_then, MoreFlags, !Acc),
+            add(")", !Acc)
+        ),
+        (
+            MaybeDateTime = yes(DateTime),
+            add(sp, !Acc),
+            add(DateTime, !Acc)
+        ;
+            MaybeDateTime = no
+        ),
+        add(sp, !Acc),
+        add(literal(Literal), !Acc)
+    ),
     add(select(Mailbox)) -->
     (
         add("SELECT"),
@@ -514,6 +538,41 @@ escape_for_quoted_string(S0) = S :-
     (
         add("CHANGEDSINCE "),
         add(ModSeqValue)
+    )
+].
+
+:- instance add(flag) where [
+    add(system(Flag)) --> add(Flag),
+    add(keyword(Atom)) --> add(Atom)
+].
+
+:- instance add(system_flag) where [
+    add(answered) --> add("\\Answered"),
+    add(flagged) --> add("\\Flagged"),
+    add(deleted) --> add("\\Deleted"),
+    add(seen) --> add("\\Seen"),
+    add(draft) --> add("\\Draft"),
+    add(extension(Atom)) -->
+    (
+        add("\\"),
+        add(Atom)
+    )
+].
+
+:- instance add(atom) where [
+    add(atom(Atom)) --> add(Atom)
+].
+
+:- instance add(date_time) where [
+    add(DateTime, !Acc) :-
+    (
+        DateTime = date_time(Day, Month, Year,
+            time(Hours, Minutes, Seconds), zone(Zone)),
+        month(MonthStr, Month),
+        string.format("\"%2d-%s-%04d %02d:%02d:%02d %s\"",
+            [i(Day), s(MonthStr), i(Year),
+            i(Hours), i(Minutes), i(Seconds), s(Zone)], Fmt),
+        add(Fmt, !Acc)
     )
 ].
 
