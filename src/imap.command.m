@@ -413,6 +413,12 @@ escape_for_quoted_string(S0) = S :-
         SearchKey = draft,
         add("DRAFT", !Acc)
     ;
+        SearchKey = header(FieldName, String),
+        add("HEADER ", !Acc),
+        add(FieldName, !Acc),
+        add(sp, !Acc),
+        add(String, !Acc)
+    ;
         SearchKey = not(Key),
         add("NOT ", !Acc),
         add(Key, !Acc)

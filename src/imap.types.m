@@ -84,7 +84,7 @@
     %;      unkeyword(flag_keyword)
     ;       unseen
     ;       draft
-    %;      header(header_field_name, astring)
+    ;       header(astring, astring)
     %;      larger(number)
     ;       not(search_key)
     ;       or(search_key, search_key)
