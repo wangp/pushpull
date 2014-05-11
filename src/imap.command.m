@@ -23,7 +23,8 @@
     %--->   append
     %;      create
     %;      delete
-    --->    examine(mailbox)
+    --->    select(mailbox)
+    ;       examine(mailbox)
     %;      list
     %;      lsub
     %;      rename
@@ -227,6 +228,12 @@ escape_for_quoted_string(S0) = S :-
 ].
 
 :- instance add(command_auth) where [
+    add(select(Mailbox)) -->
+    (
+        add("SELECT"),
+        add(sp),
+        add(Mailbox)
+    ),
     add(examine(Mailbox)) -->
     (
         add("EXAMINE"),

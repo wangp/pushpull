@@ -66,6 +66,9 @@
 
 :- func mailbox(string) = mailbox.
 
+:- pred select(imap::in, mailbox::in, imap_result::out, io::di, io::uo)
+    is det.
+
 :- pred examine(imap::in, mailbox::in, imap_result::out, io::di, io::uo)
     is det.
 
@@ -106,6 +109,7 @@
 
 :- implementation.
 
+:- import_module bool.
 :- import_module int.
 :- import_module integer.
 :- import_module require.
@@ -624,24 +628,35 @@ mailbox(S) =
         astring(make_astring(S))
     ).
 
+select(IMAP, Mailbox, Res, !IO) :-
+    command_wrapper(do_select_or_examine(yes, Mailbox),
+        [authenticated, selected], IMAP, Res, !IO).
+
 examine(IMAP, Mailbox, Res, !IO) :-
-    command_wrapper(do_examine(Mailbox), [authenticated, selected],
-        IMAP, Res, !IO).
+    command_wrapper(do_select_or_examine(no, Mailbox),
+        [authenticated, selected], IMAP, Res, !IO).
 
-:- pred do_examine(mailbox::in, imap::in, imap_result::out, io::di, io::uo)
-    is det.
+:- pred do_select_or_examine(bool::in, mailbox::in, imap::in, imap_result::out,
+    io::di, io::uo) is det.
 
-do_examine(Mailbox, IMAP, Res, !IO) :-
+do_select_or_examine(DoSelect, Mailbox, IMAP, Res, !IO) :-
     get_new_tag(IMAP, Pipe, Tag, !IO),
-    make_command_stream(Tag - command_auth(examine(Mailbox)), CommandStream),
+    (
+        DoSelect = yes,
+        Command = select(Mailbox)
+    ;
+        DoSelect = no,
+        Command = examine(Mailbox)
+    ),
+    make_command_stream(Tag - command_auth(Command), CommandStream),
     write_command_stream(Pipe, CommandStream, Res0, !IO),
     (
         Res0 = ok,
         wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
         (
             MaybeResponse = ok(Response),
-            update_state(apply_examine_response(Mailbox), IMAP, Response,
-                _ : unit, [], Alerts, !IO),
+            update_state(apply_select_or_examine_response(Mailbox),
+                IMAP, Response, _ : unit, [], Alerts, !IO),
             Response = complete_response(_, FinalMaybeTag, FinalRespText),
             make_result(FinalMaybeTag, FinalRespText, Alerts, Res)
         ;
@@ -653,11 +668,12 @@ do_examine(Mailbox, IMAP, Res, !IO) :-
         Res = result(error, Error, [])
     ).
 
-:- pred apply_examine_response(mailbox::in, complete_response::in,
+:- pred apply_select_or_examine_response(mailbox::in, complete_response::in,
     unit::out, imap_state::in, imap_state::out,
     list(alert)::in, list(alert)::out, io::di, io::uo) is det.
 
-apply_examine_response(Mailbox, Response, unit, !State, !Alerts, !IO) :-
+apply_select_or_examine_response(Mailbox, Response, unit, !State, !Alerts, !IO)
+        :-
     Response = complete_response(_, FinalMaybeTag, _FinalRespText),
     (
         FinalMaybeTag = tagged(_, ok),
