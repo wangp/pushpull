@@ -165,13 +165,30 @@ new_or_cur(cur) = "cur".
 %-----------------------------------------------------------------------------%
 
 find_file(local_mailbox_path(DirName), UniqueName, Res, !IO) :-
-    FollowSymLinks = yes,
-    % XXX should only find files in "new" and "cur"
-    dir.recursive_foldl2(find_file_2(UniqueName), DirName, FollowSymLinks,
-        not_found, Res0, !IO),
+    dir.foldl2(find_file_2(UniqueName), DirName / "new", not_found, Res0, !IO),
     (
-        Res0 = ok(Found),
+        Res0 = ok(found(_, _, _) @ Found),
         Res = ok(Found)
+    ;
+        Res0 = ok(found_but_unexpected(_) @ Found),
+        Res = ok(Found)
+    ;
+        Res0 = ok(not_found),
+        dir.foldl2(find_file_2(UniqueName), DirName / "cur", not_found, Res1,
+            !IO),
+        (
+            Res1 = ok(found(_, _, _) @ Found),
+            Res = ok(Found)
+        ;
+            Res1 = ok(found_but_unexpected(_) @ Found),
+            Res = ok(Found)
+        ;
+            Res1 = ok(not_found),
+            Res = ok(not_found)
+        ;
+            Res1 = error(_, Error),
+            Res = error(io.error_message(Error))
+        )
     ;
         Res0 = error(_, Error),
         Res = error(io.error_message(Error))
@@ -204,7 +221,7 @@ find_file_2(uniquename(Unique), DirName, BaseName, FileType, Continue,
                 !:Found = found_but_unexpected(Path)
             )
         ;
-            !:Found = found_but_unexpected(Path)
+            unexpected($module, $pred, "DirName should end with new/cur")
         )
     ;
         Continue = yes
@@ -223,12 +240,17 @@ is_new_or_cur("cur").
 %-----------------------------------------------------------------------------%
 
 list_files(local_mailbox_path(DirName), Res, !IO) :-
-    FollowSymLinks = yes,
-    % XXX should only find files in "new" and "cur"
-    dir.recursive_foldl2(list_files_2, DirName, FollowSymLinks, [], Res0, !IO),
+    dir.foldl2(list_files_2, DirName / "new", [], Res0, !IO),
     (
-        Res0 = ok(Files),
-        Res = ok(Files)
+        Res0 = ok(Files0),
+        dir.foldl2(list_files_2, DirName / "cur", Files0, Res1, !IO),
+        (
+            Res1 = ok(Files),
+            Res = ok(Files)
+        ;
+            Res1 = error(_, Error),
+            Res = error(io.error_message(Error))
+        )
     ;
         Res0 = error(_, Error),
         Res = error(io.error_message(Error))
@@ -240,9 +262,7 @@ list_files(local_mailbox_path(DirName), Res, !IO) :-
 list_files_2(DirName, BaseName, FileType, Continue, !Acc, !IO) :-
     (
         maybe_regular_file(FileType),
-        not dot_file(BaseName),
-        dir.split_name(DirName, _DirNameSansNewOrCur, NewOrCur),
-        is_new_or_cur(NewOrCur)
+        not dot_file(BaseName)
     ->
         Path = DirName / BaseName,
         LocalFile = local_file(Path, BaseName),
