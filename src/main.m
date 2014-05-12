@@ -14,6 +14,7 @@
 
 :- import_module assoc_list.
 :- import_module bool.
+:- import_module dir.
 :- import_module integer.
 :- import_module list.
 :- import_module map.
@@ -25,6 +26,7 @@
 :- import_module time.
 
 :- import_module database.
+:- import_module dir_cache.
 :- import_module flag_delta.
 :- import_module imap.
 :- import_module imap.time.
@@ -208,17 +210,18 @@ have_remote_mailbox(Config, Db, IMAP, LocalMailbox, RemoteMailbox,
         update_db_local_mailbox(Db, LocalMailbox, RemoteMailbox,
             ResUpdateLocal, !IO),
         (
-            ResUpdateLocal = ok,
+            ResUpdateLocal = ok(DirCache),
             download_unpaired_remote_messages(Config, Db, IMAP, LocalMailbox,
-                RemoteMailbox, ResDownload, !IO),
+                RemoteMailbox, DirCache, ResDownload, !IO),
+            % DirCache does not include newly added messages.
             (
                 ResDownload = ok,
                 upload_unpaired_local_messages(Config, Db, IMAP, LocalMailbox,
-                    RemoteMailbox, ResUpload, !IO),
+                    RemoteMailbox, DirCache, ResUpload, !IO),
                 (
                     ResUpload = ok,
                     propagate_flag_deltas_from_remote(Config, Db, LocalMailbox,
-                        RemoteMailbox, ResPropRemote, !IO),
+                        RemoteMailbox, ResPropRemote, DirCache, _DirCache, !IO),
                     (
                         ResPropRemote = ok,
                         propagate_flag_deltas_from_local(Config, Db, IMAP,
@@ -254,58 +257,78 @@ have_remote_mailbox(Config, Db, IMAP, LocalMailbox, RemoteMailbox,
 %-----------------------------------------------------------------------------%
 
 :- pred update_db_local_mailbox(database::in, local_mailbox::in,
-    remote_mailbox::in, maybe_error::out, io::di, io::uo) is det.
+    remote_mailbox::in, maybe_error(dir_cache)::out, io::di, io::uo) is det.
 
 update_db_local_mailbox(Db, LocalMailbox, RemoteMailbox, Res, !IO) :-
-    list_files(get_local_mailbox_path(LocalMailbox), ResList, !IO),
+    update_file_list(get_local_mailbox_path(LocalMailbox), init, ResCache,
+        !IO),
     (
-        ResList = ok(Files),
-        update_db_local_message_files(Db, LocalMailbox, RemoteMailbox, Files,
-            Res, !IO)
+        ResCache = ok(DirCache),
+        LocalMailboxPath = get_local_mailbox_path(LocalMailbox),
+        list_files(DirCache, LocalMailboxPath, NewFiles, CurFiles),
+
+        LocalMailboxPath = local_mailbox_path(DirName),
+        update_db_local_message_files(Db, LocalMailbox, RemoteMailbox,
+            DirName / "new", NewFiles, Res1, !IO),
+        (
+            Res1 = ok,
+            update_db_local_message_files(Db, LocalMailbox, RemoteMailbox,
+                DirName / "cur", CurFiles, Res2, !IO),
+            (
+                Res2 = ok,
+                Res = ok(DirCache)
+            ;
+                Res2 = error(Error),
+                Res = error(Error)
+            )
+        ;
+            Res1 = error(Error),
+            Res = error(Error)
+        )
     ;
-        ResList = error(Error),
+        ResCache = error(Error),
         Res = error(Error)
     ).
 
 :- pred update_db_local_message_files(database::in, local_mailbox::in,
-    remote_mailbox::in, list(local_file)::in, maybe_error::out, io::di, io::uo)
-    is det.
+    remote_mailbox::in, string::in, list(string)::in, maybe_error::out,
+    io::di, io::uo) is det.
 
-update_db_local_message_files(_Db, _LocalMailbox, _RemoteMailbox, [], ok, !IO).
-update_db_local_message_files(Db, LocalMailbox, RemoteMailbox, [File | Files],
-        Res, !IO) :-
-    update_db_local_message_file(Db, LocalMailbox, RemoteMailbox, File, Res0,
-        !IO),
+update_db_local_message_files(_Db, _LocalMailbox, _RemoteMailbox, _DirName,
+        [], ok, !IO).
+update_db_local_message_files(Db, LocalMailbox, RemoteMailbox, DirName,
+        [BaseName | BaseNames], Res, !IO) :-
+    update_db_local_message_file(Db, LocalMailbox, RemoteMailbox,
+        DirName, BaseName, Res0, !IO),
     (
         Res0 = ok,
-        update_db_local_message_files(Db, LocalMailbox, RemoteMailbox, Files,
-            Res, !IO)
+        update_db_local_message_files(Db, LocalMailbox, RemoteMailbox, DirName,
+            BaseNames, Res, !IO)
     ;
         Res0 = error(Error),
         Res = error(Error)
     ).
 
 :- pred update_db_local_message_file(database::in, local_mailbox::in,
-    remote_mailbox::in, local_file::in, maybe_error::out, io::di, io::uo)
-    is det.
+    remote_mailbox::in, string::in, string::in, maybe_error::out,
+    io::di, io::uo) is det.
 
-update_db_local_message_file(Db, LocalMailbox, RemoteMailbox, File, Res, !IO) :-
-    File = local_file(_Path, BaseName),
+update_db_local_message_file(Db, LocalMailbox, RemoteMailbox, DirName,
+        BaseName, Res, !IO) :-
     ( parse_basename(BaseName, Unique, Flags) ->
-        update_db_local_message_file_2(Db, LocalMailbox, RemoteMailbox, File,
-            Unique, Flags, Res, !IO)
+        update_db_local_message_file_2(Db, LocalMailbox, RemoteMailbox,
+            DirName, BaseName, Unique, Flags, Res, !IO)
     ;
         % Should just skip.
         Res = error("cannot parse message filename: " ++ BaseName)
     ).
 
 :- pred update_db_local_message_file_2(database::in, local_mailbox::in,
-    remote_mailbox::in, local_file::in, uniquename::in, set(flag)::in,
+    remote_mailbox::in, string::in, string::in, uniquename::in, set(flag)::in,
     maybe_error::out, io::di, io::uo) is det.
 
-update_db_local_message_file_2(Db, LocalMailbox, RemoteMailbox, File, Unique,
-        Flags, Res, !IO) :-
-    File = local_file(Path, BaseName),
+update_db_local_message_file_2(Db, LocalMailbox, RemoteMailbox, DirName,
+        BaseName, Unique, Flags, Res, !IO) :-
     search_pairing_by_local_message(Db, LocalMailbox, Unique, ResSearch, !IO),
     (
         ResSearch = ok(yes({PairingId, LocalFlagDeltas0})),
@@ -324,6 +347,7 @@ update_db_local_message_file_2(Db, LocalMailbox, RemoteMailbox, File, Unique,
         )
     ;
         ResSearch = ok(no),
+        Path = DirName / BaseName,
         read_message_id(Path, ResRead, !IO),
         (
             ResRead = yes(MessageId),
@@ -527,38 +551,39 @@ do_update_db_with_remote_message_info(Db, LocalMailbox, RemoteMailbox, UID,
 %-----------------------------------------------------------------------------%
 
 :- pred download_unpaired_remote_messages(prog_config::in, database::in,
-    imap::in, local_mailbox::in, remote_mailbox::in, maybe_error::out,
-    io::di, io::uo) is det.
+    imap::in, local_mailbox::in, remote_mailbox::in, dir_cache::in,
+    maybe_error::out, io::di, io::uo) is det.
 
 download_unpaired_remote_messages(Config, Database, IMAP, LocalMailbox,
-        RemoteMailbox, Res, !IO) :-
+        RemoteMailbox, DirCache, Res, !IO) :-
     search_unpaired_remote_messages(Database, RemoteMailbox, ResSearch, !IO),
     (
         ResSearch = ok(Unpaireds),
         download_messages(Config, Database, IMAP, LocalMailbox, RemoteMailbox,
-            Unpaireds, Res, !IO)
+            DirCache, Unpaireds, Res, !IO)
     ;
         ResSearch = error(Error),
         Res = error(Error)
     ).
 
 :- pred download_messages(prog_config::in, database::in, imap::in,
-    local_mailbox::in, remote_mailbox::in, list(unpaired_remote_message)::in,
-    maybe_error::out, io::di, io::uo) is det.
+    local_mailbox::in, remote_mailbox::in, dir_cache::in,
+    list(unpaired_remote_message)::in, maybe_error::out, io::di, io::uo)
+    is det.
 
 download_messages(Config, Database, IMAP, LocalMailbox, RemoteMailbox,
-        Unpaireds, Res, !IO) :-
+        DirCache, Unpaireds, Res, !IO) :-
     (
         Unpaireds = [],
         Res = ok
     ;
         Unpaireds = [H | T],
         download_message(Config, Database, IMAP, LocalMailbox, RemoteMailbox,
-            H, Res0, !IO),
+            DirCache, H, Res0, !IO),
         (
             Res0 = ok,
             download_messages(Config, Database, IMAP, LocalMailbox,
-                RemoteMailbox, T, Res, !IO)
+                RemoteMailbox, DirCache, T, Res, !IO)
         ;
             Res0 = error(Error),
             Res = error(Error)
@@ -566,11 +591,11 @@ download_messages(Config, Database, IMAP, LocalMailbox, RemoteMailbox,
     ).
 
 :- pred download_message(prog_config::in, database::in, imap::in,
-    local_mailbox::in, remote_mailbox::in, unpaired_remote_message::in,
-    maybe_error::out, io::di, io::uo) is det.
+    local_mailbox::in, remote_mailbox::in, dir_cache::in,
+    unpaired_remote_message::in, maybe_error::out, io::di, io::uo) is det.
 
 download_message(Config, Database, IMAP, LocalMailbox, _RemoteMailbox,
-        UnpairedRemote, Res, !IO) :-
+        DirCache, UnpairedRemote, Res, !IO) :-
     UnpairedRemote = unpaired_remote_message(_PairingId, UID,
         ExpectedMessageId),
     % Need FLAGS for Maildir filename.
@@ -601,7 +626,7 @@ download_message(Config, Database, IMAP, LocalMailbox, _RemoteMailbox,
                     ( ExpectedMessageId = HaveMessageId ->
                         save_message_and_pair(Config, Database, LocalMailbox,
                             UnpairedRemote, RawMessageLf, Flags, InternalDate,
-                            Res, !IO)
+                            DirCache, Res, !IO)
                     ;
                         Res = error("unexpected Message-Id")
                     )
@@ -659,14 +684,14 @@ get_internaldate(Atts, DateTime) :-
 
 :- pred save_message_and_pair(prog_config::in, database::in, local_mailbox::in,
     unpaired_remote_message::in, string::in, set(flag)::in, date_time::in,
-    maybe_error::out, io::di, io::uo) is det.
+    dir_cache::in, maybe_error::out, io::di, io::uo) is det.
 
 save_message_and_pair(_Config, Database, LocalMailbox, UnpairedRemote,
-        RawMessageLf, Flags, InternalDate, Res, !IO) :-
+        RawMessageLf, Flags, InternalDate, DirCache, Res, !IO) :-
     UnpairedRemote = unpaired_remote_message(PairingId, UID, MessageId),
-    % Avoid duplicating an existing local mailbox.
-    match_unpaired_local_message(Database, LocalMailbox, MessageId,
-        RawMessageLf, ResMatch, !IO),
+    % Avoid duplicating an existing local message.
+    match_unpaired_local_message(Database, LocalMailbox, DirCache,
+        MessageId, RawMessageLf, ResMatch, !IO),
     (
         ResMatch = ok(no),
         save_raw_message(LocalMailbox, UID, RawMessageLf, Flags, InternalDate,
@@ -706,68 +731,65 @@ save_message_and_pair(_Config, Database, LocalMailbox, UnpairedRemote,
     ).
 
 :- pred match_unpaired_local_message(database::in, local_mailbox::in,
-    maybe_message_id::in, string::in,
+    dir_cache::in, maybe_message_id::in, string::in,
     maybe_error(maybe(unpaired_local_message))::out, io::di, io::uo) is det.
 
-match_unpaired_local_message(Database, LocalMailbox, MessageId, RawMessageLf,
-        Res, !IO) :-
+match_unpaired_local_message(Database, LocalMailbox, DirCache, MessageId,
+        RawMessageLf, Res, !IO) :-
     search_unpaired_local_messages_by_message_id(Database, LocalMailbox,
         MessageId, ResSearch, !IO),
     (
         ResSearch = ok(UnpairedLocals),
-        verify_unpaired_local_messages(LocalMailbox, UnpairedLocals,
+        verify_unpaired_local_messages(LocalMailbox, DirCache, UnpairedLocals,
             RawMessageLf, Res, !IO)
     ;
         ResSearch = error(Error),
         Res = error(Error)
     ).
 
-:- pred verify_unpaired_local_messages(local_mailbox::in,
+:- pred verify_unpaired_local_messages(local_mailbox::in, dir_cache::in,
     list(unpaired_local_message)::in, string::in,
     maybe_error(maybe(unpaired_local_message))::out, io::di, io::uo) is det.
 
-verify_unpaired_local_messages(LocalMailbox, UnpairedLocals, RawMessageLf,
-        Res, !IO) :-
+verify_unpaired_local_messages(LocalMailbox, DirCache, UnpairedLocals,
+        RawMessageLf, Res, !IO) :-
     (
         UnpairedLocals = [],
         Res = ok(no)
     ;
         UnpairedLocals = [UnpairedLocal | RestUnpairedLocals],
-        verify_unpaired_local_message(LocalMailbox, UnpairedLocal,
+        verify_unpaired_local_message(LocalMailbox, DirCache, UnpairedLocal,
             RawMessageLf, ResVerify, !IO),
         (
             ResVerify = ok(yes),
             Res = ok(yes(UnpairedLocal))
         ;
             ResVerify = ok(no),
-            verify_unpaired_local_messages(LocalMailbox, RestUnpairedLocals,
-                RawMessageLf, Res, !IO)
+            verify_unpaired_local_messages(LocalMailbox, DirCache,
+                RestUnpairedLocals, RawMessageLf, Res, !IO)
         ;
             ResVerify = error(Error),
             Res = error(Error)
         )
     ).
 
-:- pred verify_unpaired_local_message(local_mailbox::in,
+:- pred verify_unpaired_local_message(local_mailbox::in, dir_cache::in,
     unpaired_local_message::in, string::in, maybe_error(bool)::out,
     io::di, io::uo) is det.
 
-verify_unpaired_local_message(LocalMailbox, UnpairedLocal, RawMessageLf,
-        Res, !IO) :-
+verify_unpaired_local_message(LocalMailbox, DirCache, UnpairedLocal,
+        RawMessageLf, Res, !IO) :-
     UnpairedLocal = unpaired_local_message(_PairingId, Unique),
-    find_file(get_local_mailbox_path(LocalMailbox), Unique, ResFind, !IO),
+    find_file(DirCache, get_local_mailbox_path(LocalMailbox), Unique, ResFind),
     (
-        ResFind = ok(found(_MailboxPath, Path, _InfoSuffix)),
+        ResFind = found(Path, _InfoSuffix),
         verify_file(Path, RawMessageLf, Res, !IO)
     ;
-        ResFind = ok(found_but_unexpected(Path)),
+        ResFind = found_but_unexpected(Path),
         Res = error("found unique name but unexpected: " ++ Path)
     ;
-        ResFind = ok(not_found),
+        ResFind = not_found,
         Res = ok(no)
-    ;
-        ResFind = error(Error),
-        Res = error(Error)
     ).
 
 :- pred save_raw_message(local_mailbox::in, uid::in, string::in, set(flag)::in,
@@ -827,11 +849,11 @@ crlf_to_lf(S) = string.replace_all(S, "\r\n", "\n").
 %-----------------------------------------------------------------------------%
 
 :- pred upload_unpaired_local_messages(prog_config::in, database::in, imap::in,
-    local_mailbox::in, remote_mailbox::in, maybe_error::out, io::di, io::uo)
-    is det.
+    local_mailbox::in, remote_mailbox::in, dir_cache::in, maybe_error::out,
+    io::di, io::uo) is det.
 
 upload_unpaired_local_messages(Config, Database, IMAP, LocalMailbox,
-        RemoteMailbox, Res, !IO) :-
+        RemoteMailbox, DirCache, Res, !IO) :-
     % Currently we download unpaired remote messages first and try to pair them
     % with existing local messages, so the remaining unpaired local messages
     % should actually not have remote counterparts.
@@ -839,29 +861,29 @@ upload_unpaired_local_messages(Config, Database, IMAP, LocalMailbox,
     (
         ResSearch = ok(UnpairedLocals),
         upload_messages(Config, Database, IMAP, LocalMailbox, RemoteMailbox,
-            UnpairedLocals, Res, !IO)
+            DirCache, UnpairedLocals, Res, !IO)
     ;
         ResSearch = error(Error),
         Res = error(Error)
     ).
 
 :- pred upload_messages(prog_config::in, database::in, imap::in,
-    local_mailbox::in, remote_mailbox::in, list(unpaired_local_message)::in,
-    maybe_error::out, io::di, io::uo) is det.
+    local_mailbox::in, remote_mailbox::in, dir_cache::in,
+    list(unpaired_local_message)::in, maybe_error::out, io::di, io::uo) is det.
 
 upload_messages(Config, Database, IMAP, LocalMailbox, RemoteMailbox,
-        UnpairedLocals, Res, !IO) :-
+        DirCache, UnpairedLocals, Res, !IO) :-
     (
         UnpairedLocals = [],
         Res = ok
     ;
         UnpairedLocals = [H | T],
         upload_message(Config, Database, IMAP, LocalMailbox, RemoteMailbox,
-            H, Res0, !IO),
+            DirCache, H, Res0, !IO),
         (
             Res0 = ok,
             upload_messages(Config, Database, IMAP, LocalMailbox,
-                RemoteMailbox, T, Res, !IO)
+                RemoteMailbox, DirCache, T, Res, !IO)
         ;
             Res0 = error(Error),
             Res = error(Error)
@@ -869,16 +891,16 @@ upload_messages(Config, Database, IMAP, LocalMailbox, RemoteMailbox,
     ).
 
 :- pred upload_message(prog_config::in, database::in, imap::in,
-    local_mailbox::in, remote_mailbox::in, unpaired_local_message::in,
-    maybe_error::out, io::di, io::uo) is det.
+    local_mailbox::in, remote_mailbox::in, dir_cache::in,
+    unpaired_local_message::in, maybe_error::out, io::di, io::uo) is det.
 
 upload_message(_Config, Database, IMAP, LocalMailbox, RemoteMailbox,
-        UnpairedLocal, Res, !IO) :-
+        DirCache, UnpairedLocal, Res, !IO) :-
     LocalMailboxPath = get_local_mailbox_path(LocalMailbox),
     UnpairedLocal = unpaired_local_message(PairingId, Unique),
-    find_file(LocalMailboxPath, Unique, ResFind, !IO),
+    find_file(DirCache, LocalMailboxPath, Unique, ResFind),
     (
-        ResFind = ok(found(_MailboxPath, Path, _InfoSuffix)),
+        ResFind = found(Path, _InfoSuffix),
         lookup_local_message_flags(Database, PairingId, ResFlags, !IO),
         (
             ResFlags = ok(LocalFlagDeltas),
@@ -917,15 +939,12 @@ upload_message(_Config, Database, IMAP, LocalMailbox, RemoteMailbox,
             Res = error(Error)
         )
     ;
-        ResFind = ok(found_but_unexpected(Path)),
+        ResFind = found_but_unexpected(Path),
         Res = error("found unique name but unexpected: " ++ Path)
     ;
-        ResFind = ok(not_found),
+        ResFind = not_found,
         % Maybe deleted since.
         Res = ok
-    ;
-        ResFind = error(Error),
-        Res = error(Error)
     ).
 
 :- pred get_file_data(string::in, io.res(file_data)::out, io::di, io::uo)
@@ -1072,17 +1091,17 @@ is_singleton_set(Set, UID) :-
 %-----------------------------------------------------------------------------%
 
 :- pred propagate_flag_deltas_from_remote(prog_config::in, database::in,
-    local_mailbox::in, remote_mailbox::in, maybe_error::out, io::di, io::uo)
-    is det.
+    local_mailbox::in, remote_mailbox::in, maybe_error::out,
+    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
 propagate_flag_deltas_from_remote(Config, Db, LocalMailbox, RemoteMailbox,
-        Res, !IO) :-
+        Res, !DirCache, !IO) :-
     search_pending_flag_deltas_from_remote(Db, LocalMailbox, RemoteMailbox,
         ResSearch, !IO),
     (
         ResSearch = ok(Pendings),
-        list.foldl2(propagate_flag_deltas_from_remote_2(Config, Db,
-            LocalMailbox, RemoteMailbox), Pendings, ok, Res, !IO)
+        list.foldl3(propagate_flag_deltas_from_remote_2(Config, Db,
+            LocalMailbox, RemoteMailbox), Pendings, ok, Res, !DirCache, !IO)
     ;
         ResSearch = error(Error),
         Res = error(Error)
@@ -1090,14 +1109,15 @@ propagate_flag_deltas_from_remote(Config, Db, LocalMailbox, RemoteMailbox,
 
 :- pred propagate_flag_deltas_from_remote_2(prog_config::in, database::in,
     local_mailbox::in, remote_mailbox::in, pending_flag_deltas::in,
-    maybe_error::in, maybe_error::out, io::di, io::uo) is det.
+    maybe_error::in, maybe_error::out, dir_cache::in, dir_cache::out,
+    io::di, io::uo) is det.
 
 propagate_flag_deltas_from_remote_2(Config, Db, LocalMailbox, RemoteMailbox,
-        Pending, Res0, Res, !IO) :-
+        Pending, Res0, Res, !DirCache, !IO) :-
     (
         Res0 = ok,
         propagate_flag_deltas_from_remote_3(Config, Db, LocalMailbox,
-            RemoteMailbox, Pending, Res, !IO)
+            RemoteMailbox, Pending, Res, !DirCache, !IO)
     ;
         Res0 = error(Error),
         Res = error(Error)
@@ -1105,43 +1125,43 @@ propagate_flag_deltas_from_remote_2(Config, Db, LocalMailbox, RemoteMailbox,
 
 :- pred propagate_flag_deltas_from_remote_3(prog_config::in, database::in,
     local_mailbox::in, remote_mailbox::in, pending_flag_deltas::in,
-    maybe_error::out, io::di, io::uo) is det.
+    maybe_error::out, dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
 propagate_flag_deltas_from_remote_3(_Config, Db, LocalMailbox, _RemoteMailbox,
-        Pending, Res, !IO) :-
+        Pending, Res, !DirCache, !IO) :-
     Pending = pending_flag_deltas(_PairingId, Unique, _LocalFlags0, _UID,
         _RemoteFlags0),
-    find_file(get_local_mailbox_path(LocalMailbox), Unique, ResFind, !IO),
+    MailboxPath = get_local_mailbox_path(LocalMailbox),
+    find_file(!.DirCache, MailboxPath, Unique, ResFind),
     (
-        ResFind = ok(Found),
-        Found = found(_, _, _),
-        propagate_flag_deltas_for_message_found(Db, Pending, Found, Res, !IO)
+        ResFind = Found,
+        Found = found(_, _),
+        propagate_flag_deltas_for_message_found(Db, MailboxPath, Pending,
+            Found, Res, !IO)
     ;
-        ResFind = ok(found_but_unexpected(Path)),
+        ResFind = found_but_unexpected(Path),
         Res = error("found unique name but unexpected: " ++ Path)
     ;
-        ResFind = ok(not_found),
+        ResFind = not_found,
         % Can't find the file; the file was probably deleted since we updated
         % our database state.
         % XXX handle this better
         Unique = uniquename(UniqueString),
         Res = error("missing file with unique name " ++ UniqueString)
-    ;
-        ResFind = error(Error),
-        Res = error(Error)
     ).
 
 :- pred propagate_flag_deltas_for_message_found(database::in,
-    pending_flag_deltas::in, find_file_result::in(found), maybe_error::out,
-    io::di, io::uo) is det.
+    local_mailbox_path::in, pending_flag_deltas::in,
+    find_file_result::in(found), maybe_error::out, io::di, io::uo) is det.
 
-propagate_flag_deltas_for_message_found(Db, Pending, Found, Res, !IO) :-
+propagate_flag_deltas_for_message_found(Db, MailboxPath, Pending, Found, Res,
+        !IO) :-
     Pending = pending_flag_deltas(PairingId, Unique, LocalFlags0, _UID,
         RemoteFlags0),
     apply_flag_deltas(LocalFlags0, LocalFlags, RemoteFlags0, RemoteFlags),
 
     % Maybe we can keep in "new" if InfoSuffix still empty?
-    Found = found(FolderPath, OldPath, MaybeInfoSuffix0),
+    Found = found(OldPath, MaybeInfoSuffix0),
     (
         MaybeInfoSuffix0 = no,
         InfoSuffix = flags_to_info_suffix(LocalFlags ^ cur_set)
@@ -1149,7 +1169,7 @@ propagate_flag_deltas_for_message_found(Db, Pending, Found, Res, !IO) :-
         MaybeInfoSuffix0 = yes(InfoSuffix0),
         update_standard_flags(LocalFlags ^ cur_set, InfoSuffix0, InfoSuffix)
     ),
-    make_path(FolderPath, cur, Unique, yes(InfoSuffix), NewPath),
+    make_path(MailboxPath, cur, Unique, yes(InfoSuffix), NewPath),
     ( OldPath = NewPath ->
         ResRename = ok
     ;

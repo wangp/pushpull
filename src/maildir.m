@@ -9,6 +9,7 @@
 :- import_module maybe.
 :- import_module set.
 
+:- import_module dir_cache.
 :- import_module imap.
 :- import_module imap.types.
 
@@ -36,9 +37,16 @@
 :- pred make_path(local_mailbox_path::in, new_or_cur::in, uniquename::in,
     maybe(info_suffix)::in, string::out) is det.
 
+:- pred update_file_list(local_mailbox_path::in, dir_cache::in,
+    maybe_error(dir_cache)::out, io::di, io::uo) is det.
+
+    % Temporary interface.
+    %
+:- pred list_files(dir_cache::in, local_mailbox_path::in,
+    list(string)::out, list(string)::out) is det.
+
 :- type find_file_result
     --->    found(
-                mailbox_path :: local_mailbox_path,
                 path         :: string, % entire path to file
                 info_suf     :: maybe(info_suffix)
             )
@@ -46,22 +54,13 @@
     ;       not_found.
 
 :- inst found
-    --->    found(ground, ground, ground).
+    --->    found(ground, ground).
 
     % Search for a file in the given mailbox (including sub-mailboxes) with the
     % given uniquename.
     %
-:- pred find_file(local_mailbox_path::in, uniquename::in,
-    maybe_error(find_file_result)::out, io::di, io::uo) is det.
-
-:- type local_file
-    --->    local_file(
-                local_path :: string,
-                basename :: string
-            ).
-
-:- pred list_files(local_mailbox_path::in, maybe_error(list(local_file))::out,
-    io::di, io::uo) is det.
+:- pred find_file(dir_cache::in, local_mailbox_path::in, uniquename::in,
+    find_file_result::out) is det.
 
 :- pred parse_basename(string::in, uniquename::out, set(flag)::out) is semidet.
 
@@ -164,118 +163,59 @@ new_or_cur(cur) = "cur".
 
 %-----------------------------------------------------------------------------%
 
-find_file(local_mailbox_path(DirName), UniqueName, Res, !IO) :-
-    dir.foldl2(find_file_2(UniqueName), DirName / "new", not_found, Res0, !IO),
+update_file_list(local_mailbox_path(DirName), DirCache0, Res, !IO) :-
+    update_file_list(DirName / "new", DirCache0, Res1, !IO),
     (
-        Res0 = ok(found(_, _, _) @ Found),
-        Res = ok(Found)
+        Res1 = ok(DirCache1),
+        update_file_list(DirName / "cur", DirCache1, Res, !IO)
     ;
-        Res0 = ok(found_but_unexpected(_) @ Found),
-        Res = ok(Found)
-    ;
-        Res0 = ok(not_found),
-        dir.foldl2(find_file_2(UniqueName), DirName / "cur", not_found, Res1,
-            !IO),
-        (
-            Res1 = ok(found(_, _, _) @ Found),
-            Res = ok(Found)
-        ;
-            Res1 = ok(found_but_unexpected(_) @ Found),
-            Res = ok(Found)
-        ;
-            Res1 = ok(not_found),
-            Res = ok(not_found)
-        ;
-            Res1 = error(_, Error),
-            Res = error(io.error_message(Error))
-        )
-    ;
-        Res0 = error(_, Error),
-        Res = error(io.error_message(Error))
+        Res1 = error(Error),
+        Res = error(Error)
     ).
-
-:- pred find_file_2(uniquename::in, string::in, string::in, io.file_type::in,
-    bool::out, find_file_result::in, find_file_result::out, io::di, io::uo)
-    is det.
-
-find_file_2(uniquename(Unique), DirName, BaseName, FileType, Continue,
-        !Found, !IO) :-
-    (
-        maybe_regular_file(FileType),
-        string.prefix(BaseName, Unique)
-    ->
-        Continue = no,
-        Path = DirName / BaseName,
-        (
-            dir.split_name(DirName, DirNameSansNewOrCur, NewOrCur),
-            is_new_or_cur(NewOrCur)
-        ->
-            MailboxPath = local_mailbox_path(DirNameSansNewOrCur),
-            string.length(Unique, Pos0),
-            string.length(BaseName, EndPos),
-            ( Pos0 = EndPos ->
-                !:Found = found(MailboxPath, Path, no)
-            ; parse_info_suffix(BaseName, Pos0, InfoSuffix) ->
-                !:Found = found(MailboxPath, Path, yes(InfoSuffix))
-            ;
-                !:Found = found_but_unexpected(Path)
-            )
-        ;
-            unexpected($module, $pred, "DirName should end with new/cur")
-        )
-    ;
-        Continue = yes
-    ).
-
-:- pred maybe_regular_file(io.file_type::in) is semidet.
-
-maybe_regular_file(regular_file).
-maybe_regular_file(unknown).
-
-:- pred is_new_or_cur(string::in) is semidet.
-
-is_new_or_cur("new").
-is_new_or_cur("cur").
 
 %-----------------------------------------------------------------------------%
 
-list_files(local_mailbox_path(DirName), Res, !IO) :-
-    dir.foldl2(list_files_2, DirName / "new", [], Res0, !IO),
+list_files(DirCache, local_mailbox_path(DirName), NewFiles, CurFiles) :-
+    get_file_list(DirCache, DirName / "new", NewFiles),
+    get_file_list(DirCache, DirName / "cur", CurFiles).
+
+%-----------------------------------------------------------------------------%
+
+find_file(DirCache, local_mailbox_path(DirName), UniqueName, Res) :-
+    find_file_2(DirCache, DirName, "new", UniqueName, Res0),
     (
-        Res0 = ok(Files0),
-        dir.foldl2(list_files_2, DirName / "cur", Files0, Res1, !IO),
-        (
-            Res1 = ok(Files),
-            Res = ok(Files)
-        ;
-            Res1 = error(_, Error),
-            Res = error(io.error_message(Error))
-        )
+        Res0 = found(_, _),
+        Res = Res0
     ;
-        Res0 = error(_, Error),
-        Res = error(io.error_message(Error))
+        Res0 = found_but_unexpected(_),
+        Res = Res0
+    ;
+        Res0 = not_found,
+        find_file_2(DirCache, DirName, "cur", UniqueName, Res)
     ).
 
-:- pred list_files_2(string::in, string::in, io.file_type::in, bool::out,
-    list(local_file)::in, list(local_file)::out, io::di, io::uo) is det.
+:- pred find_file_2(dir_cache::in, string::in, string::in, uniquename::in,
+    find_file_result::out) is det.
 
-list_files_2(DirName, BaseName, FileType, Continue, !Acc, !IO) :-
+find_file_2(DirCache, DirName, SubDir, UniqueName, Res) :-
+    UniqueName = uniquename(Unique),
+    search_files_with_prefix(DirCache, DirName / SubDir, Unique, Matching),
     (
-        maybe_regular_file(FileType),
-        not dot_file(BaseName)
-    ->
-        Path = DirName / BaseName,
-        LocalFile = local_file(Path, BaseName),
-        cons(LocalFile, !Acc)
+        Matching = [],
+        Res = not_found
     ;
-        true
-    ),
-    Continue = yes.
-
-:- pred dot_file(string::in) is semidet.
-
-dot_file(S) :-
-    string.prefix(S, ".").
+        Matching = [BaseName | _],
+        Path = DirName / SubDir / BaseName,
+        string.length(Unique, Pos0),
+        string.length(BaseName, EndPos),
+        ( Pos0 = EndPos ->
+            Res = found(Path, no)
+        ; parse_info_suffix(BaseName, Pos0, InfoSuffix) ->
+            Res = found(Path, yes(InfoSuffix))
+        ;
+            Res = found_but_unexpected(Path)
+        )
+    ).
 
 %-----------------------------------------------------------------------------%
 
