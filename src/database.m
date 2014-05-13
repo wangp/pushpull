@@ -158,6 +158,20 @@
     flag_deltas(remote_mailbox)::in, maybe_error::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
+
+:- pred create_detect_local_expunge_temp_table(database::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+:- pred drop_detect_local_expunge_temp_table(database::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+:- pred insert_into_detect_local_expunge_table(database::in, uniquename::in,
+    maybe_error::out, io::di, io::uo) is det.
+
+:- pred mark_expunged_local_messages(database::in, local_mailbox::in,
+    remote_mailbox::in, maybe_error(int)::out, io::di, io::uo) is det.
+
+%-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
 :- implementation.
@@ -372,6 +386,7 @@ create_tables =
         local_mailbox_id    INTEGER NOT NULL
                             REFERENCES local_mailbox(local_mailbox_id),
         local_uniquename    TEXT, /* may be NULL */
+        local_expunged      INTEGER NOT NULL, /* boolean */
         local_flags         TEXT NOT NULL,
         local_flags_attn    INTEGER NOT NULL,
 
@@ -642,12 +657,12 @@ insert_new_pairing_only_local_message(Db, MessageId, LocalMailbox,
     LocalFlagDeltas = init_flags(Flags) : flag_deltas(local_mailbox),
 
     Stmt = "INSERT OR FAIL INTO pairing(message_id,"
-        ++ "    local_mailbox_id, local_uniquename,"
+        ++ "    local_mailbox_id, local_uniquename, local_expunged,"
         ++ "    local_flags, local_flags_attn,"
         ++ "    remote_mailbox_id, remote_uid,"
         ++ "    remote_flags, remote_flags_attn)"
         ++ " VALUES(:message_id,"
-        ++ "    :local_mailbox_id, :local_uniquename, :local_flags, 0,"
+        ++ "    :local_mailbox_id, :local_uniquename, 0, :local_flags, 0,"
         ++ "    :remote_mailbox_id, NULL, '', 0);",
     with_stmt(insert_new_local_message_2, Db, Stmt, [
         name(":message_id") - bind_value(MessageId),
@@ -682,12 +697,12 @@ insert_new_pairing_only_remote_message(Db, MessageId, LocalMailbox,
     RemoteFlagDeltas = init_flags(Flags) : flag_deltas(remote_mailbox),
 
     Stmt = "INSERT OR FAIL INTO pairing(message_id,"
-        ++ "    local_mailbox_id, local_uniquename,"
+        ++ "    local_mailbox_id, local_uniquename, local_expunged,"
         ++ "    local_flags, local_flags_attn,"
         ++ "    remote_mailbox_id, remote_uid,"
         ++ "    remote_flags, remote_flags_attn)"
         ++ " VALUES(:message_id,"
-        ++ "    :local_mailbox_id, NULL, '', 0,"
+        ++ "    :local_mailbox_id, NULL, 0, '', 0,"
         ++ "    :remote_mailbox_id, :remote_uid, :remote_flags, 0);",
     with_stmt(insert_new_remote_message_2, Db, Stmt, [
         name(":message_id") - bind_value(MessageId),
@@ -946,6 +961,7 @@ search_unpaired_local_messages(Db, LocalMailbox, Res, !IO) :-
     Stmt = "SELECT pairing_id, local_uniquename FROM pairing"
         ++ " WHERE local_mailbox_id = :local_mailbox_id"
         ++ "   AND local_uniquename IS NOT NULL"
+        ++ "   AND NOT local_expunged"
         ++ "   AND remote_uid IS NULL",
     with_stmt(search_unpaired_local_messages_2, Db, Stmt, [
         name(":local_mailbox_id") - bind_value(LocalMailboxId)
@@ -957,6 +973,7 @@ search_unpaired_local_messages_by_message_id(Db, LocalMailbox, MessageId, Res,
     Stmt = "SELECT pairing_id, local_uniquename FROM pairing"
         ++ " WHERE local_mailbox_id = :local_mailbox_id"
         ++ "   AND local_uniquename IS NOT NULL"
+        ++ "   AND NOT local_expunged"
         ++ "   AND remote_uid IS NULL"
         ++ "   AND message_id = :message_id",
     with_stmt(search_unpaired_local_messages_2, Db, Stmt, [
@@ -1119,6 +1136,107 @@ record_local_flag_deltas_applied_to_remote(Db, PairingId, LocalFlags,
     maybe_error::out, io::di, io::uo) is det.
 
 record_flag_deltas_applied_2(Db, Stmt, Res, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
+    (
+        StepResult = done,
+        Res = ok
+    ;
+        StepResult = row,
+        Res = error("unexpected row")
+    ;
+        StepResult = error(Error),
+        Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
+create_detect_local_expunge_temp_table(Db, Res, !IO) :-
+    Stmt = "CREATE TEMP TABLE detect_local_expunge(local_uniquename NOT NULL)",
+    exec(Db, Stmt, Res, !IO).
+
+drop_detect_local_expunge_temp_table(Db, Res, !IO) :-
+    Stmt = "DROP TABLE detect_local_expunge",
+    exec(Db, Stmt, Res, !IO).
+
+insert_into_detect_local_expunge_table(Db, UniqueName, Res, !IO) :-
+    Stmt = "INSERT INTO detect_local_expunge VALUES(?1)",
+    with_stmt(insert_into_detect_local_expunge_table_2, Db, Stmt, [
+        num(1) - bind_value(UniqueName)
+    ], Res, !IO).
+
+:- pred insert_into_detect_local_expunge_table_2(db(rw)::in, stmt::in,
+    maybe_error::out, io::di, io::uo) is det.
+
+insert_into_detect_local_expunge_table_2(Db, Stmt, Res, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
+    (
+        StepResult = done,
+        Res = ok
+    ;
+        StepResult = row,
+        Res = error("unexpected row")
+    ;
+        StepResult = error(Error),
+        Res = error(Error)
+    ).
+
+    % XXX maybe unmark messages which "reappear" as not expunged?
+mark_expunged_local_messages(Db, LocalMailbox, RemoteMailbox, Res, !IO) :-
+    LocalMailbox = local_mailbox(_, LocalMailboxId),
+    RemoteMailbox = remote_mailbox(_, _, RemoteMailboxId),
+
+    Where = 
+        "WHERE local_mailbox_id = :local_mailbox_id
+           AND remote_mailbox_id = :remote_mailbox_id
+           AND NOT local_expunged
+           AND local_uniquename IS NOT NULL
+           AND local_uniquename NOT IN detect_local_expunge",
+    Bindings = [
+        name(":local_mailbox_id") - bind_value(LocalMailboxId),
+        name(":remote_mailbox_id") - bind_value(RemoteMailboxId)
+    ],
+
+    StmtCount = "SELECT count(*) FROM pairing " ++ Where,
+    with_stmt(count, Db, StmtCount, Bindings, ResCount, !IO),
+    (
+        ResCount = ok(Count),
+        Count > 0
+    ->
+        StmtUpdate = "UPDATE pairing SET local_expunged = 1 " ++ Where,
+        with_stmt(mark_expunged_local_messages_2, Db, StmtUpdate, Bindings,
+            ResUpdate, !IO),
+        (
+            ResUpdate = ok,
+            Res = ResCount
+        ;
+            ResUpdate = error(Error),
+            Res = error(Error)
+        )
+    ;
+        Res = ResCount
+    ).
+
+:- pred count(db(rw)::in, stmt::in, maybe_error(int)::out, io::di, io::uo)
+    is det.
+
+count(Db, Stmt, Res, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
+    (
+        StepResult = done,
+        Res = error("expected row")
+    ;
+        StepResult = row,
+        column_int(Stmt, column(0), Count, !IO),
+        Res = ok(Count)
+    ;
+        StepResult = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred mark_expunged_local_messages_2(db(rw)::in, stmt::in,
+    maybe_error::out, io::di, io::uo) is det.
+
+mark_expunged_local_messages_2(Db, Stmt, Res, !IO) :-
     step(Db, Stmt, StepResult, !IO),
     (
         StepResult = done,

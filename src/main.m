@@ -276,7 +276,15 @@ update_db_local_mailbox(Db, LocalMailbox, RemoteMailbox, Res, !IO) :-
                 DirName / "cur", CurFiles, Res2, !IO),
             (
                 Res2 = ok,
-                Res = ok(DirCache)
+                mark_expunged_local_messages(Db, LocalMailbox, RemoteMailbox,
+                    NewFiles, CurFiles, Res3, !IO),
+                (
+                    Res3 = ok,
+                    Res = ok(DirCache)
+                ;
+                    Res3 = error(Error),
+                    Res = error(Error)
+                )
             ;
                 Res2 = error(Error),
                 Res = error(Error)
@@ -376,6 +384,71 @@ update_db_local_message_file_2(Db, LocalMailbox, RemoteMailbox, DirName,
     ;
         ResSearch = error(Error),
         Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
+:- pred mark_expunged_local_messages(database::in, local_mailbox::in,
+    remote_mailbox::in, list(string)::in, list(string)::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+mark_expunged_local_messages(Db, LocalMailbox, RemoteMailbox,
+        NewFiles, CurFiles, Res, !IO) :-
+    create_detect_local_expunge_temp_table(Db, Res0, !IO),
+    (
+        Res0 = ok,
+        insert_into_detect_local_expunge_table(Db, NewFiles, Res1, !IO),
+        (
+            Res1 = ok,
+            insert_into_detect_local_expunge_table(Db, CurFiles, Res2, !IO),
+            (
+                Res2 = ok,
+                mark_expunged_local_messages(Db, LocalMailbox, RemoteMailbox,
+                    Res3, !IO),
+                (
+                    Res3 = ok(Count),
+                    io.format("Detected %d expunged local messages.\n",
+                        [i(Count)], !IO)
+                ;
+                    Res3 = error(_)
+                )
+            ;
+                Res2 = error(Error2),
+                Res3 = error(Error2)
+            )
+        ;
+            Res1 = error(Error1),
+            Res3 = error(Error1)
+        ),
+        (
+            Res3 = ok(_),
+            drop_detect_local_expunge_temp_table(Db, Res, !IO)
+        ;
+            Res3 = error(Error),
+            Res = error(Error),
+            drop_detect_local_expunge_temp_table(Db, _, !IO)
+        )
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred insert_into_detect_local_expunge_table(database::in, list(string)::in,
+    maybe_error::out, io::di, io::uo) is det.
+
+insert_into_detect_local_expunge_table(_Db, [], ok, !IO).
+insert_into_detect_local_expunge_table(Db, [BaseName | BaseNames], Res, !IO) :-
+    ( parse_basename(BaseName, Unique, _Flags) ->
+        insert_into_detect_local_expunge_table(Db, Unique, Res0, !IO),
+        (
+            Res0 = ok,
+            insert_into_detect_local_expunge_table(Db, BaseNames, Res, !IO)
+        ;
+            Res0 = error(Error),
+            Res = error(Error)
+        )
+    ;
+        Res = error("cannot parse message filename: " ++ BaseName)
     ).
 
 %-----------------------------------------------------------------------------%
