@@ -462,91 +462,42 @@ insert_into_detect_local_expunge_table(Db, [BaseName | BaseNames], Res, !IO) :-
 
 update_db_remote_mailbox(_Config, Db, IMAP, LocalMailbox, RemoteMailbox,
         LastModSeqValzer, HighestModSeqValue, Res, !IO) :-
-    % Search for changes which came *after* LastModSeqValzer.
+    SequenceSet = range(seq_range(number(uid(one)), star), []),
+    % We only need the Message-ID from the envelope and really only for new
+    % messages.
+    Items = atts(flags, [envelope]),
+    % Fetch changes since LastModSeqValzer.
     LastModSeqValzer = mod_seq_valzer(N),
-    SearchKey = modseq(mod_seq_valzer(N + one)),
-    uid_search(IMAP, SearchKey, result(ResSearch, Text, Alerts), !IO),
+    ( N = zero ->
+        ChangedSinceModifier = no
+    ;
+        ChangedSinceModifier = yes(changedsince(mod_seq_value(N)))
+    ),
+    uid_fetch(IMAP, SequenceSet, Items, ChangedSinceModifier,
+        result(ResFetch, Text, Alerts), !IO),
     report_alerts(Alerts, !IO),
     (
-        ResSearch = ok_with_data(UIDs - _HighestModSeqValueOfFound),
+        ResFetch = ok_with_data(FetchResults),
         io.write_string(Text, !IO),
         io.nl(!IO),
-        % Break into smaller commands.  Mainly this is because we don't use
-        % sequence set ranges yet so hit the length limit easily, but not
-        % asking for too much at a time is probably a good idea.
-        list.chunk(UIDs, 100, UIDss),
-        fetch_remote_message_infos(IMAP, UIDss, map.init, ResFetch, !IO),
         (
-            ResFetch = ok(RemoteMessageInfos),
+            list.foldl(make_remote_message_info, FetchResults,
+                map.init, RemoteMessageInfos)
+        ->
             update_db_with_remote_message_infos(Db, LocalMailbox,
-                RemoteMailbox, RemoteMessageInfos, HighestModSeqValue, Res,
-                !IO)
+                RemoteMailbox, RemoteMessageInfos, HighestModSeqValue,
+                Res, !IO)
         ;
-            ResFetch = error(Error),
-            Res = error(Error)
+            Res = error("failed in make_remote_message_info")
         )
     ;
-        ( ResSearch = no
-        ; ResSearch = bad
-        ; ResSearch = bye
-        ; ResSearch = continue
-        ; ResSearch = error
+        ( ResFetch = no
+        ; ResFetch = bad
+        ; ResFetch = bye
+        ; ResFetch = continue
+        ; ResFetch = error
         ),
-        Res = error("unexpected response to UID SEARCH: " ++ Text)
-    ).
-
-:- pred fetch_remote_message_infos(imap::in, list(list(uid))::in,
-    map(uid, remote_message_info)::in,
-    maybe_error(map(uid, remote_message_info))::out, io::di, io::uo) is det.
-
-fetch_remote_message_infos(IMAP, ChunkUIDs, Map0, Res, !IO) :-
-    (
-        ChunkUIDs = [],
-        Res = ok(Map0)
-    ;
-        ChunkUIDs = [UIDs | UIDss],
-        fetch_remote_message_infos_2(IMAP, UIDs, Map0, Res1, !IO),
-        (
-            Res1 = ok(Map1),
-            fetch_remote_message_infos(IMAP, UIDss, Map1, Res, !IO)
-        ;
-            Res1 = error(Error),
-            Res = error(Error)
-        )
-    ).
-
-:- pred fetch_remote_message_infos_2(imap::in, list(uid)::in,
-    map(uid, remote_message_info)::in,
-    maybe_error(map(uid, remote_message_info))::out, io::di, io::uo) is det.
-
-fetch_remote_message_infos_2(IMAP, UIDs, Map0, Res, !IO) :-
-    ( make_sequence_set(UIDs, Set) ->
-        % We only need the Message-ID from the envelope and really only for new
-        % messages.
-        Items = atts(flags, [envelope]),
-        uid_fetch(IMAP, Set, Items, no, result(ResFetch, Text, Alerts), !IO),
-        report_alerts(Alerts, !IO),
-        (
-            ResFetch = ok_with_data(AssocList),
-            io.write_string(Text, !IO),
-            io.nl(!IO),
-            ( list.foldl(make_remote_message_info, AssocList, Map0, Map) ->
-                Res = ok(Map)
-            ;
-                Res = error("failed in make_remote_message_info")
-            )
-        ;
-            ( ResFetch = no
-            ; ResFetch = bad
-            ; ResFetch = bye
-            ; ResFetch = continue
-            ; ResFetch = error
-            ),
-            Res = error("unexpected response to UID FETCH: " ++ Text)
-        )
-    ;
-        % Empty set.
-        Res = ok(Map0)
+        Res = error("unexpected response to UID FETCH: " ++ Text)
     ).
 
 :- pred make_remote_message_info(pair(message_seq_nr, msg_atts)::in,
