@@ -10,7 +10,7 @@
     --->    atom(string).           % 1*ATOM-CHAR (keep uppercased)
 
 :- type astring
-    --->    astring(string)         % 1*ASTRING-CHAR
+    --->    astring(string)         % 1*ASTRING-CHAR (case sensitive)
     ;       imap_string(imap_string).
 
 :- type imap_string
@@ -36,15 +36,24 @@
     --->    message_seq_nr(integer). % (0 <= n < 4,294,967,296)
 
 :- type sequence_set(T)
-    --->    number(seq_number(T), list(sequence_set(T)))
-    ;       range(seq_range(T), list(sequence_set(T))).
+    --->    cons(sequence_set_element(T), sequence_set(T))
+    ;       last(sequence_set_element(T)).
+
+:- type sequence_set_element(T)
+    --->    element(seq_number(T))
+    ;       range(seq_number(T), seq_number(T)).
 
 :- type seq_number(T)
     --->    number(T)
     ;       star.                   % largest in use
 
-:- type seq_range(T)
-    --->    seq_range(seq_number(T), seq_number(T)).
+:- typeclass sequence_set_number(T) where [
+    func from_nz_number(integer) = T,
+    func to_nz_number(T) = integer
+].
+
+:- instance sequence_set_number(message_seq_nr).
+:- instance sequence_set_number(uid).
 
 :- type mod_seq_value
     --->    mod_seq_value(integer).  % (0 < n < 18,446,744,073,709,551,615)
@@ -53,7 +62,11 @@
     --->    mod_seq_valzer(integer). % (0 =< n < 18,446,744,073,709,551,615)
 
 :- type search
-    --->    search(maybe(charset), search_key).
+    --->    search(
+                maybe(charset),
+                search_key,
+                maybe(list(search_return_option))
+            ).
 
 :- type charset
     --->    charset(astring).
@@ -96,6 +109,31 @@
     %;      undraft(sequence_set)
     ;       and(search_key, list(search_key))
     ;       modseq(/* [entry_name, entry_type_req] */ mod_seq_valzer).
+
+:- type search_return_option
+    --->    min
+    ;       max
+    ;       (all)
+    ;       count.
+
+:- type search_return_data(T)
+    --->    min(integer)
+    ;       max(integer)
+    ;       all(sequence_set(T))
+    ;       count(integer)
+    ;       other(tagged_ext_label, tagged_ext_val(T)).
+
+:- type tagged_ext_label
+    --->    tagged_ext_label(atom).
+
+:- type tagged_ext_val(T)
+    --->    sequence_set(sequence_set(T))
+    ;       number(integer)
+    ;       complex(tagged_ext_complex).
+
+:- type tagged_ext_complex
+    --->    astring(astring)
+    ;       list(list(tagged_ext_complex)). % non-empty
 
 :- type fetch_items
     --->    macro(fetch_macro)
@@ -259,11 +297,24 @@
 
 %-----------------------------------------------------------------------------%
 
-singleton_sequence_set(N) = number(number(N), []).
+:- instance sequence_set_number(message_seq_nr) where [
+    from_nz_number(N) = message_seq_nr(N),
+    to_nz_number(message_seq_nr(N)) = N
+].
 
-make_sequence_set([N | Ns], SequenceSet) :-
+:- instance sequence_set_number(uid) where [
+    from_nz_number(N) = uid(N),
+    to_nz_number(uid(N)) = N
+].
+
+singleton_sequence_set(N) = last(element(number(N))).
+
     % Make it smarter later.
-    SequenceSet = number(number(N), list.map(singleton_sequence_set, Ns)).
+make_sequence_set([N], singleton_sequence_set(N)).
+make_sequence_set([N | Ns], SequenceSet) :-
+    Ns = [_ | _],
+    make_sequence_set(Ns, SequenceSet0),
+    SequenceSet = cons(element(number(N)), SequenceSet0). % lcmc
 
 %-----------------------------------------------------------------------------%
 

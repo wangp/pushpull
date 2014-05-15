@@ -81,9 +81,16 @@
 :- pred append(imap::in, mailbox::in, list(flag)::in, maybe(date_time)::in,
     string::in, imap_result(maybe(appenduid))::out, io::di, io::uo) is det.
 
+:- type uid_search_result
+    --->    uid_search_result(
+                uids :: list(uid),
+                search_highestmodseq :: maybe(mod_seq_value),
+                return_datas :: list(search_return_data(uid))
+            ).
+
 :- pred uid_search(imap::in, search_key::in,
-    imap_result(pair(list(uid), maybe(mod_seq_value)))::out, io::di, io::uo)
-    is det.
+    maybe(list(search_return_option))::in, imap_result(uid_search_result)::out,
+    io::di, io::uo) is det.
 
 :- pred uid_fetch(imap::in, sequence_set(uid)::in, fetch_items::in,
     maybe(fetch_modifier)::in,
@@ -197,6 +204,10 @@
 :- typeclass handle_results(T) where [
     pred handle_search_results(list(integer)::in, maybe(mod_seq_value)::in,
         T::in, T::out) is det,
+    pred handle_esearch_msgseqnrs(maybe(tag)::in,
+        list(search_return_data(message_seq_nr))::in, T::in, T::out) is det,
+    pred handle_esearch_uids(maybe(tag)::in,
+        list(search_return_data(uid))::in, T::in, T::out) is det,
     pred handle_fetch_results(message_seq_nr::in, msg_atts::in, T::in, T::out)
         is det,
     pred handle_appenduid(appenduid::in, T::in, T::out) is det
@@ -803,9 +814,9 @@ apply_append_response(Response, Result, !State, unit, unit, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-uid_search(IMAP, SearchKey, Res, !IO) :-
-    command_wrapper_low(do_uid_search(SearchKey), [selected], IMAP, MaybeRes,
-        !IO),
+uid_search(IMAP, SearchKey, MaybeResultOptions, Res, !IO) :-
+    command_wrapper_low(do_uid_search(SearchKey, MaybeResultOptions),
+        [selected], IMAP, MaybeRes, !IO),
     (
         MaybeRes = ok(Res)
     ;
@@ -813,14 +824,13 @@ uid_search(IMAP, SearchKey, Res, !IO) :-
         Res = result(error, Error, [])
     ).
 
-:- pred do_uid_search(search_key::in, imap::in,
-    imap_result(pair(list(uid), maybe(mod_seq_value)))::out, io::di, io::uo)
-    is det.
+:- pred do_uid_search(search_key::in, maybe(list(search_return_option))::in,
+    imap::in, imap_result(uid_search_result)::out, io::di, io::uo) is det.
 
-do_uid_search(SearchKey, IMAP, Res, !IO) :-
+do_uid_search(SearchKey, MaybeResultOptions, IMAP, Res, !IO) :-
     get_new_tag(IMAP, Pipe, Tag, !IO),
-    Command = command_select(uid_search(search(no, SearchKey))),
-    make_command_stream(Tag - Command, CommandStream),
+    Command = uid_search(search(no, SearchKey, MaybeResultOptions)),
+    make_command_stream(Tag - command_select(Command), CommandStream),
     write_command_stream(Pipe, Tag, CommandStream, Res0, !IO),
     (
         Res0 = ok,
@@ -839,19 +849,16 @@ do_uid_search(SearchKey, IMAP, Res, !IO) :-
     ).
 
 :- pred apply_uid_search_response(complete_response::in,
-    imap_result(pair(list(uid), maybe(mod_seq_value)))::out,
-    imap_state::in, imap_state::out, unit::in, unit::out, io::di, io::uo)
-    is det.
+    imap_result(uid_search_result)::out, imap_state::in, imap_state::out,
+    unit::in, unit::out, io::di, io::uo) is det.
 
 apply_uid_search_response(Response, Result, !State, unit, unit, !IO) :-
     apply_complete_response(Response, !State, [], Alerts,
-        accept_search_results([], no),
-        accept_search_results(SR, MaybeModSeqValue), !IO),
+        uid_search_result([], no, []), SearchResult, !IO),
     Response = complete_response(_, FinalMaybeTag, FinalRespText),
     (
         FinalMaybeTag = tagged(_, ok),
-        UIDs = list.map(to_uid, SR),
-        Res = ok_with_data(UIDs - MaybeModSeqValue)
+        Res = ok_with_data(SearchResult)
     ;
         FinalMaybeTag = tagged(_, no),
         Res = no
@@ -867,10 +874,6 @@ apply_uid_search_response(Response, Result, !State, unit, unit, !IO) :-
     ),
     FinalRespText = resp_text(_MaybeResponseCode, Text),
     Result = result(Res, Text, Alerts).
-
-:- func to_uid(integer) = uid.
-
-to_uid(N) = uid(N).
 
 %-----------------------------------------------------------------------------%
 
@@ -1363,6 +1366,14 @@ apply_mailbox_data(MailboxData, State0, State, !R) :-
         handle_search_results(Numbers, MaybeModSeqValue, !R),
         Sel = Sel0
     ;
+        MailboxData = esearch_msgseqnrs(MaybeTag, ReturnData),
+        handle_esearch_msgseqnrs(MaybeTag, ReturnData, !R),
+        Sel = Sel0
+    ;
+        MailboxData = esearch_uids(MaybeTag, ReturnData),
+        handle_esearch_uids(MaybeTag, ReturnData, !R),
+        Sel = Sel0
+    ;
         ( MailboxData = list(_)
         ; MailboxData = lsub(_)
         ; MailboxData = status(_, _)
@@ -1433,12 +1444,19 @@ decrement_exists(Sel0, Sel) :-
 
 %-----------------------------------------------------------------------------%
 
-:- type accept_search_results
-    --->    accept_search_results(list(integer), maybe(mod_seq_value)).
+:- instance handle_results(uid_search_result) where [
+    handle_search_results(Numbers, MaybeModSeqValue, !Results) :-
+    (
+        !Results ^ uids := map(from_nz_number, Numbers),
+        !Results ^ search_highestmodseq := MaybeModSeqValue
+    ),
+    handle_esearch_uids(_MaybeTag, ReturnDatas, !Results) :-
+    (
+        !.Results ^ return_datas = ReturnDatas0,
+        !Results ^ return_datas := ReturnDatas0 ++ ReturnDatas
+    ),
 
-:- instance handle_results(accept_search_results) where [
-    handle_search_results(Numbers, MaybeModSeqValue, _, Results) :-
-        Results = accept_search_results(Numbers, MaybeModSeqValue),
+    handle_esearch_msgseqnrs(_, _, !Results),
     handle_fetch_results(_, _, !Results),
     handle_appenduid(_, !Results)
 ].
@@ -1450,6 +1468,8 @@ decrement_exists(Sel0, Sel) :-
 
 :- instance handle_results(accept_fetch_results) where [
     handle_search_results(_, _, !Results),
+    handle_esearch_msgseqnrs(_, _, !Results),
+    handle_esearch_uids(_, _, !Results),
 
     handle_fetch_results(MsgSeqNr, Atts,
         accept_fetch_results(Results0), accept_fetch_results(Results)) :-
@@ -1465,6 +1485,8 @@ decrement_exists(Sel0, Sel) :-
 
 :- instance handle_results(accept_appenduid) where [
     handle_search_results(_, _, !Results),
+    handle_esearch_msgseqnrs(_, _, !Results),
+    handle_esearch_uids(_, _, !Results),
     handle_fetch_results(_, _, !Results),
     handle_appenduid(AppendUID, _, accept_appenduid(yes(AppendUID)))
 ].
@@ -1472,9 +1494,11 @@ decrement_exists(Sel0, Sel) :-
 %-----------------------------------------------------------------------------%
 
 :- instance handle_results(unit) where [
-    handle_search_results(_, _, unit, unit),
-    handle_fetch_results(_, _, unit, unit),
-    handle_appenduid(_, unit, unit)
+    handle_search_results(_, _, !Results),
+    handle_esearch_msgseqnrs(_, _, !Results),
+    handle_esearch_uids(_, _, !Results),
+    handle_fetch_results(_, _, !Results),
+    handle_appenduid(_, !Results)
 ].
 
 %-----------------------------------------------------------------------------%

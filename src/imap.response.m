@@ -102,6 +102,10 @@
     ;       list(mailbox_list)
     ;       lsub(mailbox_list)
     ;       search(list(integer), maybe(mod_seq_value))
+    ;       esearch_msgseqnrs(maybe(tag),
+                list(search_return_data(message_seq_nr)))
+    ;       esearch_uids(maybe(tag),
+                list(search_return_data(uid)))
     ;       status(mailbox, status_att_list)
     ;       exists(integer)
     ;       recent(integer).
@@ -125,6 +129,10 @@
 
 :- type hierarchy_separator
     --->    hierarchy_separator(char).
+
+:- type uids_or_message_seq_nrs
+    --->    uids
+    ;       message_seq_nrs.
 
 :- type status_att_list == map(status_att, integer).
 
@@ -242,6 +250,17 @@ mod_seq_valzer(Src, Integer, !PS) :-
     string.from_char_list(Chars, String),
     integer.from_string(String) = Integer,
     zero =< Integer, Integer < det_from_string("18446744073709551615").
+
+:- pred astring(src::in, astring::out, ps::in, ps::out, io::di, io::uo) is det.
+
+astring(Src, AString, !PS, !IO) :-
+    ( one_or_more_chars('ASTRING-CHAR', Src, Chars, !PS) ->
+        string.from_char_list(Chars, String),
+        AString = astring(String)
+    ;
+        imap_string(Src, String, !PS, !IO),
+        AString = imap_string(String)
+    ).
 
 :- pred imap_string(src::in, imap_string::out, ps::in, ps::out, io::di, io::uo)
     is det.
@@ -420,13 +439,10 @@ sp_response_data(Src, ResponseData, !PS, !IO) :-
 response_data(Src, ResponseData, !PS, !IO) :-
     ( resp_cond_state_or_bye(Src, Cond, RespText, !PS) ->
         ResponseData = cond_or_bye(Cond, RespText)
-    ; mailbox_data(Src, MailboxData, !PS) ->
-        ResponseData = mailbox_data(MailboxData)
     ; capability_data(Src, Caps, !PS) ->
         ResponseData = capability_data(Caps)
     ;
-        message_data(Src, MessageData, !PS, !IO),
-        ResponseData = message_data(MessageData)
+        mailbox_or_message_data(Src, ResponseData, !PS, !IO)
     ).
 
 :- pred response_tagged(src::in, tag::out, cond::out, resp_text::out,
@@ -660,54 +676,68 @@ system_flag(Atom, Flag) :-
         Flag = extension(Atom)
     ).
 
-:- pred mailbox_data(src::in, mailbox_data::out, ps::in, ps::out) is semidet.
+:- pred mailbox_or_message_data(src::in, untagged_response_data::out,
+    ps::in, ps::out, io::di, io::uo) is det.
 
-mailbox_data(Src, MailboxData, !PS) :-
+mailbox_or_message_data(Src, ResponseData, !PS, !IO) :-
     % atom is a superset of number so check number first.
     ( number(Src, Number, !PS) ->
-        sp(Src, !PS),
-        atom(Src, Atom, !PS),
         (
-            Atom = atom("EXISTS"),
-            MailboxData = exists(Number)
-        ;
-            Atom = atom("RECENT"),
-            MailboxData = recent(Number)
-        )
-    ;
-        atom(Src, Atom, !PS),
-        (
-            Atom = atom("FLAGS"),
             sp(Src, !PS),
-            flag_list(Src, Flags, !PS),
+            atom(Src, Atom, !PS)
+        ->
+            % mailbox-data
+            ( Atom = atom("EXISTS") ->
+                ResponseData = mailbox_data(exists(Number))
+            ; Atom = atom("RECENT") ->
+                ResponseData = mailbox_data(recent(Number))
+            % message-data
+            ; Atom = atom("EXPUNGE"), Number > zero ->
+                ResponseData = message_data(expunge(Number))
+            ; Atom = atom("FETCH"), Number > zero ->
+                message_data_fetch(Src, message_seq_nr(Number), MessageData,
+                    !PS, !IO),
+                ResponseData = message_data(MessageData)
+            ;
+                throw(fail_exception)
+            )
+        ;
+                throw(fail_exception)
+        )
+    ; atom(Src, Atom, !PS) ->
+        mailbox_data_atom(Atom, Src, MailboxData, !PS, !IO),
+        ResponseData = mailbox_data(MailboxData)
+    ;
+        throw(fail_exception)
+    ).
+
+:- pred mailbox_data_atom(atom::in, src::in, mailbox_data::out,
+    ps::in, ps::out, io::di, io::uo) is det.
+
+mailbox_data_atom(Atom, Src, MailboxData, !PS, !IO) :-
+    ( Atom = atom("FLAGS") ->
+        ( sp_then(flag_list, Src, Flags, !PS) ->
             MailboxData = flags(Flags)
         ;
-            Atom = atom("LIST"),
-            sorry($module, $pred, "LIST")
-        ;
-            Atom = atom("LSUB"),
-            sorry($module, $pred, "LSUB")
-        ;
-            Atom = atom("SEARCH"),
-            zero_or_more(sp_then(nz_number), Src, Numbers, !PS),
-            % RFC 4551
-            (
-                sp(Src, !PS),
-                next_char(Src, '(', !PS),
-                atom(Src, atom("MODSEQ"), !PS)
-            ->
-                sp(Src, !PS),
-                mod_seq_value(Src, ModSeqValue, !PS),
-                next_char(Src, ')', !PS),
-                MaybeModSeqValue = yes(ModSeqValue)
-            ;
-                MaybeModSeqValue = no
-            ),
-            MailboxData = search(Numbers, MaybeModSeqValue)
-        ;
-            Atom = atom("STATUS"),
-            sorry($module, $pred, "STATUS")
+            throw(fail_exception)
         )
+    ; Atom = atom("LIST") ->
+        sorry($module, $pred, "LIST")
+    ; Atom = atom("LSUB") ->
+        sorry($module, $pred, "LSUB")
+    ; Atom = atom("SEARCH") ->
+        ( mailbox_data_search(Src, MailboxData0, !PS) ->
+            MailboxData = MailboxData0
+        ;
+            throw(fail_exception)
+        )
+    ; Atom = atom("ESEARCH") ->
+        % RFC 4466
+        mailbox_data_esearch(Src, MailboxData, !PS, !IO)
+    ; Atom = atom("STATUS") ->
+        sorry($module, $pred, "STATUS")
+    ;
+        throw(fail_exception)
     ).
 
 :- pred flag_list(src::in, list(flag)::out, ps::in, ps::out) is semidet.
@@ -723,25 +753,41 @@ flag_list(Src, Flags, !PS) :-
     ),
     next_char(Src, ')', !PS).
 
-:- pred message_data(src::in, message_data::out, ps::in, ps::out,
-    io::di, io::uo) is det.
+:- pred mailbox_data_search(src::in, mailbox_data::out, ps::in, ps::out)
+    is semidet.
 
-message_data(Src, MessageData, !PS, !IO) :-
+mailbox_data_search(Src, MailboxData, !PS) :-
+    zero_or_more(sp_then(nz_number), Src, Numbers, !PS),
+    % RFC 4551
     (
-        nz_number(Src, Number, !PS),
         sp(Src, !PS),
-        atom(Src, Atom, !PS)
+        next_char(Src, '(', !PS),
+        atom(Src, atom("MODSEQ"), !PS)
     ->
-        ( Atom = atom("EXPUNGE") ->
-            MessageData = expunge(Number)
-        ; Atom = atom("FETCH") ->
-            message_data_fetch(Src, message_seq_nr(Number), MessageData,
-                !PS, !IO)
-        ;
-            throw(fail_exception)
-        )
+        sp(Src, !PS),
+        mod_seq_value(Src, ModSeqValue, !PS),
+        next_char(Src, ')', !PS),
+        MaybeModSeqValue = yes(ModSeqValue)
     ;
-        throw(fail_exception)
+        MaybeModSeqValue = no
+    ),
+    MailboxData = search(Numbers, MaybeModSeqValue).
+
+:- pred mailbox_data_esearch(src::in, mailbox_data::out,
+    ps::in, ps::out, io::di, io::uo) is det.
+
+mailbox_data_esearch(Src, MailboxData, !PS, !IO) :-
+    ( search_correlator(Src, SearchTag, !PS) ->
+        MaybeTag = yes(SearchTag)
+    ;
+        MaybeTag = no
+    ),
+    ( sp_then(atom, Src, atom("UID"), !PS) ->
+        sp_then_search_return_datas(Src, ReturnDatas, !PS, !IO),
+        MailboxData = esearch_uids(MaybeTag, ReturnDatas)
+    ;
+        sp_then_search_return_datas(Src, ReturnDatas, !PS, !IO),
+        MailboxData = esearch_msgseqnrs(MaybeTag, ReturnDatas)
     ).
 
 :- pred message_data_fetch(src::in, message_seq_nr::in, message_data::out,
@@ -1072,6 +1118,190 @@ uid_set_2(Src, !Set, !PS) :-
 
 uid(X) =< uid(Y) :-
     X =< Y.
+
+:- pred sequence_set(src::in, sequence_set(T)::out, ps::in, ps::out)
+    is semidet <= sequence_set_number(T).
+
+sequence_set(Src, SequenceSet, !PS) :-
+    sequence_set_element(Src, Elem, !PS),
+    ( next_char(Src, ',', !PS) ->
+        sequence_set(Src, Elems, !PS),
+        SequenceSet = cons(Elem, Elems)
+    ;
+        SequenceSet = last(Elem)
+    ).
+
+:- pred sequence_set_element(src::in, sequence_set_element(T)::out,
+    ps::in, ps::out) is semidet <= sequence_set_number(T).
+
+sequence_set_element(Src, Elem, !PS) :-
+    seq_number(Src, First, !PS),
+    ( next_char(Src, ':', !PS) ->
+        seq_number(Src, Second, !PS),
+        ( seq_number_le(First, Second) ->
+            Low = First,
+            High = Second
+        ;
+            Low = Second,
+            High = First
+        ),
+        Elem = range(Low, High)
+    ;
+        Elem = element(First)
+    ).
+
+:- pred seq_number(src::in, seq_number(T)::out, ps::in, ps::out) is semidet
+    <= sequence_set_number(T).
+
+seq_number(Src, X, !PS) :-
+    ( nz_number(Src, Integer, !PS) ->
+        X = number(from_nz_number(Integer))
+    ;
+        next_char(Src, '*', !PS),
+        X = star
+    ).
+
+:- pred seq_number_le(seq_number(T)::in, seq_number(T)::in) is semidet
+    <= sequence_set_number(T).
+
+seq_number_le(X, Y) :-
+    (
+        X = star,
+        Y = star
+    ;
+        X = number(_),
+        Y = star
+    ;
+        X = number(NX),
+        Y = number(NY),
+        to_nz_number(NX) =< to_nz_number(NY)
+    ).
+
+:- pred search_correlator(src::in, tag::out, ps::in, ps::out) is semidet.
+
+search_correlator(Src, tag(Tag), !PS) :-
+    sp(Src, !PS),
+    next_char(Src, '(', !PS),
+    atom(Src, atom("TAG"), !PS),
+    sp(Src, !PS),
+    % XXX strictly should be imap_string but that requires I/O
+    % and who would do that anyway? Leaving it for now.
+    quoted_string(Src, quoted(Tag), !PS),
+    next_char(Src, ')', !PS).
+
+:- pred sp_then_search_return_datas(src::in, list(search_return_data(T))::out,
+    ps::in, ps::out, io::di, io::uo) is det <= sequence_set_number(T).
+
+sp_then_search_return_datas(Src, ReturnDatas, !PS, !IO) :-
+    ( sp(Src, !PS) ->
+        search_return_data(Src, ReturnData, !PS, !IO),
+        sp_then_search_return_datas(Src, ReturnDatasTail, !PS, !IO),
+        ReturnDatas = [ReturnData | ReturnDatasTail] % lcmc
+    ;
+        ReturnDatas = []
+    ).
+
+:- pred search_return_data(src::in, search_return_data(T)::out,
+    ps::in, ps::out, io::di, io::uo) is det <= sequence_set_number(T).
+
+search_return_data(Src, ReturnData, !PS, !IO) :-
+    detify(tagged_ext_label, Src, Name, !PS),
+    det_sp(Src, !PS),
+    Name = tagged_ext_label(Atom),
+    ( Atom = atom("MIN") ->
+        detify(nz_number, Src, Number, !PS),
+        ReturnData = min(Number)
+    ; Atom = atom("MAX") ->
+        detify(nz_number, Src, Number, !PS),
+        ReturnData = max(Number)
+    ; Atom = atom("ALL") ->
+        detify(sequence_set, Src, SequenceSet, !PS),
+        ReturnData = all(SequenceSet)
+    ; Atom = atom("COUNT") ->
+        detify(number, Src, Number, !PS),
+        ReturnData = count(Number)
+    ;
+        tagged_ext_val(Src, Value, !PS, !IO),
+        ReturnData = other(Name, Value)
+    ).
+
+:- pred tagged_ext_label(src::in, tagged_ext_label::out, ps::in, ps::out)
+    is semidet.
+
+tagged_ext_label(Src, tagged_ext_label(atom(Atom)), !PS) :-
+    tagged_label_fchar(Src, C, !PS),
+    zero_or_more_chars(tagged_label_char, Src, Cs, !PS),
+    string.from_char_list([C | Cs], Atom0),
+    string.to_upper(Atom0, Atom).
+
+:- pred tagged_label_fchar(src::in, char::out, ps::in, ps::out) is semidet.
+
+tagged_label_fchar(Src, C, !PS) :-
+    next_char(Src, C, !PS),
+    tagged_label_fchar(C).
+
+:- pred tagged_label_fchar(char::in) is semidet.
+
+tagged_label_fchar(C) :-
+    ( char.is_alpha(C)
+    ; C = ('-')
+    ; C = ('_')
+    ; C = ('.')
+    ).
+
+:- pred tagged_label_char(char::in) is semidet.
+
+tagged_label_char(C) :-
+    ( tagged_label_fchar(C)
+    ; char.is_digit(C)
+    ; C = (':')
+    ).
+
+:- pred tagged_ext_val(src::in, tagged_ext_val(T)::out, ps::in, ps::out,
+    io::di, io::uo) is det <= sequence_set_number(T).
+
+tagged_ext_val(Src, Value, !PS, !IO) :-
+    ( sequence_set(Src, SequenceSet, !PS) ->
+        Value = sequence_set(SequenceSet)
+    ; number(Src, Number, !PS) ->
+        Value = number(Number)
+    ;
+        tagged_ext_complex(Src, Complex, !PS, !IO),
+        Value = complex(Complex)
+    ).
+
+    % Completely untested.
+:- pred tagged_ext_complex(src::in, tagged_ext_complex::out, ps::in, ps::out,
+    io::di, io::uo) is det.
+
+tagged_ext_complex(Src, Value, !PS, !IO) :-
+    tagged_ext_complex_head(Src, Head, !PS, !IO),
+    sp_then_tagged_ext_complexs(Src, Tail, !PS, !IO),
+    Value = list([Head | Tail]).
+
+:- pred tagged_ext_complex_head(src::in, tagged_ext_complex::out,
+    ps::in, ps::out, io::di, io::uo) is det.
+
+tagged_ext_complex_head(Src, Value, !PS, !IO) :-
+    ( next_char(Src, '(', !PS) ->
+        tagged_ext_complex(Src, Value, !PS, !IO),
+        det_next_char(Src, ')', !PS)
+    ;
+        astring(Src, AString, !PS, !IO),
+        Value = astring(AString)
+    ).
+
+:- pred sp_then_tagged_ext_complexs(src::in, list(tagged_ext_complex)::out,
+    ps::in, ps::out, io::di, io::uo) is det.
+
+sp_then_tagged_ext_complexs(Src, Values, !PS, !IO) :-
+    ( sp(Src, !PS) ->
+        tagged_ext_complex(Src, Head, !PS, !IO),
+        sp_then_tagged_ext_complexs(Src, Tail, !PS, !IO),
+        Values = [Head | Tail] % lcmc
+    ;
+        Values = []
+    ).
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

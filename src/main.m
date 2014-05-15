@@ -462,7 +462,7 @@ insert_into_detect_local_expunge_table(Db, [BaseName | BaseNames], Res, !IO) :-
 
 update_db_remote_mailbox(_Config, Db, IMAP, LocalMailbox, RemoteMailbox,
         LastModSeqValzer, HighestModSeqValue, Res, !IO) :-
-    SequenceSet = range(seq_range(number(uid(one)), star), []),
+    SequenceSet = last(range(number(uid(one)), star)),
     % We only need the Message-ID from the envelope and really only for new
     % messages.
     Items = atts(flags, [envelope]),
@@ -1100,10 +1100,11 @@ get_appended_uid_fallback(IMAP, Content, PriorModSeqValue, Res, !IO) :-
             PriorModSeqValue = no,
             SearchKey = SearchKey0
         ),
-        uid_search(IMAP, SearchKey, result(ResSearch, Text, Alerts), !IO),
+        uid_search(IMAP, SearchKey, no, result(ResSearch, Text, Alerts), !IO),
         report_alerts(Alerts, !IO),
         (
-            ResSearch = ok_with_data(UIDs - _HighestModSeqValueOfFound),
+            ResSearch = ok_with_data(uid_search_result(UIDs,
+                _HighestModSeqValueOfFound, _ReturnDatas)),
             io.write_string(Text, !IO),
             io.nl(!IO),
             ( UIDs = [UID] ->

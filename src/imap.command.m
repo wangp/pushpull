@@ -109,12 +109,6 @@ add_sp_then(X) -->
     add(sp),
     add(X).
 
-:- pred add_comma_then(T::in, acc::in, acc::out) is det <= add(T).
-
-add_comma_then(X) -->
-    add(","),
-    add(X).
-
 :- instance add(maybe(T)) <= add(T) where [
     add(yes(X), !Acc) :- add(X, !Acc),
     add(no, !Acc)
@@ -159,13 +153,13 @@ add_comma_then(X) -->
 :- instance add(sequence_set(T)) <= add(T) where [
     add(SequenceSet, !Acc) :-
     (
-        SequenceSet = number(First, Rest),
-        add(First, !Acc),
-        list.foldl(add_comma_then, Rest, !Acc)
+        SequenceSet = cons(Elem, Elems),
+        add(Elem, !Acc),
+        add(",", !Acc),
+        add(Elems, !Acc)
     ;
-        SequenceSet = range(First, Rest),
-        add(First, !Acc),
-        list.foldl(add_comma_then, Rest, !Acc)
+        SequenceSet = last(Elem),
+        add(Elem, !Acc)
     )
 ].
 
@@ -174,8 +168,9 @@ add_comma_then(X) -->
     add(star) --> add("*")
 ].
 
-:- instance add(seq_range(T)) <= add(T) where [
-    add(seq_range(L, R)) -->
+:- instance add(sequence_set_element(T)) <= add(T) where [
+    add(element(E)) --> add(E),
+    add(range(L, R)) -->
     (
         add(L),
         add(":"),
@@ -347,11 +342,21 @@ escape_for_quoted_string(S0) = S :-
         add(")", !Acc)
     ;
         (
-            Command = search(search(MaybeCharset, SearchKey)),
+            Command = search(Search),
             add("SEARCH", !Acc)
         ;
-            Command = uid_search(search(MaybeCharset, SearchKey)),
+            Command = uid_search(Search),
             add("UID SEARCH", !Acc)
+        ),
+        Search = search(MaybeCharset, SearchKey, MaybeResultOptions),
+        (
+            MaybeResultOptions = yes(ReturnOpts),
+            % RFC 4731
+            add(" RETURN (", !Acc),
+            add_sp_sep_list(ReturnOpts, !Acc),
+            add(")", !Acc)
+        ;
+            MaybeResultOptions = no
         ),
         (
             MaybeCharset = yes(CharSet),
@@ -471,6 +476,13 @@ escape_for_quoted_string(S0) = S :-
         add("MODSEQ ", !Acc),
         add(ModSeqValzer, !Acc)
     )
+].
+
+:- instance add(search_return_option) where [
+    add(min) --> add("MIN"),
+    add(max) --> add("MAX"),
+    add(all) --> add("ALL"),
+    add(count) --> add("COUNT")
 ].
 
 :- instance add(fetch_items) where [

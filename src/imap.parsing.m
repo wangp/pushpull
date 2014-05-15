@@ -31,6 +31,9 @@
 
 :- pred det_next_char(src::in, char::in, ps::in, ps::out) is det.
 
+:- pred detify(pred(src, T, ps, ps), src, T, ps, ps).
+:- mode detify(pred(in, out, in, out) is semidet, in, out, in, out) is det.
+
 :- pred digit_char(src::in, char::out, ps::in, ps::out) is semidet.
 :- pred digit(src::in, int::out, ps::in, ps::out) is semidet.
 :- pred two_digit(src::in, int::out, ps::in, ps::out) is semidet.
@@ -87,6 +90,13 @@ next_char(_, C, [I | PS], PS) :-
 det_next_char(Src, C, !PS) :-
     ( next_char(Src, C, !PS) ->
         true
+    ;
+        throw(fail_exception)
+    ).
+
+detify(P, Src, X, !PS) :-
+    ( P(Src, X0, !PS) ->
+        X = X0
     ;
         throw(fail_exception)
     ).
