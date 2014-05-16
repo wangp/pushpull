@@ -561,13 +561,33 @@ escape_for_quoted_string(S0) = S :-
     )
 ].
 
-:- instance add(section_spec) where [
+:- instance add(section) where [
     add(msgtext(MsgText)) --> add(MsgText)
 ].
 
 :- instance add(section_msgtext) where [
-    add(header) --> add("HEADER"),
-    add(text) --> add("TEXT")
+    add(header) -->
+    (
+        add("HEADER")
+    ),
+    add(header_fields(FieldName, FieldNames)) -->
+    (
+        add("HEADER.FIELDS ("),
+        add(FieldName),
+        add_sp_sep_list(FieldNames),
+        add(")")
+    ),
+    add(header_fields_not(FieldName, FieldNames)) -->
+    (
+        add("HEADER.FIELDS.NOT ("),
+        add(FieldName),
+        add_sp_sep_list(FieldNames),
+        add(")")
+    ),
+    add(text) -->
+    (
+        add("TEXT")
+    )
 ].
 
 :- instance add(partial) where [

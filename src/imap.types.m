@@ -146,8 +146,8 @@
 
 :- type fetch_att
     --->    body
-    ;       body(section_spec, maybe(partial))
-    ;       body_peek(section_spec, maybe(partial))
+    ;       body(section, maybe(partial))
+    ;       body_peek(section, maybe(partial))
     ;       bodystructure
     ;       envelope
     ;       flags
@@ -159,15 +159,7 @@
     ;       uid
     ;       modseq.
 
-:- type section_spec
-    --->    msgtext(section_msgtext).
-    %;      part(section_part, section_text).
-
-:- type section_msgtext
-    --->    header
-    %;      header_fields(header_list)
-    %;      header_fields_not(header_list)
-    ;       text.
+:- type header_field_name == astring.
 
 :- type partial
     --->    partial(int, int). % number, nz-number
@@ -189,7 +181,7 @@
     ;       rfc822_size(integer)
     %;      body(body)
     %;      bodystructure(body)
-    %;      body(section, optional(number), nstring)
+    ;       body(section, maybe(origin_octet), nstring)
     ;       uid(uid)
     ;       modseq(mod_seq_value).
 
@@ -254,6 +246,18 @@
 
 :- type zone
     --->    zone(string).   % +HHMM or -HHMM
+
+:- type origin_octet == integer.
+
+:- type section
+    --->    msgtext(section_msgtext).
+    %;      part(section_part, section_text).
+
+:- type section_msgtext
+    --->    header
+    ;       header_fields(header_field_name, list(header_field_name))
+    ;       header_fields_not(header_field_name, list(header_field_name))
+    ;       text.
 
 :- type appenduid
     --->    appenduid(uidvalidity, uid_set).

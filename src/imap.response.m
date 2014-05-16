@@ -816,18 +816,39 @@ sp_then_msg_atts(Src, Atts, !PS, !IO) :-
 :- pred msg_att(src::in, msg_att::out, ps::in, ps::out, io::di, io::uo) is det.
 
 msg_att(Src, Att, !PS, !IO) :-
-    (
-        atom(Src, Atom, !PS),
-        sp(Src, !PS)
-    ->
-        ( msg_att_semi(Src, Atom, AttPrime, !PS) ->
-            Att = AttPrime
+    ( msg_att_atom(Src, Atom, !PS) ->
+        (
+            Atom = atom("BODY"),
+            next_char(Src, '[', !.PS, _)
+        ->
+            msg_att_body_section(Src, Att, !PS, !IO)
         ;
-            msg_att_io(Src, Atom, Att, !PS, !IO)
+            sp(Src, !PS)
+        ->
+            ( msg_att_semi(Src, Atom, AttPrime, !PS) ->
+                Att = AttPrime
+            ;
+                msg_att_io(Src, Atom, Att, !PS, !IO)
+            )
+        ;
+            throw(fail_exception)
         )
     ;
         throw(fail_exception)
     ).
+
+:- pred msg_att_atom(src::in, atom::out, ps::in, ps::out) is semidet.
+
+msg_att_atom(Src, atom(Atom), !PS) :-
+    one_or_more_chars(msg_att_atom_char, Src, Chars, !PS),
+    string.from_char_list(Chars, Atom0),
+    string.to_upper(Atom0, Atom).
+
+:- pred msg_att_atom_char(char::in) is semidet.
+
+msg_att_atom_char(C) :-
+    'ATOM-CHAR'(C),
+    C \= ('['). % stop for BODY[ ]
 
 :- pred msg_att_semi(src::in, atom::in, msg_att::out, ps::in, ps::out)
     is semidet.
@@ -881,6 +902,24 @@ msg_att_io(Src, Atom, Att, !PS, !IO) :-
     ;
         throw(fail_exception)
     ).
+
+:- pred msg_att_body_section(src::in, msg_att::out, ps::in, ps::out,
+    io::di, io::uo) is det.
+
+msg_att_body_section(Src, Att, !PS, !IO) :-
+    section(Src, Section, !PS, !IO),
+    (
+        next_char(Src, '<', !PS),
+        number(Src, OriginOctet, !PS),
+        next_char(Src, '>', !PS)
+    ->
+        MaybeOriginOctet = yes(OriginOctet)
+    ;
+        MaybeOriginOctet = no
+    ),
+    det_sp(Src, !PS),
+    nstring(Src, NString, !PS, !IO),
+    Att = body(Section, MaybeOriginOctet, NString).
 
 :- pred flag_fetches(src::in, list(flag_fetch)::out, ps::in, ps::out)
     is semidet.
@@ -1077,6 +1116,64 @@ zone(Src, Zone, !PS) :-
     digit_char(Src, D, !PS),
     string.from_char_list([PM, A, B, C, D], S),
     Zone = zone(S).
+
+:- pred section(src::in, section::out, ps::in, ps::out, io::di, io::uo) is det.
+
+section(Src, Section, !PS, !IO) :-
+    det_next_char(Src, '[', !PS),
+    section_spec(Src, Section, !PS, !IO),
+    det_next_char(Src, ']', !PS).
+
+:- pred section_spec(src::in, section::out, ps::in, ps::out, io::di, io::uo)
+    is det.
+
+section_spec(Src, Section, !PS, !IO) :-
+    ( atom(Src, Atom, !PS) ->
+        ( Atom = atom("HEADER") ->
+            Section = msgtext(header)
+        ; Atom = atom("HEADER.FIELDS") ->
+            det_sp(Src, !PS),
+            header_list(Src, Field, Fields, !PS, !IO),
+            Section = msgtext(header_fields(Field, Fields))
+        ; Atom = atom("HEADER.FIELDS.NOT") ->
+            det_sp(Src, !PS),
+            header_list(Src, Field, Fields, !PS, !IO),
+            Section = msgtext(header_fields_not(Field, Fields))
+        ; Atom = atom("TEXT") ->
+            Section = msgtext(text)
+        ;
+            throw(fail_exception)
+        )
+    ;
+        throw(fail_exception)
+    ).
+
+:- pred header_list(src::in, header_field_name::out,
+    list(header_field_name)::out, ps::in, ps::out, io::di, io::uo) is det.
+
+header_list(Src, Field, Fields, !PS, !IO) :-
+    det_next_char(Src, '(', !PS),
+    header_field_name(Src, Field, !PS, !IO),
+    sp_then_header_field_name(Src, Fields, !PS, !IO),
+    det_next_char(Src, ')', !PS).
+
+:- pred header_field_name(src::in, header_field_name::out, ps::in, ps::out,
+    io::di, io::uo) is det.
+
+header_field_name(Src, Field, !PS, !IO) :-
+    astring(Src, Field, !PS, !IO).
+
+:- pred sp_then_header_field_name(src::in, list(header_field_name)::out,
+    ps::in, ps::out, io::di, io::uo) is det.
+
+sp_then_header_field_name(Src, Fields, !PS, !IO) :-
+    ( sp(Src, !PS) ->
+        header_field_name(Src, Field, !PS, !IO),
+        sp_then_header_field_name(Src, FieldsTail, !PS, !IO),
+        Fields = [Field | FieldsTail] % lcmc
+    ;
+        Fields = []
+    ).
 
 :- pred uniqueid(src::in, uid::out, ps::in, ps::out) is semidet.
 
