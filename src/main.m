@@ -203,50 +203,62 @@ logged_in(Config, Db, IMAP, LocalMailbox, !IO) :-
 
 have_remote_mailbox(Config, Db, IMAP, LocalMailbox, RemoteMailbox,
         LastModSeqValzer, HighestModSeqValue, Res, !IO) :-
+    % It might be better to get set of valid UIDs first, then use that
+    % as part of update_db_remote_mailbox and for detecting expunges.
     update_db_remote_mailbox(Config, Db, IMAP, LocalMailbox, RemoteMailbox,
         LastModSeqValzer, HighestModSeqValue, ResUpdate, !IO),
     (
         ResUpdate = ok,
-        update_db_local_mailbox(Db, LocalMailbox, RemoteMailbox,
-            ResUpdateLocal, !IO),
+        detect_remote_message_expunges(Db, IMAP, LocalMailbox, RemoteMailbox,
+            ResRemoteExpunges, !IO),
         (
-            ResUpdateLocal = ok(DirCache),
-            download_unpaired_remote_messages(Config, Db, IMAP, LocalMailbox,
-                RemoteMailbox, DirCache, ResDownload, !IO),
-            % DirCache does not include newly added messages.
+            ResRemoteExpunges = ok,
+            update_db_local_mailbox(Db, LocalMailbox, RemoteMailbox,
+                ResUpdateLocal, !IO),
             (
-                ResDownload = ok,
-                upload_unpaired_local_messages(Config, Db, IMAP, LocalMailbox,
-                    RemoteMailbox, DirCache, ResUpload, !IO),
+                ResUpdateLocal = ok(DirCache),
+                download_unpaired_remote_messages(Config, Db, IMAP,
+                    LocalMailbox, RemoteMailbox, DirCache, ResDownload, !IO),
+                % DirCache does not include newly added messages.
                 (
-                    ResUpload = ok,
-                    propagate_flag_deltas_from_remote(Config, Db, LocalMailbox,
-                        RemoteMailbox, ResPropRemote, DirCache, _DirCache, !IO),
+                    ResDownload = ok,
+                    upload_unpaired_local_messages(Config, Db, IMAP,
+                        LocalMailbox, RemoteMailbox, DirCache, ResUpload, !IO),
                     (
-                        ResPropRemote = ok,
-                        propagate_flag_deltas_from_local(Config, Db, IMAP,
-                            LocalMailbox, RemoteMailbox, ResPropLocal, !IO),
+                        ResUpload = ok,
+                        propagate_flag_deltas_from_remote(Config, Db,
+                            LocalMailbox, RemoteMailbox, ResPropRemote,
+                            DirCache, _DirCache, !IO),
                         (
-                            ResPropLocal = ok,
-                            Res = ok
+                            ResPropRemote = ok,
+                            propagate_flag_deltas_from_local(Config, Db, IMAP,
+                                LocalMailbox, RemoteMailbox, ResPropLocal,
+                                !IO),
+                            (
+                                ResPropLocal = ok,
+                                Res = ok
+                            ;
+                                ResPropLocal = error(Error),
+                                Res = error(Error)
+                            )
                         ;
-                            ResPropLocal = error(Error),
+                            ResPropRemote = error(Error),
                             Res = error(Error)
                         )
                     ;
-                        ResPropRemote = error(Error),
+                        ResUpload = error(Error),
                         Res = error(Error)
                     )
                 ;
-                    ResUpload = error(Error),
+                    ResDownload = error(Error),
                     Res = error(Error)
                 )
             ;
-                ResDownload = error(Error),
+                ResUpdateLocal = error(Error),
                 Res = error(Error)
             )
         ;
-            ResUpdateLocal = error(Error),
+            ResRemoteExpunges = error(Error),
             Res = error(Error)
         )
     ;
@@ -593,6 +605,166 @@ do_update_db_with_remote_message_info(Db, LocalMailbox, RemoteMailbox, UID,
     ;
         MaybeError0 = error(Error),
         MaybeError = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
+:- pred detect_remote_message_expunges(database::in, imap::in,
+    local_mailbox::in, remote_mailbox::in, maybe_error::out, io::di, io::uo)
+    is det.
+
+detect_remote_message_expunges(Db, IMAP, LocalMailbox, RemoteMailbox, Res, !IO)
+        :-
+    % The search return option forces the server to return UIDs using
+    % sequence-set syntax (RFC 4731).
+    uid_search(IMAP, all, yes([all]), result(ResSearch, Text, Alerts), !IO),
+    report_alerts(Alerts, !IO),
+    (
+        ResSearch = ok_with_data(uid_search_result(_UIDs,
+            _HighestModSeqValueOfFound, ReturnDatas)),
+        ( get_all_uids_set(ReturnDatas, MaybeSequenceSet) ->
+            mark_expunged_remote_messages(Db, LocalMailbox, RemoteMailbox,
+                MaybeSequenceSet, Res, !IO)
+        ;
+            Res = error("expected UID SEARCH response ALL sequence-set")
+        )
+    ;
+        ( ResSearch = no
+        ; ResSearch = bad
+        ; ResSearch = bye
+        ; ResSearch = continue
+        ; ResSearch = error
+        ),
+        Res = error("unexpected response to UID SEARCH: " ++ Text)
+    ).
+
+:- pred get_all_uids_set(list(search_return_data(uid))::in,
+    maybe(sequence_set(uid))::out) is semidet.
+
+get_all_uids_set(ReturnDatas, MaybeSequenceSet) :-
+    ( ReturnDatas = [] ->
+        % Empty mailbox.
+        MaybeSequenceSet = no
+    ;
+        solutions((pred(Set::out) is nondet :- member(all(Set), ReturnDatas)),
+            [SequenceSet]),
+        MaybeSequenceSet = yes(SequenceSet)
+    ).
+
+:- pred mark_expunged_remote_messages(database::in, local_mailbox::in,
+    remote_mailbox::in, maybe(sequence_set(uid))::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+mark_expunged_remote_messages(Db, LocalMailbox, RemoteMailbox,
+        MaybeSequenceSet, Res, !IO) :-
+    create_detect_remote_expunge_temp_table(Db, Res0, !IO),
+    (
+        Res0 = ok,
+        (
+            MaybeSequenceSet = yes(SequenceSet),
+            insert_into_detect_remote_expunge_table(Db, SequenceSet, Res1,
+                !IO)
+        ;
+            MaybeSequenceSet = no,
+            Res1 = ok
+        ),
+        (
+            Res1 = ok,
+            mark_expunged_remote_messages(Db, LocalMailbox, RemoteMailbox,
+                Res2, !IO),
+            (
+                Res2 = ok(Count),
+                io.format("Detected %d expunged remote messages.\n",
+                    [i(Count)], !IO)
+            ;
+                Res2 = error(_)
+            )
+        ;
+            Res1 = error(Error1),
+            Res2 = error(Error1)
+        ),
+        (
+            Res2 = ok(_),
+            drop_detect_remote_expunge_temp_table(Db, Res, !IO)
+        ;
+            Res2 = error(Error),
+            Res = error(Error),
+            drop_detect_remote_expunge_temp_table(Db, _, !IO)
+        )
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred insert_into_detect_remote_expunge_table(database::in,
+    sequence_set(uid)::in, maybe_error::out, io::di, io::uo) is det.
+
+insert_into_detect_remote_expunge_table(Db, SequenceSet, Res, !IO) :-
+    (
+        SequenceSet = last(Elem),
+        insert_element_into_detect_remote_expunge_table(Db, Elem, Res, !IO)
+    ;
+        SequenceSet = cons(Head, Tail),
+        insert_element_into_detect_remote_expunge_table(Db, Head, Res0, !IO),
+        (
+            Res0 = ok,
+            insert_into_detect_remote_expunge_table(Db, Tail, Res, !IO)
+        ;
+            Res0 = error(Error),
+            Res = error(Error)
+        )
+    ).
+
+:- pred insert_element_into_detect_remote_expunge_table(database::in,
+    sequence_set_element(uid)::in, maybe_error::out, io::di, io::uo) is det.
+
+insert_element_into_detect_remote_expunge_table(Db, Elem, Res, !IO) :-
+    (
+        Elem = element(SeqNumber),
+        insert_seqnr_into_detect_remote_expunge_table(Db, SeqNumber, Res, !IO)
+    ;
+        Elem = range(Low, High),
+        (
+            Low = number(LowUID),
+            High = number(HighUID)
+        ->
+            insert_range_into_detect_remote_expunge_table(Db, LowUID, HighUID,
+                Res, !IO)
+        ;
+            Res = error("UID range contains *")
+        )
+    ).
+
+:- pred insert_seqnr_into_detect_remote_expunge_table(database::in,
+    seq_number(uid)::in, maybe_error::out, io::di, io::uo) is det.
+
+insert_seqnr_into_detect_remote_expunge_table(Db, SeqNumber, Res, !IO) :-
+    (
+        SeqNumber = number(UID),
+        insert_into_detect_remote_expunge_table(Db, UID, Res, !IO)
+    ;
+        SeqNumber = star,
+        Res = error("UID range contains *")
+    ).
+
+:- pred insert_range_into_detect_remote_expunge_table(database::in,
+    uid::in, uid::in, maybe_error::out, io::di, io::uo) is det.
+
+insert_range_into_detect_remote_expunge_table(Db, uid(Low), uid(High), Res,
+        !IO) :-
+    % Low, High are inclusive.
+    ( Low =< High ->
+        insert_into_detect_remote_expunge_table(Db, uid(Low), Res0, !IO),
+        (
+            Res0 = ok,
+            insert_range_into_detect_remote_expunge_table(Db,
+                uid(Low + one), uid(High), Res, !IO)
+        ;
+            Res0 = error(Error),
+            Res = error(Error)
+        )
+    ;
+        Res = ok
     ).
 
 %-----------------------------------------------------------------------------%
