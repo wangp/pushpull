@@ -202,6 +202,11 @@
     remote_mailbox::in, maybe_error(int)::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
+
+:- pred delete_expunged_pairings(database::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+%-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
 :- implementation.
@@ -1466,6 +1471,12 @@ mark_expunged_remote_message_2(Db, Stmt, Res, !IO) :-
         StepResult = error(Error),
         Res = error(Error)
     ).
+
+%-----------------------------------------------------------------------------%
+
+delete_expunged_pairings(Db, Res, !IO) :-
+    Stmt = "DELETE FROM pairing WHERE local_expunged=1 AND remote_expunged=1",
+    exec(Db, Stmt, Res, !IO).
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

@@ -241,7 +241,7 @@ have_remote_mailbox(Config, Db, IMAP, LocalMailbox, RemoteMailbox,
                                 ResUpload, !IO),
                             (
                                 ResUpload = ok,
-                                Res = ok
+                                delete_expunged_pairings(Db, Res, !IO)
                             ;
                                 ResUpload = error(Error),
                                 Res = error(Error)
