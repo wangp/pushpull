@@ -20,6 +20,7 @@
 :- import_module map.
 :- import_module maybe.
 :- import_module pair.
+:- import_module require.
 :- import_module set.
 :- import_module solutions.
 :- import_module string.
@@ -34,6 +35,7 @@
 :- import_module maildir.
 :- import_module message_file.
 :- import_module signal.
+:- import_module string_util.
 :- import_module utime.
 :- import_module verify_file.
 
@@ -368,7 +370,7 @@ update_db_local_message_file_2(Db, LocalMailbox, RemoteMailbox, DirName,
     ;
         ResSearch = ok(no),
         Path = DirName / BaseName,
-        read_message_id(Path, ResRead, !IO),
+        read_message_id_from_file(Path, ResRead, !IO),
         (
             ResRead = yes(MessageId),
             % There may already be an unpaired remote message in the database
@@ -477,7 +479,8 @@ update_db_remote_mailbox(_Config, Db, IMAP, LocalMailbox, RemoteMailbox,
     SequenceSet = last(range(number(uid(one)), star)),
     % We only need the Message-ID from the envelope and really only for new
     % messages.
-    Items = atts(flags, [envelope]),
+    MessageIdField = header_fields(make_astring("Message-Id"), []),
+    Items = atts(flags, [body_peek(msgtext(MessageIdField), no)]),
     % Fetch changes since LastModSeqValzer.
     LastModSeqValzer = mod_seq_valzer(N),
     ( N = zero ->
@@ -520,9 +523,12 @@ make_remote_message_info(_MsgSeqNr - Atts, !Map) :-
     solutions((pred(U::out) is nondet :- member(uid(U), Atts)),
         [UID]),
 
-    solutions((pred(E::out) is nondet :- member(envelope(E), Atts)),
-        [Envelope]),
-    MessageId = Envelope ^ message_id,
+    solutions(
+        (pred(MaybeMessageId0::out) is nondet :-
+            member(Att, Atts),
+            is_message_id_att(Att, MaybeMessageId0)
+        ),
+        [MaybeMessageId]),
 
     solutions((pred(F::out) is nondet :- member(flags(F), Atts)),
         [Flags0]),
@@ -530,7 +536,34 @@ make_remote_message_info(_MsgSeqNr - Atts, !Map) :-
     set.list_to_set(Flags1, Flags),
 
     % I guess the server should not send multiple results for the same UID.
-    map.insert(UID, remote_message_info(MessageId, Flags), !Map).
+    map.insert(UID, remote_message_info(MaybeMessageId, Flags), !Map).
+
+:- pred is_message_id_att(msg_att::in, maybe_message_id::out) is semidet.
+
+is_message_id_att(Att, MaybeMessageId) :-
+    Att = body(msgtext(header_fields(astring(FieldName), [])), no, NString),
+    strcase_equal(FieldName, "Message-Id"),
+    (
+        (
+            NString = yes(quoted(S))
+        ;
+            NString = yes(literal(S))
+        ),
+        read_message_id_from_message_crlf(S, ReadMessageId),
+        (
+            ReadMessageId = yes(MessageId),
+            MaybeMessageId = message_id(MessageId)
+        ;
+            ( ReadMessageId = no
+            ; ReadMessageId = format_error(_)
+            ; ReadMessageId = error(_)
+            ),
+            unexpected($module, $pred, "failed to parse Message-Id header")
+        )
+    ;
+        NString = no,
+        MaybeMessageId = nil
+    ).
 
 :- pred flag_except_recent(flag_fetch::in, flag::out) is semidet.
 
@@ -832,8 +865,7 @@ download_message(Config, Database, IMAP, LocalMailbox, _RemoteMailbox,
                 get_flags(Atts, Flags),
                 get_internaldate(Atts, InternalDate)
             ->
-                RawMessageLf = crlf_to_lf(RawMessageCrLf),
-                read_message_id_from_string(RawMessageLf, ResMessageId),
+                read_message_id_from_message_crlf(RawMessageCrLf, ResMessageId),
                 (
                     (
                         ResMessageId = yes(ReadMessageId),
@@ -843,6 +875,7 @@ download_message(Config, Database, IMAP, LocalMailbox, _RemoteMailbox,
                         HaveMessageId = nil
                     ),
                     ( ExpectedMessageId = HaveMessageId ->
+                        RawMessageLf = crlf_to_lf(RawMessageCrLf),
                         save_message_and_pair(Config, Database, LocalMailbox,
                             UnpairedRemote, RawMessageLf, Flags, InternalDate,
                             DirCache, Res, !IO)
@@ -1213,16 +1246,16 @@ do_upload_message(IMAP, RemoteMailbox, FileData, Flags, Res, !IO) :-
         PriorModSeqValue = no
     ),
 
-    FileData = file_data(Content, ModTime),
+    FileData = file_data(ContentLf, ModTime),
     DateTime = make_date_time(ModTime),
-    append(IMAP, MailboxName, to_sorted_list(Flags), yes(DateTime), Content,
+    append(IMAP, MailboxName, to_sorted_list(Flags), yes(DateTime), ContentLf,
         result(ResAppend, Text, Alerts), !IO),
     report_alerts(Alerts, !IO),
     (
         ResAppend = ok_with_data(MaybeAppendUID),
         io.write_string(Text, !IO),
         io.nl(!IO),
-        get_appended_uid(IMAP, RemoteMailbox, MaybeAppendUID, Content,
+        get_appended_uid(IMAP, RemoteMailbox, MaybeAppendUID, ContentLf,
             PriorModSeqValue, Res, !IO)
     ;
         ( ResAppend = no
@@ -1238,7 +1271,7 @@ do_upload_message(IMAP, RemoteMailbox, FileData, Flags, Res, !IO) :-
     string::in, maybe(mod_seq_value)::in, maybe_error(maybe(uid))::out,
     io::di, io::uo) is det.
 
-get_appended_uid(IMAP, RemoteMailbox, MaybeAppendUID, Content,
+get_appended_uid(IMAP, RemoteMailbox, MaybeAppendUID, ContentLf,
         PriorModSeqValue, Res, !IO) :-
     % In the best case the server sent an APPENDUID response with the UID.
     % Otherwise we search the mailbox for the Message-Id (if it's unique).
@@ -1250,15 +1283,15 @@ get_appended_uid(IMAP, RemoteMailbox, MaybeAppendUID, Content,
     ->
         Res = ok(yes(UID))
     ;
-        get_appended_uid_fallback(IMAP, Content, PriorModSeqValue, Res, !IO)
+        get_appended_uid_fallback(IMAP, ContentLf, PriorModSeqValue, Res, !IO)
     ).
 
 :- pred get_appended_uid_fallback(imap::in, string::in,
     maybe(mod_seq_value)::in, maybe_error(maybe(uid))::out, io::di, io::uo)
     is det.
 
-get_appended_uid_fallback(IMAP, Content, PriorModSeqValue, Res, !IO) :-
-    read_message_id_from_string(Content, ReadMessageId),
+get_appended_uid_fallback(IMAP, ContentLf, PriorModSeqValue, Res, !IO) :-
+    read_message_id_from_message_lf(ContentLf, ReadMessageId),
     (
         ReadMessageId = yes(MessageId),
         SearchKey0 = header(make_astring("Message-Id"),

@@ -11,13 +11,16 @@
     ;       format_error(string)
     ;       error(io.error).
 
-:- pred read_message_id(string::in, read_message_id_result::out,
+:- pred read_message_id_from_file(string::in, read_message_id_result::out,
     io::di, io::uo) is det.
 
-    % The input string is assumed to use LF endings.
+    % The input string is a message, assumed to use LF or CRLF ending
+    % respectively.
     %
-:- pred read_message_id_from_string(string::in, read_message_id_result::out)
-    is det.
+:- pred read_message_id_from_message_lf(string::in,
+    read_message_id_result::out) is det.
+:- pred read_message_id_from_message_crlf(string::in,
+    read_message_id_result::out) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -36,7 +39,7 @@
 
 %-----------------------------------------------------------------------------%
 
-read_message_id(FileName, Res, !IO) :-
+read_message_id_from_file(FileName, Res, !IO) :-
     io.open_input(FileName, ResOpen, !IO),
     (
         ResOpen = ok(Stream),
@@ -94,7 +97,7 @@ chop_crlf_or_lf(Line0, Line) :-
 
 %-----------------------------------------------------------------------------%
 
-read_message_id_from_string(Input, Res) :-
+read_message_id_from_message_lf(Input, Res) :-
     ( string.sub_string_search(Input, "\n\n", HeaderEndPos) ->
         string.unsafe_between(Input, 0, HeaderEndPos, Header)
     ;
@@ -102,6 +105,16 @@ read_message_id_from_string(Input, Res) :-
         Header = Input
     ),
     Lines = string.split_at_string("\n", Header),
+    extract_message_id(Lines, no, Res).
+
+read_message_id_from_message_crlf(Input, Res) :-
+    ( string.sub_string_search(Input, "\r\n\r\n", HeaderEndPos) ->
+        string.unsafe_between(Input, 0, HeaderEndPos, Header)
+    ;
+        % No blank line when there is no body.
+        Header = Input
+    ),
+    Lines = string.split_at_string("\r\n", Header),
     extract_message_id(Lines, no, Res).
 
 %-----------------------------------------------------------------------------%
