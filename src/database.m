@@ -98,6 +98,12 @@
     uid::in, flag_deltas(remote_mailbox)::in, maybe_error::out,
     io::di, io::uo) is det.
 
+:- pred reset_pairing_local_message(database::in, pairing_id::in,
+    maybe_error::out, io::di, io::uo) is det.
+
+:- pred reset_pairing_remote_message(database::in, pairing_id::in,
+    maybe_error::out, io::di, io::uo) is det.
+
 :- pred lookup_local_message_flags(database::in, pairing_id::in,
     maybe_error(flag_deltas(local_mailbox))::out, io::di, io::uo) is det.
 
@@ -135,10 +141,12 @@
 :- type pending_flag_deltas
     --->    pending_flag_deltas(
                 pairing_id,
-                uniquename,
+                maybe(uniquename),
                 flag_deltas(local_mailbox),
-                uid,
-                flag_deltas(remote_mailbox)
+                expunged(local_mailbox),
+                maybe(uid),
+                flag_deltas(remote_mailbox),
+                expunged(remote_mailbox)
             ).
 
 :- pred search_pending_flag_deltas_from_local(database::in, local_mailbox::in,
@@ -156,6 +164,14 @@
 :- pred record_local_flag_deltas_applied_to_remote(database::in,
     pairing_id::in, flag_deltas(local_mailbox)::in,
     flag_deltas(remote_mailbox)::in, maybe_error::out, io::di, io::uo) is det.
+
+:- pred record_remote_flag_deltas_inapplicable_to_local(database::in,
+    pairing_id::in, flag_deltas(remote_mailbox)::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+:- pred record_local_flag_deltas_inapplicable_to_remote(database::in,
+    pairing_id::in, flag_deltas(local_mailbox)::in, maybe_error::out,
+    io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 
@@ -299,6 +315,11 @@
     pred convert(T::in, U::out) is semidet
 ].
 
+:- instance convert(maybe(T), maybe(U)) <= convert(T, U) where [
+    convert(no, no),
+    convert(yes(X), yes(Y)) :- convert(X, Y)
+].
+
 :- instance convert(int, local_mailbox_id) where [
     convert(I, local_mailbox_id(I)) :- I > 0
 ].
@@ -351,6 +372,11 @@
 :- instance convert(string, flag_deltas(S)) where [
     convert(S, FlagDeltas) :-
         from_string(S, FlagDeltas)
+].
+
+:- instance convert(int, expunged(S)) where [
+    convert(0, exists),
+    convert(1, expunged)
 ].
 
 %-----------------------------------------------------------------------------%
@@ -419,6 +445,11 @@ create_tables =
     CREATE INDEX IF NOT EXISTS local_attn_index ON pairing(local_flags_attn);
     CREATE INDEX IF NOT EXISTS remote_attn_index ON pairing(remote_flags_attn);
 ".
+
+%   name,expunged   state
+%   NULL,0          never existed
+%   TEXT,0          exists
+%   NULL,1          expunged
 
 %-----------------------------------------------------------------------------%
 
@@ -773,6 +804,7 @@ delete_pairing_2(Db, Stmt, Res, !IO) :-
 set_pairing_local_message(Db, PairingId, UniqueName, FlagDeltas, Res, !IO) :-
     Stmt = "UPDATE pairing"
         ++ " SET local_uniquename = :local_uniquename,"
+        ++ "     local_expunged = 0,"
         ++ "     local_flags = :local_flags"
         ++ " WHERE pairing_id = :pairing_id",
     with_stmt(set_pairing_local_message_2, Db, Stmt, [
@@ -802,6 +834,7 @@ set_pairing_local_message_2(Db, Stmt, Res, !IO) :-
 set_pairing_remote_message(Db, PairingId, UID, FlagDeltas, Res, !IO) :-
     Stmt = "UPDATE pairing"
         ++ " SET remote_uid = :remote_uid,"
+        ++ "     remote_expunged = 0,"
         ++ "     remote_flags = :remote_flags"
         ++ " WHERE pairing_id = :pairing_id",
     with_stmt(set_pairing_remote_message_2, Db, Stmt, [
@@ -814,6 +847,46 @@ set_pairing_remote_message(Db, PairingId, UID, FlagDeltas, Res, !IO) :-
     io::di, io::uo) is det.
 
 set_pairing_remote_message_2(Db, Stmt, Res, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
+    (
+        StepResult = done,
+        Res = ok
+    ;
+        StepResult = row,
+        Res = error("unexpected row")
+    ;
+        StepResult = error(Error),
+        Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
+reset_pairing_local_message(Db, PairingId, Res, !IO) :-
+    Stmt = "UPDATE pairing"
+        ++ " SET local_uniquename = NULL,"
+        ++ "     local_expunged = 0,"
+        ++ "     local_flags = '',"
+        ++ "     local_flags_attn = 0"
+        ++ " WHERE pairing_id = :pairing_id",
+    with_stmt(reset_pairing_2, Db, Stmt, [
+        name(":pairing_id") - bind_value(PairingId)
+    ], Res, !IO).
+
+reset_pairing_remote_message(Db, PairingId, Res, !IO) :-
+    Stmt = "UPDATE pairing"
+        ++ " SET remote_uid = NULL,"
+        ++ "     remote_expunged = 0,"
+        ++ "     remote_flags = '',"
+        ++ "     remote_flags_attn = 0"
+        ++ " WHERE pairing_id = :pairing_id",
+    with_stmt(reset_pairing_2, Db, Stmt, [
+        name(":pairing_id") - bind_value(PairingId)
+    ], Res, !IO).
+
+:- pred reset_pairing_2(db(rw)::in, stmt::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+reset_pairing_2(Db, Stmt, Res, !IO) :-
     step(Db, Stmt, StepResult, !IO),
     (
         StepResult = done,
@@ -922,7 +995,8 @@ search_unpaired_remote_messages(Db, RemoteMailbox, Res, !IO) :-
         ++ " WHERE remote_mailbox_id = :remote_mailbox_id"
         ++ "   AND remote_uid IS NOT NULL"
         ++ "   AND NOT remote_expunged"
-        ++ "   AND local_uniquename IS NULL",
+        ++ "   AND local_uniquename IS NULL"
+        ++ "   AND NOT local_expunged",
     with_stmt(search_unpaired_remote_messages_2, Db, Stmt, [
         name(":remote_mailbox_id") - bind_value(RemoteMailboxId)
     ], Res, !IO).
@@ -978,7 +1052,8 @@ search_unpaired_local_messages(Db, LocalMailbox, Res, !IO) :-
         ++ " WHERE local_mailbox_id = :local_mailbox_id"
         ++ "   AND local_uniquename IS NOT NULL"
         ++ "   AND NOT local_expunged"
-        ++ "   AND remote_uid IS NULL",
+        ++ "   AND remote_uid IS NULL"
+        ++ "   AND NOT remote_expunged",
     with_stmt(search_unpaired_local_messages_2, Db, Stmt, [
         name(":local_mailbox_id") - bind_value(LocalMailboxId)
     ], Res, !IO).
@@ -1044,11 +1119,16 @@ search_pending_flag_deltas_from_local(Db, LocalMailbox, RemoteMailbox, Res,
         !IO) :-
     LocalMailbox = local_mailbox(_, LocalMailboxId),
     RemoteMailbox = remote_mailbox(_, _, RemoteMailboxId),
-    Stmt = "SELECT pairing_id, local_uniquename, local_flags,"
-        ++ "       remote_uid, remote_flags"
+    % A local expunged message may still change the flags of the remote
+    % message, especially to set the \Deleted flag.
+    %
+    % If the remote message of a pairing is expunged but then the local message
+    % is subsequently undeleted, the remote side of the pairing can be reset so
+    % that the local message is re-paired.
+    Stmt = "SELECT pairing_id, local_uniquename, local_flags, local_expunged,"
+        ++ "       remote_uid, remote_flags, remote_expunged"
         ++ "  FROM pairing"
         ++ " WHERE local_mailbox_id = :local_mailbox_id"
-        ++ "   AND local_uniquename IS NOT NULL"
         ++ "   AND remote_mailbox_id = :remote_mailbox_id"
         ++ "   AND local_flags_attn = 1",
     with_stmt(accum_pending_flag_deltas, Db, Stmt, [
@@ -1060,11 +1140,11 @@ search_pending_flag_deltas_from_remote(Db, LocalMailbox, RemoteMailbox, Res,
         !IO) :-
     LocalMailbox = local_mailbox(_, LocalMailboxId),
     RemoteMailbox = remote_mailbox(_, _, RemoteMailboxId),
-    Stmt = "SELECT pairing_id, local_uniquename, local_flags,"
-        ++ "       remote_uid, remote_flags"
+    % See above.
+    Stmt = "SELECT pairing_id, local_uniquename, local_flags, local_expunged,"
+        ++ "       remote_uid, remote_flags, remote_expunged"
         ++ "  FROM pairing"
         ++ " WHERE local_mailbox_id = :local_mailbox_id"
-        ++ "   AND local_uniquename IS NOT NULL"
         ++ "   AND remote_mailbox_id = :remote_mailbox_id"
         ++ "   AND remote_flags_attn = 1",
     with_stmt(accum_pending_flag_deltas, Db, Stmt, [
@@ -1097,19 +1177,26 @@ accum_pending_flag_deltas_2(Db, Stmt, Res, !Pending, !IO) :-
     ;
         StepResult = row,
         column_int(Stmt, column(0), X0, !IO),
-        column_text(Stmt, column(1), X1, !IO),
+        % local
+        column_maybe_text(Stmt, column(1), X1, !IO),
         column_text(Stmt, column(2), X2, !IO),
-        column_text(Stmt, column(3), X3, !IO),
-        column_text(Stmt, column(4), X4, !IO),
+        column_int(Stmt, column(3), X3, !IO),
+        % remote
+        column_maybe_text(Stmt, column(4), X4, !IO),
+        column_text(Stmt, column(5), X5, !IO),
+        column_int(Stmt, column(6), X6, !IO),
         (
             convert(X0, PairingId),
-            convert(X1, UniqueName),
+            convert(X1, MaybeUniqueName),
             convert(X2, LocalFlagDeltas),
-            convert(X3, UID),
-            convert(X4, RemoteFlagDeltas)
+            convert(X3, LocalExpunged),
+            convert(X4, MaybeUID),
+            convert(X5, RemoteFlagDeltas),
+            convert(X6, RemoteExpunged)
         ->
-            Pending = pending_flag_deltas(PairingId, UniqueName,
-                LocalFlagDeltas, UID, RemoteFlagDeltas),
+            Pending = pending_flag_deltas(PairingId,
+                MaybeUniqueName, LocalFlagDeltas, LocalExpunged,
+                MaybeUID, RemoteFlagDeltas, RemoteExpunged),
             cons(Pending, !Pending),
             accum_pending_flag_deltas_2(Db, Stmt, Res, !Pending, !IO)
         ;
@@ -1146,6 +1233,28 @@ record_local_flag_deltas_applied_to_remote(Db, PairingId, LocalFlags,
         name(":pairing_id") - bind_value(PairingId),
         name(":local_flags") - bind_value(LocalFlags),
         name(":remote_flags") - bind_value(RemoteFlags)
+    ], Res, !IO).
+
+record_remote_flag_deltas_inapplicable_to_local(Db, PairingId, RemoteFlags,
+        Res, !IO) :-
+    Stmt = "UPDATE pairing"
+        ++ " SET remote_flags = :remote_flags,"
+        ++ "     remote_flags_attn = 0"
+        ++ " WHERE pairing_id = :pairing_id",
+    with_stmt(record_flag_deltas_applied_2, Db, Stmt, [
+        name(":pairing_id") - bind_value(PairingId),
+        name(":remote_flags") - bind_value(RemoteFlags)
+    ], Res, !IO).
+
+record_local_flag_deltas_inapplicable_to_remote(Db, PairingId, LocalFlags,
+        Res, !IO) :-
+    Stmt = "UPDATE pairing"
+        ++ " SET local_flags = :local_flags,"
+        ++ "     local_flags_attn = 0"
+        ++ " WHERE pairing_id = :pairing_id",
+    with_stmt(record_flag_deltas_applied_2, Db, Stmt, [
+        name(":pairing_id") - bind_value(PairingId),
+        name(":local_flags") - bind_value(LocalFlags)
     ], Res, !IO).
 
 :- pred record_flag_deltas_applied_2(db(rw)::in, stmt::in,
@@ -1202,7 +1311,7 @@ mark_expunged_local_messages(Db, LocalMailbox, RemoteMailbox, Res, !IO) :-
     RemoteMailbox = remote_mailbox(_, _, RemoteMailboxId),
 
     Where = 
-        "WHERE local_mailbox_id = :local_mailbox_id
+       " WHERE local_mailbox_id = :local_mailbox_id
            AND remote_mailbox_id = :remote_mailbox_id
            AND NOT local_expunged
            AND local_uniquename IS NOT NULL
@@ -1212,13 +1321,18 @@ mark_expunged_local_messages(Db, LocalMailbox, RemoteMailbox, Res, !IO) :-
         name(":remote_mailbox_id") - bind_value(RemoteMailboxId)
     ],
 
-    StmtCount = "SELECT count(*) FROM pairing " ++ Where,
+    StmtCount = "SELECT count(*) FROM pairing" ++ Where,
     with_stmt(count, Db, StmtCount, Bindings, ResCount, !IO),
     (
         ResCount = ok(Count),
         Count > 0
     ->
-        StmtUpdate = "UPDATE pairing SET local_expunged = 1 " ++ Where,
+        StmtUpdate
+            =  "UPDATE pairing SET"
+            ++ " local_uniquename = NULL,"
+            ++ " local_expunged = 1,"
+            ++ " local_flags_attn = 1 "
+            ++ Where,
         with_stmt(mark_expunged_local_messages_2, Db, StmtUpdate, Bindings,
             ResUpdate, !IO),
         (
@@ -1302,7 +1416,7 @@ mark_expunged_remote_messages(Db, LocalMailbox, RemoteMailbox, Res, !IO) :-
     RemoteMailbox = remote_mailbox(_, _, RemoteMailboxId),
 
     Where = 
-        "WHERE local_mailbox_id = :local_mailbox_id
+       " WHERE local_mailbox_id = :local_mailbox_id
            AND remote_mailbox_id = :remote_mailbox_id
            AND NOT remote_expunged
            AND remote_uid IS NOT NULL
@@ -1312,13 +1426,18 @@ mark_expunged_remote_messages(Db, LocalMailbox, RemoteMailbox, Res, !IO) :-
         name(":remote_mailbox_id") - bind_value(RemoteMailboxId)
     ],
 
-    StmtCount = "SELECT count(*) FROM pairing " ++ Where,
+    StmtCount = "SELECT count(*) FROM pairing" ++ Where,
     with_stmt(count, Db, StmtCount, Bindings, ResCount, !IO),
     (
         ResCount = ok(Count),
         Count > 0
     ->
-        StmtUpdate = "UPDATE pairing SET remote_expunged = 1 " ++ Where,
+        StmtUpdate
+            = "UPDATE pairing SET"
+            ++ " remote_uid = NULL,"
+            ++ " remote_expunged = 1,"
+            ++ " remote_flags_attn = 1"
+            ++ Where,
         with_stmt(mark_expunged_remote_message_2, Db, StmtUpdate, Bindings,
             ResUpdate, !IO),
         (

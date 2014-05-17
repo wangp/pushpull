@@ -219,40 +219,43 @@ have_remote_mailbox(Config, Db, IMAP, LocalMailbox, RemoteMailbox,
                 ResUpdateLocal, !IO),
             (
                 ResUpdateLocal = ok(DirCache),
-                download_unpaired_remote_messages(Config, Db, IMAP,
-                    LocalMailbox, RemoteMailbox, DirCache, ResDownload, !IO),
-                % DirCache does not include newly added messages.
+                % Propagate flags first to allow pairings with
+                % previously-expunged messages to be be reset, and thus
+                % downloaded in the following steps.
+                propagate_flag_deltas_from_remote(Config, Db, LocalMailbox,
+                    RemoteMailbox, DirCache, ResPropRemote, !IO),
                 (
-                    ResDownload = ok,
-                    upload_unpaired_local_messages(Config, Db, IMAP,
-                        LocalMailbox, RemoteMailbox, DirCache, ResUpload, !IO),
+                    ResPropRemote = ok,
+                    propagate_flag_deltas_from_local(Config, Db, IMAP,
+                        LocalMailbox, RemoteMailbox, ResPropLocal, !IO),
                     (
-                        ResUpload = ok,
-                        propagate_flag_deltas_from_remote(Config, Db,
-                            LocalMailbox, RemoteMailbox, ResPropRemote,
-                            DirCache, _DirCache, !IO),
+                        ResPropLocal = ok,
+                        download_unpaired_remote_messages(Config, Db, IMAP,
+                            LocalMailbox, RemoteMailbox, DirCache, ResDownload,
+                            !IO),
+                        % DirCache does not include newly added messages.
                         (
-                            ResPropRemote = ok,
-                            propagate_flag_deltas_from_local(Config, Db, IMAP,
-                                LocalMailbox, RemoteMailbox, ResPropLocal,
-                                !IO),
+                            ResDownload = ok,
+                            upload_unpaired_local_messages(Config, Db, IMAP,
+                                LocalMailbox, RemoteMailbox, DirCache,
+                                ResUpload, !IO),
                             (
-                                ResPropLocal = ok,
+                                ResUpload = ok,
                                 Res = ok
                             ;
-                                ResPropLocal = error(Error),
+                                ResUpload = error(Error),
                                 Res = error(Error)
                             )
                         ;
-                            ResPropRemote = error(Error),
+                            ResDownload = error(Error),
                             Res = error(Error)
                         )
                     ;
-                        ResUpload = error(Error),
+                        ResPropLocal = error(Error),
                         Res = error(Error)
                     )
                 ;
-                    ResDownload = error(Error),
+                    ResPropRemote = error(Error),
                     Res = error(Error)
                 )
             ;
@@ -1344,99 +1347,126 @@ is_singleton_set(Set, UID) :-
 %-----------------------------------------------------------------------------%
 
 :- pred propagate_flag_deltas_from_remote(prog_config::in, database::in,
-    local_mailbox::in, remote_mailbox::in, maybe_error::out,
-    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+    local_mailbox::in, remote_mailbox::in, dir_cache::in, maybe_error::out,
+    io::di, io::uo) is det.
 
 propagate_flag_deltas_from_remote(Config, Db, LocalMailbox, RemoteMailbox,
-        Res, !DirCache, !IO) :-
+        DirCache, Res, !IO) :-
     search_pending_flag_deltas_from_remote(Db, LocalMailbox, RemoteMailbox,
         ResSearch, !IO),
     (
         ResSearch = ok(Pendings),
-        list.foldl3(propagate_flag_deltas_from_remote_2(Config, Db,
-            LocalMailbox, RemoteMailbox), Pendings, ok, Res, !DirCache, !IO)
+        list.foldl2(propagate_flag_deltas_from_remote_2(Config, Db,
+            LocalMailbox, RemoteMailbox, DirCache), Pendings, ok, Res, !IO)
     ;
         ResSearch = error(Error),
         Res = error(Error)
     ).
 
 :- pred propagate_flag_deltas_from_remote_2(prog_config::in, database::in,
-    local_mailbox::in, remote_mailbox::in, pending_flag_deltas::in,
-    maybe_error::in, maybe_error::out, dir_cache::in, dir_cache::out,
-    io::di, io::uo) is det.
+    local_mailbox::in, remote_mailbox::in, dir_cache::in,
+    pending_flag_deltas::in, maybe_error::in, maybe_error::out, io::di, io::uo)
+    is det.
 
 propagate_flag_deltas_from_remote_2(Config, Db, LocalMailbox, RemoteMailbox,
-        Pending, Res0, Res, !DirCache, !IO) :-
+        DirCache, Pending, Res0, Res, !IO) :-
     (
         Res0 = ok,
         propagate_flag_deltas_from_remote_3(Config, Db, LocalMailbox,
-            RemoteMailbox, Pending, Res, !DirCache, !IO)
+            RemoteMailbox, DirCache, Pending, Res, !IO)
     ;
         Res0 = error(Error),
         Res = error(Error)
     ).
 
 :- pred propagate_flag_deltas_from_remote_3(prog_config::in, database::in,
-    local_mailbox::in, remote_mailbox::in, pending_flag_deltas::in,
-    maybe_error::out, dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+    local_mailbox::in, remote_mailbox::in, dir_cache::in,
+    pending_flag_deltas::in, maybe_error::out, io::di, io::uo) is det.
 
 propagate_flag_deltas_from_remote_3(_Config, Db, LocalMailbox, _RemoteMailbox,
-        Pending, Res, !DirCache, !IO) :-
-    Pending = pending_flag_deltas(_PairingId, Unique, _LocalFlags0, _UID,
-        _RemoteFlags0),
-    MailboxPath = get_local_mailbox_path(LocalMailbox),
-    find_file(!.DirCache, MailboxPath, Unique, ResFind),
+        DirCache, Pending, Res, !IO) :-
+    Pending = pending_flag_deltas(PairingId,
+        MaybeUnique, LocalFlags0, LocalExpunged,
+        MaybeUID, RemoteFlags0, RemoteExpunged),
+    imply_deleted_flag(LocalExpunged, LocalFlags0, LocalFlags1),
+    imply_deleted_flag(RemoteExpunged, RemoteFlags0, RemoteFlags1),
+    apply_flag_deltas(LocalFlags1, LocalFlags, RemoteFlags1, RemoteFlags),
+
+    Flags0 = LocalFlags0 ^ cur_set,
+    Flags = LocalFlags ^ cur_set,
+    AddFlags = Flags `difference` Flags0,
+    RemoveFlags = Flags0 `difference` Flags,
     (
-        ResFind = Found,
-        Found = found(_, _),
-        propagate_flag_deltas_for_message_found(Db, MailboxPath, Pending,
-            Found, Res, !IO)
+        MaybeUnique = yes(Unique),
+        expect(unify(LocalExpunged, exists), $module, $pred),
+        store_local_flags_add_rm(LocalMailbox, DirCache, Unique,
+            AddFlags, RemoveFlags, Res0, !IO),
+        (
+            Res0 = ok,
+            record_remote_flag_deltas_applied_to_local(Db, PairingId,
+                LocalFlags, RemoteFlags, Res, !IO)
+        ;
+            Res0 = error(Error),
+            Res = error(Error)
+        )
+    ;
+        MaybeUnique = no,
+        % If the local message was previously expunged, but the remote message
+        % was undeleted then reset the pairing so that the message can be
+        % re-added to the local mailbox with a new uniquename.
+        % XXX simplify?
+        (
+            MaybeUID = yes(uid(UID)),
+            LocalExpunged = expunged,
+            contains(RemoveFlags, system(deleted))
+        ->
+            io.format("Resurrecting message %s\n", [s(to_string(UID))], !IO),
+            reset_pairing_local_message(Db, PairingId, Res, !IO)
+        ;
+            record_remote_flag_deltas_inapplicable_to_local(Db, PairingId,
+                RemoteFlags, Res, !IO)
+        )
+    ).
+
+:- pred store_local_flags_add_rm(local_mailbox::in, dir_cache::in,
+    uniquename::in, set(flag)::in, set(flag)::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+store_local_flags_add_rm(LocalMailbox, DirCache, Unique, AddFlags, RemoveFlags,
+        Res, !IO) :-
+    MailboxPath = get_local_mailbox_path(LocalMailbox),
+    find_file(DirCache, MailboxPath, Unique, ResFind),
+    (
+        ResFind = found(OldPath, MaybeInfoSuffix0),
+        (
+            MaybeInfoSuffix0 = no,
+            InfoSuffix = flags_to_info_suffix(AddFlags)
+        ;
+            MaybeInfoSuffix0 = yes(InfoSuffix0),
+            add_remove_standard_flags(AddFlags, RemoveFlags,
+                InfoSuffix0, InfoSuffix)
+        ),
+        make_path(MailboxPath, cur, Unique, yes(InfoSuffix), NewPath),
+        ( OldPath = NewPath ->
+            ResRename = ok
+        ;
+            io.format("Renaming %s to %s\n", [s(OldPath), s(NewPath)], !IO),
+            io.rename_file(OldPath, NewPath, ResRename, !IO)
+        ),
+        (
+            ResRename = ok,
+            Res = ok
+        ;
+            ResRename = error(Error),
+            Res = error(io.error_message(Error))
+        )
+    ;
+        ResFind = not_found,
+        Unique = uniquename(UniqueString),
+        Res = error("missing uniquename " ++ UniqueString)
     ;
         ResFind = found_but_unexpected(Path),
         Res = error("found unique name but unexpected: " ++ Path)
-    ;
-        ResFind = not_found,
-        % Can't find the file; the file was probably deleted since we updated
-        % our database state.
-        % XXX handle this better
-        Unique = uniquename(UniqueString),
-        Res = error("missing file with unique name " ++ UniqueString)
-    ).
-
-:- pred propagate_flag_deltas_for_message_found(database::in,
-    local_mailbox_path::in, pending_flag_deltas::in,
-    find_file_result::in(found), maybe_error::out, io::di, io::uo) is det.
-
-propagate_flag_deltas_for_message_found(Db, MailboxPath, Pending, Found, Res,
-        !IO) :-
-    Pending = pending_flag_deltas(PairingId, Unique, LocalFlags0, _UID,
-        RemoteFlags0),
-    apply_flag_deltas(LocalFlags0, LocalFlags, RemoteFlags0, RemoteFlags),
-
-    % Maybe we can keep in "new" if InfoSuffix still empty?
-    Found = found(OldPath, MaybeInfoSuffix0),
-    (
-        MaybeInfoSuffix0 = no,
-        InfoSuffix = flags_to_info_suffix(LocalFlags ^ cur_set)
-    ;
-        MaybeInfoSuffix0 = yes(InfoSuffix0),
-        update_standard_flags(LocalFlags ^ cur_set, InfoSuffix0, InfoSuffix)
-    ),
-    make_path(MailboxPath, cur, Unique, yes(InfoSuffix), NewPath),
-    ( OldPath = NewPath ->
-        ResRename = ok
-    ;
-        io.format("Renaming %s to %s\n", [s(OldPath), s(NewPath)], !IO),
-        io.rename_file(OldPath, NewPath, ResRename, !IO)
-    ),
-    (
-        ResRename = ok,
-        % XXX think more carefully about a crash occurring now
-        record_remote_flag_deltas_applied_to_local(Db, PairingId, LocalFlags,
-            RemoteFlags, Res, !IO)
-    ;
-        ResRename = error(Error),
-        Res = error(io.error_message(Error))
     ).
 
 %-----------------------------------------------------------------------------%
@@ -1475,37 +1505,64 @@ propagate_flag_deltas_from_local_2(Db, IMAP, Pending, Res0, Res, !IO) :-
     pending_flag_deltas::in, maybe_error::out, io::di, io::uo) is det.
 
 propagate_flag_deltas_from_local_3(Db, IMAP, Pending, Res, !IO) :-
-    Pending = pending_flag_deltas(PairingId, _Unique, LocalFlags0, UID,
-        RemoteFlags0),
-    apply_flag_deltas(RemoteFlags0, RemoteFlags, LocalFlags0, LocalFlags),
+    Pending = pending_flag_deltas(PairingId,
+        MaybeUnique, LocalFlags0, LocalExpunged,
+        MaybeUID, RemoteFlags0, RemoteExpunged),
+    imply_deleted_flag(LocalExpunged, LocalFlags0, LocalFlags1),
+    imply_deleted_flag(RemoteExpunged, RemoteFlags0, RemoteFlags1),
+    apply_flag_deltas(RemoteFlags1, RemoteFlags, LocalFlags1, LocalFlags),
 
     Flags0 = RemoteFlags0 ^ cur_set,
     Flags = RemoteFlags ^ cur_set,
     AddFlags = Flags `difference` Flags0,
     RemoveFlags = Flags0 `difference` Flags,
-
-    % Would it be preferable to read back the actual flags from the server?
-    store_remote_flags(IMAP, UID, remove, RemoveFlags, Res0, !IO),
     (
-        Res0 = ok,
-        store_remote_flags(IMAP, UID, add, AddFlags, Res1, !IO),
+        MaybeUID = yes(UID),
+        store_remote_flags_add_rm(IMAP, UID, AddFlags, RemoveFlags, Res0, !IO),
         (
-            Res1 = ok,
+            Res0 = ok,
             record_local_flag_deltas_applied_to_remote(Db, PairingId,
                 LocalFlags, RemoteFlags, Res, !IO)
         ;
-            Res1 = error(Error),
+            Res0 = error(Error),
             Res = error(Error)
         )
+    ;
+        MaybeUID = no,
+        % If the remote message was previously expunged, but the local message
+        % was undeleted, then reset the pairing so that the message can be
+        % re-added to the remote mailbox with a new UID.
+        (
+            MaybeUnique = yes(uniquename(Unique)),
+            RemoteExpunged = expunged,
+            contains(RemoveFlags, system(deleted))
+        ->
+            io.format("Resurrecting message %s\n", [s(Unique)], !IO),
+            reset_pairing_remote_message(Db, PairingId, Res, !IO)
+        ;
+            record_local_flag_deltas_inapplicable_to_remote(Db,
+                PairingId, LocalFlags, Res, !IO)
+        )
+    ).
+
+:- pred store_remote_flags_add_rm(imap::in, uid::in,
+    set(flag)::in, set(flag)::in, maybe_error::out, io::di, io::uo) is det.
+
+store_remote_flags_add_rm(IMAP, UID, AddFlags, RemoveFlags, Res, !IO) :-
+    % Would it be preferable to read back the actual flags from the server?
+    store_remote_flags_change(IMAP, UID, remove, RemoveFlags, Res0, !IO),
+    (
+        Res0 = ok,
+        store_remote_flags_change(IMAP, UID, add, AddFlags, Res, !IO)
     ;
         Res0 = error(Error),
         Res = error(Error)
     ).
 
-:- pred store_remote_flags(imap::in, uid::in, store_operation::in,
+:- pred store_remote_flags_change(imap::in, uid::in, store_operation::in,
     set(flag)::in, maybe_error::out, io::di, io::uo) is det.
 
-store_remote_flags(IMAP, UID, Operation, ChangeFlags, Res, !IO) :-
+store_remote_flags_change(IMAP, UID, Operation, ChangeFlags, Res, !IO) :-
     ( set.empty(ChangeFlags) ->
         Res = ok
     ;

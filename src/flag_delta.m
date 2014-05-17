@@ -25,6 +25,10 @@
                 minus_set :: set(flag)
             ).
 
+:- type expunged(S)
+    --->    exists
+    ;       expunged.
+
 :- func init_flags(set(flag)) = flag_deltas(S).
 
     % update_flags(Flags, !FlagDeltas, IsChanged)
@@ -39,6 +43,11 @@
     %
 :- pred update_maildir_standard_flags(set(flag)::in,
     flag_deltas(S)::in, flag_deltas(S)::out, bool::out) is det.
+
+    % If expunged, add deleted flag if necessary.
+    %
+:- pred imply_deleted_flag(expunged(S)::in,
+    flag_deltas(S)::in, flag_deltas(S)::out) is det.
 
     % apply_flag_deltas(!L, !R)
     % Apply nonconflicting deltas from R to L.
@@ -94,6 +103,21 @@ maildir_standard_flags = set.from_list([
     system(seen),
     system(draft)
 ]).
+
+imply_deleted_flag(Expunged, Sets0, Sets) :-
+    Sets0 = sets(Cur0, Plus0, Minus0),
+    DeletedFlag = system(deleted),
+    (
+        Expunged = expunged,
+        not set.contains(Cur0, DeletedFlag)
+    ->
+        set.insert(DeletedFlag, Cur0, Cur),
+        set.insert(DeletedFlag, Plus0, Plus),
+        set.delete(DeletedFlag, Minus0, Minus),
+        Sets = sets(Cur, Plus, Minus)
+    ;
+        Sets = Sets0
+    ).
 
     %   For L{F +G -H}
     %

@@ -47,14 +47,11 @@
 
 :- type find_file_result
     --->    found(
-                path         :: string, % entire path to file
-                info_suf     :: maybe(info_suffix)
+                path        :: string, % entire path to file
+                info_suf    :: maybe(info_suffix)
             )
     ;       found_but_unexpected(string)
     ;       not_found.
-
-:- inst found
-    --->    found(ground, ground).
 
     % Search for a file in the given mailbox (including sub-mailboxes) with the
     % given uniquename.
@@ -66,8 +63,8 @@
 
 :- func flags_to_info_suffix(set(flag)) = info_suffix.
 
-:- pred update_standard_flags(set(flag)::in, info_suffix::in, info_suffix::out)
-    is det.
+:- pred add_remove_standard_flags(set(flag)::in, set(flag)::in,
+    info_suffix::in, info_suffix::out) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -78,7 +75,6 @@
 :- import_module dir.
 :- import_module int.
 :- import_module maybe.
-:- import_module require.
 :- import_module string.
 
 :- import_module gettimeofday.
@@ -224,7 +220,7 @@ parse_basename(BaseName, uniquename(Unique), Flags) :-
         string.unsafe_between(BaseName, 0, Colon, Unique),
         parse_info_suffix(BaseName, Colon, InfoSuffix),
         InfoSuffix = info_suffix(Chars, _Rest),
-        set.filter_map(standard_flag_char, Chars, Flags)
+        set.filter_map(char_to_standard_flag, Chars, Flags)
     ;
         Unique = BaseName,
         Flags = set.init
@@ -233,45 +229,35 @@ parse_basename(BaseName, uniquename(Unique), Flags) :-
 %-----------------------------------------------------------------------------%
 
 flags_to_info_suffix(Flags) = InfoSuffix :-
-    list.foldl(update_standard_flag(Flags), standard_flag_chars, init, Chars),
+    set.filter_map(flag_to_standard_char, Flags, Chars),
     InfoSuffix = info_suffix(Chars, "").
 
-update_standard_flags(HaveFlags, InfoSuffix0, InfoSuffix) :-
+add_remove_standard_flags(AddFlags, RemoveFlags, InfoSuffix0, InfoSuffix) :-
     InfoSuffix0 = info_suffix(Chars0, Rest),
-    list.foldl(update_standard_flag(HaveFlags), standard_flag_chars, Chars0, Chars),
+    set.filter_map(flag_to_standard_char, RemoveFlags, RemoveChars),
+    set.filter_map(flag_to_standard_char, AddFlags, AddChars),
+    Chars = difference(Chars0, RemoveChars) `union` AddChars,
     InfoSuffix = info_suffix(Chars, Rest).
 
-:- pred update_standard_flag(set(flag)::in, char::in,
-    set(char)::in, set(char)::out) is det.
+:- pred char_to_standard_flag(char::in, flag::out) is semidet.
 
-update_standard_flag(HaveFlags, FlagChar, !Set) :-
-    det_standard_flag_char(FlagChar, Flag),
-    ( set.contains(HaveFlags, Flag) ->
-        set.insert(FlagChar, !Set)
-    ;
-        set.delete(FlagChar, !Set)
-    ).
+char_to_standard_flag(Char, Flag) :-
+    standard_flag_char(Char, Flag).
 
-:- func standard_flag_chars = list(char).
+:- pred flag_to_standard_char(flag::in, char::out) is semidet.
 
-standard_flag_chars = ['R', 'F', 'T', 'S', 'D'].
+flag_to_standard_char(Flag, Char) :-
+    standard_flag_char(Char, Flag).
 
-:- pred standard_flag_char(char::in, flag::out) is semidet.
+:- pred standard_flag_char(char, flag).
+:- mode standard_flag_char(in, out) is semidet.
+:- mode standard_flag_char(out, in) is semidet.
 
 standard_flag_char('R', system(answered)).
 standard_flag_char('F', system(flagged)).
 standard_flag_char('T', system(deleted)).
 standard_flag_char('S', system(seen)).
 standard_flag_char('D', system(draft)).
-
-:- pred det_standard_flag_char(char::in, flag::out) is det.
-
-det_standard_flag_char(Char, Flag) :-
-    ( standard_flag_char(Char, FlagPrime) ->
-        Flag = FlagPrime
-    ;
-        unexpected($module, $pred, "standard_flag_char failed")
-    ).
 
 %-----------------------------------------------------------------------------%
 
