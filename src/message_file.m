@@ -47,7 +47,7 @@ read_message_id(FileName, Res, !IO) :-
             extract_message_id(Lines, no, Res)
         ;
             ResRead = eof,
-            Res = format_error("missing header and body separator line")
+            Res = format_error("unexpected eof")
         ;
             ResRead = error(Error),
             Res = error(Error)
@@ -75,7 +75,7 @@ read_header_lines(Stream, RevLines0, Res, !IO) :-
         )
     ;
         RLAS = eof,
-        Res = eof
+        Res = ok(reverse(RevLines0))
     ;
         RLAS = error(Error),
         Res = error(Error)
@@ -96,12 +96,13 @@ chop_crlf_or_lf(Line0, Line) :-
 
 read_message_id_from_string(Input, Res) :-
     ( string.sub_string_search(Input, "\n\n", HeaderEndPos) ->
-        string.unsafe_between(Input, 0, HeaderEndPos, Header),
-        Lines = string.split_at_string("\n", Header),
-        extract_message_id(Lines, no, Res)
+        string.unsafe_between(Input, 0, HeaderEndPos, Header)
     ;
-        Res = format_error("missing header and body separator line")
-    ).
+        % No blank line when there is no body.
+        Header = Input
+    ),
+    Lines = string.split_at_string("\n", Header),
+    extract_message_id(Lines, no, Res).
 
 %-----------------------------------------------------------------------------%
 
