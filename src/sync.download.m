@@ -78,6 +78,8 @@ download_message(Config, Database, IMAP, MailboxPair, DirCache,
         UnpairedRemote, Res, !IO) :-
     UnpairedRemote = unpaired_remote_message(_PairingId, UID,
         ExpectedMessageId),
+    UID = uid(UID_Integer),
+    io.format("Fetching UID %s\n", [s(to_string(UID_Integer))], !IO),
     % Need FLAGS for Maildir filename.
     % INTERNALDATE for setting mtime on new files.
     % MODSEQ could be used to update remote_message row.
@@ -272,6 +274,7 @@ verify_unpaired_local_message(LocalMailboxPath, DirCache, UnpairedLocal,
     find_file(DirCache, LocalMailboxPath, Unique, ResFind),
     (
         ResFind = found(Path, _InfoSuffix),
+        io.format("Verifying %s\n", [s(Path)], !IO),
         verify_file(Path, RawMessageLf, Res, !IO)
     ;
         ResFind = found_but_unexpected(Path),
