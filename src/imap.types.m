@@ -278,9 +278,11 @@
 
 %-----------------------------------------------------------------------------%
 
-:- func singleton_sequence_set(T) = sequence_set(T).
+:- func singleton_sequence_set(T) = sequence_set(T)
+    <= sequence_set_number(T).
 
-:- pred make_sequence_set(list(T)::in, sequence_set(T)::out) is semidet.
+:- pred make_sequence_set(list(T)::in, sequence_set(T)::out) is semidet
+    <= sequence_set_number(T).
 
 :- func make_astring(string) = astring.
 
@@ -297,6 +299,7 @@
 
 :- implementation.
 
+:- import_module integer.
 :- import_module string.
 
 :- import_module imap.charclass.
@@ -315,12 +318,34 @@
 
 singleton_sequence_set(N) = last(element(number(N))).
 
-    % Make it smarter later.
-make_sequence_set([N], singleton_sequence_set(N)).
-make_sequence_set([N | Ns], SequenceSet) :-
-    Ns = [_ | _],
-    make_sequence_set(Ns, SequenceSet0),
-    SequenceSet = cons(element(number(N)), SequenceSet0). % lcmc
+make_sequence_set(Ns0, SequenceSet) :-
+    list.sort(Ns0, [N | Ns]),
+    make_sequence_set_2(N, N, Ns, SequenceSet).
+
+:- pred make_sequence_set_2(T::in, T::in, list(T)::in, sequence_set(T)::out)
+    is det <= sequence_set_number(T).
+
+make_sequence_set_2(Lo, Hi, [], SequenceSet) :-
+    make_sequence_set_element(Lo, Hi, Elem),
+    SequenceSet = last(Elem).
+make_sequence_set_2(Lo, Hi, [N | Ns], SequenceSet) :-
+    ( to_nz_number(Hi) + one = to_nz_number(N) ->
+        make_sequence_set_2(Lo, N, Ns, SequenceSet)
+    ;
+        make_sequence_set_element(Lo, Hi, Elem),
+        make_sequence_set_2(N, N, Ns, SequenceSetTail),
+        SequenceSet = cons(Elem, SequenceSetTail)
+    ).
+
+:- pred make_sequence_set_element(T::in, T::in, sequence_set_element(T)::out)
+    is det <= sequence_set_number(T).
+
+make_sequence_set_element(Lo, Hi, Elem) :-
+    ( Lo = Hi ->
+        Elem = element(number(Lo))
+    ;
+        Elem = range(number(Lo), number(Hi))
+    ).
 
 %-----------------------------------------------------------------------------%
 
