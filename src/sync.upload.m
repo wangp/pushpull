@@ -15,6 +15,7 @@
 
 :- implementation.
 
+:- import_module integer.
 :- import_module list.
 :- import_module set.
 :- import_module solutions.
@@ -90,6 +91,8 @@ upload_message(_Config, Database, IMAP, MailboxPair, DirCache, UnpairedLocal,
             get_file_data(Path, ResFileData, !IO),
             (
                 ResFileData = ok(FileData),
+                get_selected_mailbox_highest_modseqvalue(IMAP,
+                    MaybePrevHighestModSeq, !IO),
                 LocalFlags = LocalFlagDeltas ^ cur_set,
                 do_upload_message(IMAP, MailboxPair, FileData, LocalFlags,
                     ResUpload, !IO),
@@ -99,8 +102,21 @@ upload_message(_Config, Database, IMAP, MailboxPair, DirCache, UnpairedLocal,
                         MaybeUID = yes(UID),
                         % XXX is it okay to assume RemoteFlags?
                         RemoteFlags = init_flags(LocalFlags),
+                        % We can say that the pairing is up-to-date at least up
+                        % to the mod-seq-value before the message was added.
+                        (
+                            MaybePrevHighestModSeq =
+                                yes(highestmodseq(ModSeqValue))
+                        ;
+                            ( MaybePrevHighestModSeq = yes(unknown)
+                            ; MaybePrevHighestModSeq = yes(nomodseq)
+                            ; MaybePrevHighestModSeq = no
+                            ),
+                            % Should not happen.
+                            ModSeqValue = mod_seq_value(one)
+                        ),
                         set_pairing_remote_message(Database, PairingId, UID,
-                            RemoteFlags, Res, !IO)
+                            RemoteFlags, ModSeqValue, Res, !IO)
                     ;
                         MaybeUID = no,
                         % We don't know the UID of the appended message.

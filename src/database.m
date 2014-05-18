@@ -73,7 +73,7 @@
 
 :- pred insert_new_pairing_only_remote_message(database::in,
     mailbox_pair::in, maybe_message_id::in, uid::in, set(flag)::in,
-    maybe_error::out, io::di, io::uo) is det.
+    mod_seq_value::in, maybe_error::out, io::di, io::uo) is det.
 
 :- pred delete_pairing(database::in, pairing_id::in,
     maybe_error::out, io::di, io::uo) is det.
@@ -83,8 +83,8 @@
     io::di, io::uo) is det.
 
 :- pred set_pairing_remote_message(database::in, pairing_id::in,
-    uid::in, flag_deltas(remote_mailbox)::in, maybe_error::out,
-    io::di, io::uo) is det.
+    uid::in, flag_deltas(remote_mailbox)::in, mod_seq_value::in,
+    maybe_error::out, io::di, io::uo) is det.
 
 :- pred reset_pairing_local_message(database::in, pairing_id::in,
     maybe_error::out, io::di, io::uo) is det.
@@ -100,8 +100,14 @@
     io::di, io::uo) is det.
 
 :- pred update_remote_message_flags(database::in, pairing_id::in,
-    flag_deltas(remote_mailbox)::in, bool::in, maybe_error::out,
-    io::di, io::uo) is det.
+    flag_deltas(remote_mailbox)::in, bool::in, mod_seq_value::in,
+    maybe_error::out, io::di, io::uo) is det.
+
+:- pred search_max_uid_more_recent_than(database::in, mailbox_pair::in,
+    mod_seq_valzer::in, maybe_error(maybe(uid))::out, io::di, io::uo) is det.
+
+:- pred search_min_modseq(database::in, mailbox_pair::in, uid::in,
+    maybe_error(mod_seq_valzer)::out, io::di, io::uo) is det.
 
 :- type unpaired_remote_message
     --->    unpaired_remote_message(
@@ -258,6 +264,10 @@
     bind_value(mod_seq_value(I)) = bind_value(I)
 ].
 
+:- instance bind_value(mod_seq_valzer) where [
+    bind_value(mod_seq_valzer(I)) = bind_value(I)
+].
+
 :- instance bind_value(string) where [
     bind_value(S) = text_by_reference(S)
 ].
@@ -412,6 +422,7 @@ create_tables =
         remote_expunged     INTEGER NOT NULL, /* boolean */
         remote_flags        TEXT NOT NULL,
         remote_flags_attn   INTEGER NOT NULL, /* boolean */
+        remote_modseqvalzer INTEGER NOT NULL, /* includes zero */
 
         UNIQUE(mailbox_pair_id, local_uniquename, remote_uid)
     );
@@ -636,10 +647,10 @@ insert_new_pairing_only_local_message(Db, MailboxPair, MessageId, Unique,
         ++ "    local_uniquename, local_expunged,"
         ++ "    local_flags, local_flags_attn,"
         ++ "    remote_uid, remote_expunged,"
-        ++ "    remote_flags, remote_flags_attn)"
+        ++ "    remote_flags, remote_flags_attn, remote_modseqvalzer)"
         ++ " VALUES(:mailbox_pair_id, :message_id,"
         ++ "    :local_uniquename, 0, :local_flags, 0,"
-        ++ "    NULL, 0, '', 0);",
+        ++ "    NULL, 0, '', 0, 0);",
     with_stmt(insert_new_local_message_2, Db, Stmt, [
         name(":mailbox_pair_id") - bind_value(MailboxPairId),
         name(":message_id") - bind_value(MessageId),
@@ -666,7 +677,7 @@ insert_new_local_message_2(Db, Stmt, Res, !IO) :-
 %-----------------------------------------------------------------------------%
 
 insert_new_pairing_only_remote_message(Db, MailboxPair, MessageId, UID, Flags,
-        Res, !IO) :-
+        ModSeqValue, Res, !IO) :-
     MailboxPair = mailbox_pair(MailboxPairId, _, _, _),
     RemoteFlagDeltas = init_flags(Flags) : flag_deltas(remote_mailbox),
 
@@ -674,15 +685,16 @@ insert_new_pairing_only_remote_message(Db, MailboxPair, MessageId, UID, Flags,
         ++ "    local_uniquename, local_expunged,"
         ++ "    local_flags, local_flags_attn,"
         ++ "    remote_uid, remote_expunged,"
-        ++ "    remote_flags, remote_flags_attn)"
+        ++ "    remote_flags, remote_flags_attn, remote_modseqvalzer)"
         ++ " VALUES(:mailbox_pair_id, :message_id,"
         ++ "    NULL, 0, '', 0,"
-        ++ "    :remote_uid, 0, :remote_flags, 0);",
+        ++ "    :remote_uid, 0, :remote_flags, 0, :remote_modseqvalzer);",
     with_stmt(insert_new_remote_message_2, Db, Stmt, [
         name(":mailbox_pair_id") - bind_value(MailboxPairId),
         name(":message_id") - bind_value(MessageId),
         name(":remote_uid") - bind_value(UID),
-        name(":remote_flags") - bind_value(RemoteFlagDeltas)
+        name(":remote_flags") - bind_value(RemoteFlagDeltas),
+        name(":remote_modseqvalzer") - bind_value(ModSeqValue)
     ], Res, !IO).
 
 :- pred insert_new_remote_message_2(db(rw)::in, stmt::in,
@@ -758,15 +770,18 @@ set_pairing_local_message_2(Db, Stmt, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-set_pairing_remote_message(Db, PairingId, UID, FlagDeltas, Res, !IO) :-
+set_pairing_remote_message(Db, PairingId, UID, FlagDeltas, ModSeqValue, Res,
+        !IO) :-
     Stmt = "UPDATE pairing"
         ++ " SET remote_uid = :remote_uid,"
         ++ "     remote_expunged = 0,"
-        ++ "     remote_flags = :remote_flags"
+        ++ "     remote_flags = :remote_flags,"
+        ++ "     remote_modseqvalzer = :remote_modseqvalzer"
         ++ " WHERE pairing_id = :pairing_id",
     with_stmt(set_pairing_remote_message_2, Db, Stmt, [
         name(":remote_uid") - bind_value(UID),
         name(":remote_flags") - bind_value(FlagDeltas),
+        name(":remote_modseqvalzer") - bind_value(ModSeqValue),
         name(":pairing_id") - bind_value(PairingId)
     ], Res, !IO).
 
@@ -804,7 +819,8 @@ reset_pairing_remote_message(Db, PairingId, Res, !IO) :-
         ++ " SET remote_uid = NULL,"
         ++ "     remote_expunged = 0,"
         ++ "     remote_flags = '',"
-        ++ "     remote_flags_attn = 0"
+        ++ "     remote_flags_attn = 0,"
+        ++ "     remote_modseqvalzer = 0"
         ++ " WHERE pairing_id = :pairing_id",
     with_stmt(reset_pairing_2, Db, Stmt, [
         name(":pairing_id") - bind_value(PairingId)
@@ -887,15 +903,18 @@ update_local_message_flags_2(Db, Stmt, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-update_remote_message_flags(Db, PairingId, Flags, Attn, Res, !IO) :-
+update_remote_message_flags(Db, PairingId, Flags, Attn, ModSeqValue, Res,
+        !IO) :-
     Stmt = "UPDATE pairing"
         ++ " SET remote_flags = :remote_flags,"
-        ++ "     remote_flags_attn = :remote_flags_attn"
+        ++ "     remote_flags_attn = :remote_flags_attn,"
+        ++ "     remote_modseqvalzer = :remote_modseqvalzer"
         ++ " WHERE pairing_id = :pairing_id",
     with_stmt(update_remote_message_flags_2, Db, Stmt, [
         name(":pairing_id") - bind_value(PairingId),
         name(":remote_flags") - bind_value(Flags),
-        name(":remote_flags_attn") - bind_value(Attn)
+        name(":remote_flags_attn") - bind_value(Attn),
+        name(":remote_modseqvalzer") - bind_value(ModSeqValue)
     ], Res, !IO).
 
 :- pred update_remote_message_flags_2(db(rw)::in, stmt::in, maybe_error::out,
@@ -909,6 +928,78 @@ update_remote_message_flags_2(Db, Stmt, Res, !IO) :-
     ;
         StepResult = row,
         Res = error("unexpected row")
+    ;
+        StepResult = error(Error),
+        Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
+search_max_uid_more_recent_than(Db, MailboxPair, ModSeqValzer, Res, !IO) :-
+    MailboxPair = mailbox_pair(MailboxPairId, _, _, _),
+    Stmt =
+        "SELECT MAX(remote_uid) FROM pairing
+          WHERE mailbox_pair_id = :mailbox_pair_id
+            AND remote_modseqvalzer > :modseqvalzer",
+    with_stmt(search_max_uid_more_recent_than, Db, Stmt, [
+        name(":mailbox_pair_id") - bind_value(MailboxPairId),
+        name(":modseqvalzer") - bind_value(ModSeqValzer)
+    ], Res, !IO).
+
+:- pred search_max_uid_more_recent_than(db(rw)::in, stmt::in,
+    maybe_error(maybe(uid))::out, io::di, io::uo) is det.
+
+search_max_uid_more_recent_than(Db, Stmt, Res, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
+    (
+        StepResult = done,
+        Res = ok(no)
+    ;
+        StepResult = row,
+        column_text(Stmt, column(0), X0, !IO),
+        ( X0 = "" ->
+            Res = ok(no)
+        ; convert(X0, UID) ->
+            Res = ok(yes(UID))
+        ;
+            Res = error("database error")
+        )
+    ;
+        StepResult = error(Error),
+        Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
+search_min_modseq(Db, MailboxPair, UID, Res, !IO) :-
+    MailboxPair = mailbox_pair(MailboxPairId, _, _, _),
+    Stmt =
+        "SELECT MIN(remote_modseqvalzer) FROM pairing
+          WHERE mailbox_pair_id = :mailbox_pair_id
+            AND remote_uid <= :uid",
+    with_stmt(search_min_modseq_2, Db, Stmt, [
+        name(":mailbox_pair_id") - bind_value(MailboxPairId),
+        name(":uid") - bind_value(UID)
+    ], Res, !IO).
+
+:- pred search_min_modseq_2(db(rw)::in, stmt::in,
+    maybe_error(mod_seq_valzer)::out, io::di, io::uo) is det.
+
+search_min_modseq_2(Db, Stmt, Res, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
+    (
+        StepResult = done,
+        Res = error("expected row")
+    ;
+        StepResult = row,
+        column_text(Stmt, column(0), X0, !IO),
+        ( X0 = "" ->
+            Res = ok(mod_seq_valzer(zero))
+        ; convert(X0, ModSeqValzer) ->
+            Res = ok(ModSeqValzer)
+        ;
+            Res = error("database error")
+        )
     ;
         StepResult = error(Error),
         Res = error(Error)
