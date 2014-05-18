@@ -116,6 +116,8 @@
                 maybe_message_id
             ).
 
+:- func get_uid(unpaired_remote_message) = uid.
+
 :- pred search_unpaired_remote_messages(database::in, mailbox_pair::in,
     maybe_error(list(unpaired_remote_message))::out, io::di, io::uo) is det.
 
@@ -1006,6 +1008,8 @@ search_min_modseq_2(Db, Stmt, Res, !IO) :-
     ).
 
 %-----------------------------------------------------------------------------%
+
+get_uid(unpaired_remote_message(_, UID, _)) = UID.
 
 search_unpaired_remote_messages(Db, MailboxPair, Res, !IO) :-
     MailboxPair = mailbox_pair(MailboxPairId, _, _, _),

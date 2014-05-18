@@ -57,75 +57,48 @@ download_messages(Config, Database, IMAP, MailboxPair, DirCache, Unpaireds,
         Unpaireds = [],
         Res = ok
     ;
-        Unpaireds = [H | T],
-        download_message(Config, Database, IMAP, MailboxPair, DirCache, H,
-            Res0, !IO),
+        Unpaireds = [_ | _],
+        list.split_upto(max_batch_messages, Unpaireds, Heads, Tails),
+        download_message_batch(Config, Database, IMAP, MailboxPair, DirCache,
+            Heads, Res0, !IO),
         (
             Res0 = ok,
-            download_messages(Config, Database, IMAP, MailboxPair, DirCache, T,
-                Res, !IO)
+            download_messages(Config, Database, IMAP, MailboxPair, DirCache,
+                Tails, Res, !IO)
         ;
             Res0 = error(Error),
             Res = error(Error)
         )
     ).
 
-:- pred download_message(prog_config::in, database::in, imap::in,
-    mailbox_pair::in, dir_cache::in, unpaired_remote_message::in,
+:- func max_batch_messages = int.
+
+max_batch_messages = 50.
+
+:- pred download_message_batch(prog_config::in, database::in, imap::in,
+    mailbox_pair::in, dir_cache::in, list(unpaired_remote_message)::in,
     maybe_error::out, io::di, io::uo) is det.
 
-download_message(Config, Database, IMAP, MailboxPair, DirCache,
-        UnpairedRemote, Res, !IO) :-
-    UnpairedRemote = unpaired_remote_message(_PairingId, UID,
-        ExpectedMessageId),
-    UID = uid(UID_Integer),
-    io.format("Fetching UID %s\n", [s(to_string(UID_Integer))], !IO),
-    % Need FLAGS for Maildir filename.
-    % INTERNALDATE for setting mtime on new files.
-    % MODSEQ could be used to update remote_message row.
-    Items = atts(rfc822, [flags, modseq, internaldate]),
-    uid_fetch(IMAP, singleton_sequence_set(UID), Items, no,
-        result(ResFetch, Text, Alerts), !IO),
-    report_alerts(Alerts, !IO),
+download_message_batch(Config, Database, IMAP, MailboxPair, DirCache,
+        UnpairedRemotes, Res, !IO) :-
+    UIDs = list.map(get_uid, UnpairedRemotes),
+    ( make_sequence_set(UIDs, SequenceSet) ->
+        % Need FLAGS for Maildir filename.
+        % INTERNALDATE for setting mtime on new files.
+        % XXX MODSEQ could be used to update remote_message row.
+        Items = atts(rfc822, [flags, modseq, internaldate]),
+        uid_fetch(IMAP, SequenceSet, Items, no,
+            result(ResFetch, Text, Alerts), !IO),
+        report_alerts(Alerts, !IO)
+    ;
+        % Empty sequence.
+        ResFetch = ok_with_data([]),
+        Text = ""
+    ),
     (
         ResFetch = ok_with_data(FetchResults),
-        ( find_uid_fetch_result(FetchResults, UID, Atts) ->
-            (
-                get_rfc822_att(Atts, RawMessageCrLf),
-                get_flags(Atts, Flags),
-                get_internaldate(Atts, InternalDate)
-            ->
-                read_message_id_from_message_crlf(RawMessageCrLf, ResMessageId),
-                (
-                    (
-                        ResMessageId = yes(ReadMessageId),
-                        HaveMessageId = message_id(ReadMessageId)
-                    ;
-                        ResMessageId = no,
-                        HaveMessageId = nil
-                    ),
-                    ( ExpectedMessageId = HaveMessageId ->
-                        RawMessageLf = crlf_to_lf(RawMessageCrLf),
-                        save_message_and_pair(Config, Database, MailboxPair,
-                            UnpairedRemote, RawMessageLf, Flags, InternalDate,
-                            DirCache, Res, !IO)
-                    ;
-                        Res = error("unexpected Message-Id")
-                    )
-                ;
-                    ResMessageId = format_error(Error),
-                    Res = error("format error in RFC822 response: " ++ Error)
-                ;
-                    ResMessageId = error(Error),
-                    Res = error(io.error_message(Error))
-                )
-            ;
-                Res = error("problem with UID FETCH response")
-            )
-        ;
-            % Message no longer exists on server?
-            Res = ok
-        )
+        list.foldl2(handle_downloaded_message(Config, Database, MailboxPair,
+            DirCache, FetchResults), UnpairedRemotes, ok, Res, !IO)
     ;
         ( ResFetch = no
         ; ResFetch = bad
@@ -134,6 +107,68 @@ download_message(Config, Database, IMAP, MailboxPair, DirCache,
         ; ResFetch = error
         ),
         Res = error("unexpected response to UID FETCH: " ++ Text)
+    ).
+
+:- pred handle_downloaded_message(prog_config::in, database::in,
+    mailbox_pair::in, dir_cache::in, assoc_list(message_seq_nr, msg_atts)::in,
+    unpaired_remote_message::in, maybe_error::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+handle_downloaded_message(Config, Database, MailboxPair, DirCache,
+        FetchResults, UnpairedRemote, Res0, Res, !IO) :-
+    (
+        Res0 = ok,
+        handle_downloaded_message_2(Config, Database, MailboxPair, DirCache,
+            FetchResults, UnpairedRemote, Res, !IO)
+    ;
+        Res0 = error(_),
+        Res = Res0
+    ).
+
+:- pred handle_downloaded_message_2(prog_config::in, database::in,
+    mailbox_pair::in, dir_cache::in, assoc_list(message_seq_nr, msg_atts)::in,
+    unpaired_remote_message::in, maybe_error::out, io::di, io::uo) is det.
+
+handle_downloaded_message_2(Config, Database, MailboxPair, DirCache,
+        FetchResults, UnpairedRemote, Res, !IO) :-
+    UnpairedRemote = unpaired_remote_message(_PairingId, UID,
+        ExpectedMessageId),
+    ( find_uid_fetch_result(FetchResults, UID, Atts) ->
+        (
+            get_rfc822_att(Atts, RawMessageCrLf),
+            get_flags(Atts, Flags),
+            get_internaldate(Atts, InternalDate)
+        ->
+            read_message_id_from_message_crlf(RawMessageCrLf, ResMessageId),
+            (
+                (
+                    ResMessageId = yes(ReadMessageId),
+                    HaveMessageId = message_id(ReadMessageId)
+                ;
+                    ResMessageId = no,
+                    HaveMessageId = nil
+                ),
+                ( ExpectedMessageId = HaveMessageId ->
+                    RawMessageLf = crlf_to_lf(RawMessageCrLf),
+                    save_message_and_pair(Config, Database, MailboxPair,
+                        UnpairedRemote, RawMessageLf, Flags, InternalDate,
+                        DirCache, Res, !IO)
+                ;
+                    Res = error("unexpected Message-Id")
+                )
+            ;
+                ResMessageId = format_error(Error),
+                Res = error("format error in RFC822 response: " ++ Error)
+            ;
+                ResMessageId = error(Error),
+                Res = error(io.error_message(Error))
+            )
+        ;
+            Res = error("problem with UID FETCH response")
+        )
+    ;
+        % Message no longer exists on server?
+        Res = ok
     ).
 
 :- pred find_uid_fetch_result(assoc_list(message_seq_nr, msg_atts)::in,
@@ -184,8 +219,8 @@ save_message_and_pair(_Config, Database, MailboxPair, UnpairedRemote,
     (
         ResMatch = ok(no),
         LocalMailboxPath = get_local_mailbox_path(MailboxPair),
-        save_raw_message(LocalMailboxPath, UID, RawMessageLf, Flags, InternalDate,
-            ResSave, !IO),
+        save_raw_message(LocalMailboxPath, UID, RawMessageLf, Flags,
+            InternalDate, ResSave, !IO),
         (
             ResSave = ok(Unique),
             set_pairing_local_message(Database, PairingId, Unique,
