@@ -4,8 +4,7 @@
 :- interface.
 
 :- pred propagate_flag_deltas_from_local(prog_config::in, database::in,
-    imap::in, local_mailbox::in, remote_mailbox::in, maybe_error::out,
-    io::di, io::uo) is det.
+    imap::in, mailbox_pair::in, maybe_error::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -22,10 +21,8 @@
 
 %-----------------------------------------------------------------------------%
 
-propagate_flag_deltas_from_local(_Config, Db, IMAP, LocalMailbox, RemoteMailbox,
-        Res, !IO) :-
-    search_pending_flag_deltas_from_local(Db, LocalMailbox, RemoteMailbox,
-        ResSearch, !IO),
+propagate_flag_deltas_from_local(_Config, Db, IMAP, MailboxPair, Res, !IO) :-
+    search_pending_flag_deltas_from_local(Db, MailboxPair, ResSearch, !IO),
     (
         ResSearch = ok(Pendings),
         list.foldl2(propagate_flag_deltas_from_local_2(Db, IMAP),

@@ -7,8 +7,8 @@
 
 :- import_module dir_cache.
 
-:- pred update_db_local_mailbox(database::in, local_mailbox::in,
-    remote_mailbox::in, maybe_error(dir_cache)::out, io::di, io::uo) is det.
+:- pred update_db_local_mailbox(database::in, mailbox_pair::in,
+    maybe_error(dir_cache)::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -27,24 +27,23 @@
 
 %-----------------------------------------------------------------------------%
 
-update_db_local_mailbox(Db, LocalMailbox, RemoteMailbox, Res, !IO) :-
-    update_file_list(get_local_mailbox_path(LocalMailbox), init, ResCache,
-        !IO),
+update_db_local_mailbox(Db, MailboxPair, Res, !IO) :-
+    LocalMailboxPath = get_local_mailbox_path(MailboxPair),
+    update_file_list(LocalMailboxPath, init, ResCache, !IO),
     (
         ResCache = ok(DirCache),
-        LocalMailboxPath = get_local_mailbox_path(LocalMailbox),
         list_files(DirCache, LocalMailboxPath, NewFiles, CurFiles),
 
         LocalMailboxPath = local_mailbox_path(DirName),
-        update_db_local_message_files(Db, LocalMailbox, RemoteMailbox,
+        update_db_local_message_files(Db, MailboxPair,
             DirName / "new", NewFiles, Res1, !IO),
         (
             Res1 = ok,
-            update_db_local_message_files(Db, LocalMailbox, RemoteMailbox,
+            update_db_local_message_files(Db, MailboxPair,
                 DirName / "cur", CurFiles, Res2, !IO),
             (
                 Res2 = ok,
-                mark_expunged_local_messages(Db, LocalMailbox, RemoteMailbox,
+                mark_expunged_local_messages(Db, MailboxPair,
                     NewFiles, CurFiles, Res3, !IO),
                 (
                     Res3 = ok,
@@ -66,46 +65,43 @@ update_db_local_mailbox(Db, LocalMailbox, RemoteMailbox, Res, !IO) :-
         Res = error(Error)
     ).
 
-:- pred update_db_local_message_files(database::in, local_mailbox::in,
-    remote_mailbox::in, string::in, list(string)::in, maybe_error::out,
-    io::di, io::uo) is det.
+:- pred update_db_local_message_files(database::in, mailbox_pair::in,
+    string::in, list(string)::in, maybe_error::out, io::di, io::uo) is det.
 
-update_db_local_message_files(_Db, _LocalMailbox, _RemoteMailbox, _DirName,
+update_db_local_message_files(_Db, _MailboxPair, _DirName,
         [], ok, !IO).
-update_db_local_message_files(Db, LocalMailbox, RemoteMailbox, DirName,
+update_db_local_message_files(Db, MailboxPair, DirName,
         [BaseName | BaseNames], Res, !IO) :-
-    update_db_local_message_file(Db, LocalMailbox, RemoteMailbox,
-        DirName, BaseName, Res0, !IO),
+    update_db_local_message_file(Db, MailboxPair, DirName,
+        BaseName, Res0, !IO),
     (
         Res0 = ok,
-        update_db_local_message_files(Db, LocalMailbox, RemoteMailbox, DirName,
+        update_db_local_message_files(Db, MailboxPair, DirName,
             BaseNames, Res, !IO)
     ;
         Res0 = error(Error),
         Res = error(Error)
     ).
 
-:- pred update_db_local_message_file(database::in, local_mailbox::in,
-    remote_mailbox::in, string::in, string::in, maybe_error::out,
-    io::di, io::uo) is det.
+:- pred update_db_local_message_file(database::in, mailbox_pair::in,
+    string::in, string::in, maybe_error::out, io::di, io::uo) is det.
 
-update_db_local_message_file(Db, LocalMailbox, RemoteMailbox, DirName,
-        BaseName, Res, !IO) :-
+update_db_local_message_file(Db, MailboxPair, DirName, BaseName, Res, !IO) :-
     ( parse_basename(BaseName, Unique, Flags) ->
-        update_db_local_message_file_2(Db, LocalMailbox, RemoteMailbox,
-            DirName, BaseName, Unique, Flags, Res, !IO)
+        update_db_local_message_file_2(Db, MailboxPair, DirName, BaseName,
+            Unique, Flags, Res, !IO)
     ;
         % Should just skip.
         Res = error("cannot parse message filename: " ++ BaseName)
     ).
 
-:- pred update_db_local_message_file_2(database::in, local_mailbox::in,
-    remote_mailbox::in, string::in, string::in, uniquename::in, set(flag)::in,
-    maybe_error::out, io::di, io::uo) is det.
+:- pred update_db_local_message_file_2(database::in, mailbox_pair::in,
+    string::in, string::in, uniquename::in, set(flag)::in, maybe_error::out,
+    io::di, io::uo) is det.
 
-update_db_local_message_file_2(Db, LocalMailbox, RemoteMailbox, DirName,
-        BaseName, Unique, Flags, Res, !IO) :-
-    search_pairing_by_local_message(Db, LocalMailbox, Unique, ResSearch, !IO),
+update_db_local_message_file_2(Db, MailboxPair, DirName, BaseName, Unique,
+        Flags, Res, !IO) :-
+    search_pairing_by_local_message(Db, MailboxPair, Unique, ResSearch, !IO),
     (
         ResSearch = ok(yes({PairingId, LocalFlagDeltas0})),
         update_maildir_standard_flags(Flags, LocalFlagDeltas0, LocalFlagDeltas,
@@ -133,8 +129,8 @@ update_db_local_message_file_2(Db, LocalMailbox, RemoteMailbox, DirName,
             % At that time we will notice that the local and remote message
             % contents match, then delete one of the two pairings (this one) in
             % favour of the other.
-            insert_new_pairing_only_local_message(Db, message_id(MessageId),
-                LocalMailbox, RemoteMailbox, Unique, Flags, Res, !IO)
+            insert_new_pairing_only_local_message(Db, MailboxPair,
+                message_id(MessageId), Unique, Flags, Res, !IO)
         ;
             ResRead = no,
             % XXX we could add this file to the database, but we want to have
@@ -156,12 +152,11 @@ update_db_local_message_file_2(Db, LocalMailbox, RemoteMailbox, DirName,
 
 %-----------------------------------------------------------------------------%
 
-:- pred mark_expunged_local_messages(database::in, local_mailbox::in,
-    remote_mailbox::in, list(string)::in, list(string)::in, maybe_error::out,
-    io::di, io::uo) is det.
+:- pred mark_expunged_local_messages(database::in, mailbox_pair::in,
+    list(string)::in, list(string)::in, maybe_error::out, io::di, io::uo)
+    is det.
 
-mark_expunged_local_messages(Db, LocalMailbox, RemoteMailbox,
-        NewFiles, CurFiles, Res, !IO) :-
+mark_expunged_local_messages(Db, MailboxPair, NewFiles, CurFiles, Res, !IO) :-
     create_detect_local_expunge_temp_table(Db, Res0, !IO),
     (
         Res0 = ok,
@@ -171,8 +166,7 @@ mark_expunged_local_messages(Db, LocalMailbox, RemoteMailbox,
             insert_into_detect_local_expunge_table(Db, CurFiles, Res2, !IO),
             (
                 Res2 = ok,
-                mark_expunged_local_messages(Db, LocalMailbox, RemoteMailbox,
-                    Res3, !IO),
+                mark_expunged_local_messages(Db, MailboxPair, Res3, !IO),
                 (
                     Res3 = ok(Count),
                     io.format("Detected %d expunged local messages.\n",

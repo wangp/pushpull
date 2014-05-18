@@ -8,8 +8,8 @@
 :- import_module dir_cache.
 
 :- pred download_unpaired_remote_messages(prog_config::in, database::in,
-    imap::in, local_mailbox::in, remote_mailbox::in, dir_cache::in,
-    maybe_error::out, io::di, io::uo) is det.
+    imap::in, mailbox_pair::in, dir_cache::in, maybe_error::out,
+    io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -35,36 +35,35 @@
 
 %-----------------------------------------------------------------------------%
 
-download_unpaired_remote_messages(Config, Database, IMAP, LocalMailbox,
-        RemoteMailbox, DirCache, Res, !IO) :-
-    search_unpaired_remote_messages(Database, RemoteMailbox, ResSearch, !IO),
+download_unpaired_remote_messages(Config, Database, IMAP, MailboxPair,
+        DirCache, Res, !IO) :-
+    search_unpaired_remote_messages(Database, MailboxPair, ResSearch, !IO),
     (
         ResSearch = ok(Unpaireds),
-        download_messages(Config, Database, IMAP, LocalMailbox, RemoteMailbox,
-            DirCache, Unpaireds, Res, !IO)
+        download_messages(Config, Database, IMAP, MailboxPair, DirCache,
+            Unpaireds, Res, !IO)
     ;
         ResSearch = error(Error),
         Res = error(Error)
     ).
 
 :- pred download_messages(prog_config::in, database::in, imap::in,
-    local_mailbox::in, remote_mailbox::in, dir_cache::in,
-    list(unpaired_remote_message)::in, maybe_error::out, io::di, io::uo)
-    is det.
+    mailbox_pair::in, dir_cache::in, list(unpaired_remote_message)::in,
+    maybe_error::out, io::di, io::uo) is det.
 
-download_messages(Config, Database, IMAP, LocalMailbox, RemoteMailbox,
-        DirCache, Unpaireds, Res, !IO) :-
+download_messages(Config, Database, IMAP, MailboxPair, DirCache, Unpaireds,
+        Res, !IO) :-
     (
         Unpaireds = [],
         Res = ok
     ;
         Unpaireds = [H | T],
-        download_message(Config, Database, IMAP, LocalMailbox, RemoteMailbox,
-            DirCache, H, Res0, !IO),
+        download_message(Config, Database, IMAP, MailboxPair, DirCache, H,
+            Res0, !IO),
         (
             Res0 = ok,
-            download_messages(Config, Database, IMAP, LocalMailbox,
-                RemoteMailbox, DirCache, T, Res, !IO)
+            download_messages(Config, Database, IMAP, MailboxPair, DirCache, T,
+                Res, !IO)
         ;
             Res0 = error(Error),
             Res = error(Error)
@@ -72,11 +71,11 @@ download_messages(Config, Database, IMAP, LocalMailbox, RemoteMailbox,
     ).
 
 :- pred download_message(prog_config::in, database::in, imap::in,
-    local_mailbox::in, remote_mailbox::in, dir_cache::in,
-    unpaired_remote_message::in, maybe_error::out, io::di, io::uo) is det.
+    mailbox_pair::in, dir_cache::in, unpaired_remote_message::in,
+    maybe_error::out, io::di, io::uo) is det.
 
-download_message(Config, Database, IMAP, LocalMailbox, _RemoteMailbox,
-        DirCache, UnpairedRemote, Res, !IO) :-
+download_message(Config, Database, IMAP, MailboxPair, DirCache,
+        UnpairedRemote, Res, !IO) :-
     UnpairedRemote = unpaired_remote_message(_PairingId, UID,
         ExpectedMessageId),
     % Need FLAGS for Maildir filename.
@@ -105,7 +104,7 @@ download_message(Config, Database, IMAP, LocalMailbox, _RemoteMailbox,
                     ),
                     ( ExpectedMessageId = HaveMessageId ->
                         RawMessageLf = crlf_to_lf(RawMessageCrLf),
-                        save_message_and_pair(Config, Database, LocalMailbox,
+                        save_message_and_pair(Config, Database, MailboxPair,
                             UnpairedRemote, RawMessageLf, Flags, InternalDate,
                             DirCache, Res, !IO)
                     ;
@@ -169,19 +168,21 @@ get_internaldate(Atts, DateTime) :-
     solutions(pred(X::out) is nondet :- member(internaldate(X), Atts),
         [DateTime]).
 
-:- pred save_message_and_pair(prog_config::in, database::in, local_mailbox::in,
-    unpaired_remote_message::in, string::in, set(flag)::in, date_time::in,
-    dir_cache::in, maybe_error::out, io::di, io::uo) is det.
+:- pred save_message_and_pair(prog_config::in, database::in,
+    mailbox_pair::in, unpaired_remote_message::in, string::in,
+    set(flag)::in, date_time::in, dir_cache::in, maybe_error::out,
+    io::di, io::uo) is det.
 
-save_message_and_pair(_Config, Database, LocalMailbox, UnpairedRemote,
+save_message_and_pair(_Config, Database, MailboxPair, UnpairedRemote,
         RawMessageLf, Flags, InternalDate, DirCache, Res, !IO) :-
     UnpairedRemote = unpaired_remote_message(PairingId, UID, MessageId),
     % Avoid duplicating an existing local message.
-    match_unpaired_local_message(Database, LocalMailbox, DirCache,
+    match_unpaired_local_message(Database, MailboxPair, DirCache,
         MessageId, RawMessageLf, ResMatch, !IO),
     (
         ResMatch = ok(no),
-        save_raw_message(LocalMailbox, UID, RawMessageLf, Flags, InternalDate,
+        LocalMailboxPath = get_local_mailbox_path(MailboxPair),
+        save_raw_message(LocalMailboxPath, UID, RawMessageLf, Flags, InternalDate,
             ResSave, !IO),
         (
             ResSave = ok(Unique),
@@ -217,42 +218,43 @@ save_message_and_pair(_Config, Database, LocalMailbox, UnpairedRemote,
         Res = error(Error)
     ).
 
-:- pred match_unpaired_local_message(database::in, local_mailbox::in,
+:- pred match_unpaired_local_message(database::in, mailbox_pair::in,
     dir_cache::in, maybe_message_id::in, string::in,
     maybe_error(maybe(unpaired_local_message))::out, io::di, io::uo) is det.
 
-match_unpaired_local_message(Database, LocalMailbox, DirCache, MessageId,
+match_unpaired_local_message(Database, MailboxPair, DirCache, MessageId,
         RawMessageLf, Res, !IO) :-
-    search_unpaired_local_messages_by_message_id(Database, LocalMailbox,
+    search_unpaired_local_messages_by_message_id(Database, MailboxPair,
         MessageId, ResSearch, !IO),
     (
         ResSearch = ok(UnpairedLocals),
-        verify_unpaired_local_messages(LocalMailbox, DirCache, UnpairedLocals,
-            RawMessageLf, Res, !IO)
+        LocalMailboxPath = get_local_mailbox_path(MailboxPair),
+        verify_unpaired_local_messages(LocalMailboxPath, DirCache,
+            UnpairedLocals, RawMessageLf, Res, !IO)
     ;
         ResSearch = error(Error),
         Res = error(Error)
     ).
 
-:- pred verify_unpaired_local_messages(local_mailbox::in, dir_cache::in,
+:- pred verify_unpaired_local_messages(local_mailbox_path::in, dir_cache::in,
     list(unpaired_local_message)::in, string::in,
     maybe_error(maybe(unpaired_local_message))::out, io::di, io::uo) is det.
 
-verify_unpaired_local_messages(LocalMailbox, DirCache, UnpairedLocals,
+verify_unpaired_local_messages(LocalMailboxPath, DirCache, UnpairedLocals,
         RawMessageLf, Res, !IO) :-
     (
         UnpairedLocals = [],
         Res = ok(no)
     ;
         UnpairedLocals = [UnpairedLocal | RestUnpairedLocals],
-        verify_unpaired_local_message(LocalMailbox, DirCache, UnpairedLocal,
-            RawMessageLf, ResVerify, !IO),
+        verify_unpaired_local_message(LocalMailboxPath, DirCache,
+            UnpairedLocal, RawMessageLf, ResVerify, !IO),
         (
             ResVerify = ok(yes),
             Res = ok(yes(UnpairedLocal))
         ;
             ResVerify = ok(no),
-            verify_unpaired_local_messages(LocalMailbox, DirCache,
+            verify_unpaired_local_messages(LocalMailboxPath, DirCache,
                 RestUnpairedLocals, RawMessageLf, Res, !IO)
         ;
             ResVerify = error(Error),
@@ -260,14 +262,14 @@ verify_unpaired_local_messages(LocalMailbox, DirCache, UnpairedLocals,
         )
     ).
 
-:- pred verify_unpaired_local_message(local_mailbox::in, dir_cache::in,
+:- pred verify_unpaired_local_message(local_mailbox_path::in, dir_cache::in,
     unpaired_local_message::in, string::in, maybe_error(bool)::out,
     io::di, io::uo) is det.
 
-verify_unpaired_local_message(LocalMailbox, DirCache, UnpairedLocal,
+verify_unpaired_local_message(LocalMailboxPath, DirCache, UnpairedLocal,
         RawMessageLf, Res, !IO) :-
     UnpairedLocal = unpaired_local_message(_PairingId, Unique),
-    find_file(DirCache, get_local_mailbox_path(LocalMailbox), Unique, ResFind),
+    find_file(DirCache, LocalMailboxPath, Unique, ResFind),
     (
         ResFind = found(Path, _InfoSuffix),
         verify_file(Path, RawMessageLf, Res, !IO)
@@ -279,12 +281,12 @@ verify_unpaired_local_message(LocalMailbox, DirCache, UnpairedLocal,
         Res = ok(no)
     ).
 
-:- pred save_raw_message(local_mailbox::in, uid::in, string::in, set(flag)::in,
-    date_time::in,  maybe_error(uniquename)::out, io::di, io::uo) is det.
+:- pred save_raw_message(local_mailbox_path::in, uid::in, string::in,
+    set(flag)::in, date_time::in,  maybe_error(uniquename)::out,
+    io::di, io::uo) is det.
 
-save_raw_message(LocalMailbox, uid(UID), RawMessageLf, Flags, InternalDate,
+save_raw_message(LocalMailboxPath, uid(UID), RawMessageLf, Flags, InternalDate,
         Res, !IO) :-
-    LocalMailboxPath = get_local_mailbox_path(LocalMailbox),
     generate_unique_tmp_path(LocalMailboxPath, ResUnique, !IO),
     (
         ResUnique = ok({Unique, TmpPath}),

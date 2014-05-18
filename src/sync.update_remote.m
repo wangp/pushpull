@@ -9,12 +9,11 @@
     % since the last known mod-sequence-value.
     %
 :- pred update_db_remote_mailbox(prog_config::in, database::in, imap::in,
-    local_mailbox::in, remote_mailbox::in, mod_seq_valzer::in,
-    mod_seq_value::in, maybe_error::out, io::di, io::uo) is det.
+    mailbox_pair::in, mod_seq_valzer::in, mod_seq_value::in,
+    maybe_error::out, io::di, io::uo) is det.
 
 :- pred detect_remote_message_expunges(database::in, imap::in,
-    local_mailbox::in, remote_mailbox::in, maybe_error::out, io::di, io::uo)
-    is det.
+    mailbox_pair::in, maybe_error::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -44,8 +43,8 @@
 
 %-----------------------------------------------------------------------------%
 
-update_db_remote_mailbox(_Config, Db, IMAP, LocalMailbox, RemoteMailbox,
-        LastModSeqValzer, HighestModSeqValue, Res, !IO) :-
+update_db_remote_mailbox(_Config, Db, IMAP, MailboxPair, LastModSeqValzer,
+        HighestModSeqValue, Res, !IO) :-
     SequenceSet = last(range(number(uid(one)), star)),
     % We only need the Message-ID from the envelope and really only for new
     % messages.
@@ -69,9 +68,8 @@ update_db_remote_mailbox(_Config, Db, IMAP, LocalMailbox, RemoteMailbox,
             list.foldl(make_remote_message_info, FetchResults,
                 map.init, RemoteMessageInfos)
         ->
-            update_db_with_remote_message_infos(Db, LocalMailbox,
-                RemoteMailbox, RemoteMessageInfos, HighestModSeqValue,
-                Res, !IO)
+            update_db_with_remote_message_infos(Db, MailboxPair,
+                RemoteMessageInfos, HighestModSeqValue, Res, !IO)
         ;
             Res = error("failed in make_remote_message_info")
         )
@@ -140,50 +138,48 @@ is_message_id_att(Att, MaybeMessageId) :-
 flag_except_recent(flag(Flag), Flag).
 flag_except_recent(recent, _) :- fail.
 
-:- pred update_db_with_remote_message_infos(database::in, local_mailbox::in,
-    remote_mailbox::in, map(uid, remote_message_info)::in, mod_seq_value::in,
-    maybe_error::out, io::di, io::uo) is det.
+:- pred update_db_with_remote_message_infos(database::in, mailbox_pair::in,
+    map(uid, remote_message_info)::in, mod_seq_value::in, maybe_error::out,
+    io::di, io::uo) is det.
 
-update_db_with_remote_message_infos(Db, LocalMailbox, RemoteMailbox,
-        RemoteMessageInfos, ModSeqValue, Res, !IO) :-
-    map.foldl2(
-        update_db_with_remote_message_info(Db, LocalMailbox, RemoteMailbox),
+update_db_with_remote_message_infos(Db, MailboxPair, RemoteMessageInfos,
+        ModSeqValue, Res, !IO) :-
+    map.foldl2(update_db_with_remote_message_info(Db, MailboxPair),
         RemoteMessageInfos, ok, Res0, !IO),
     (
         Res0 = ok,
-        update_remote_mailbox_modseqvalue(Db, RemoteMailbox, ModSeqValue,
-            Res, !IO)
+        update_remote_mailbox_modseqvalue(Db, MailboxPair, ModSeqValue, Res,
+            !IO)
     ;
         Res0 = error(Error),
         Res = error(Error)
     ).
 
-:- pred update_db_with_remote_message_info(database::in, local_mailbox::in,
-    remote_mailbox::in, uid::in, remote_message_info::in,
-    maybe_error::in, maybe_error::out, io::di, io::uo) is det.
+:- pred update_db_with_remote_message_info(database::in, mailbox_pair::in,
+    uid::in, remote_message_info::in, maybe_error::in, maybe_error::out,
+    io::di, io::uo) is det.
 
-update_db_with_remote_message_info(Db, LocalMailbox, RemoteMailbox, UID,
-        RemoteMessageInfo, MaybeError0, MaybeError, !IO) :-
+update_db_with_remote_message_info(Db, MailboxPair, UID, RemoteMessageInfo,
+        MaybeError0, MaybeError, !IO) :-
     (
         MaybeError0 = ok,
         UID = uid(UIDInteger),
         io.format("Updating UID %s\n", [s(to_string(UIDInteger))], !IO),
-        do_update_db_with_remote_message_info(Db, LocalMailbox, RemoteMailbox,
-            UID, RemoteMessageInfo, MaybeError, !IO)
+        do_update_db_with_remote_message_info(Db, MailboxPair, UID,
+            RemoteMessageInfo, MaybeError, !IO)
     ;
         MaybeError0 = error(Error),
         MaybeError = error(Error)
     ).
 
     % XXX probably want a transaction around this
-:- pred do_update_db_with_remote_message_info(database::in, local_mailbox::in,
-    remote_mailbox::in, uid::in, remote_message_info::in, maybe_error::out,
-    io::di, io::uo) is det.
+:- pred do_update_db_with_remote_message_info(database::in, mailbox_pair::in,
+    uid::in, remote_message_info::in, maybe_error::out, io::di, io::uo) is det.
 
-do_update_db_with_remote_message_info(Db, LocalMailbox, RemoteMailbox, UID,
-        RemoteMessageInfo, MaybeError, !IO) :-
+do_update_db_with_remote_message_info(Db, MailboxPair, UID, RemoteMessageInfo,
+        MaybeError, !IO) :-
     RemoteMessageInfo = remote_message_info(MessageId, Flags),
-    search_pairing_by_remote_message(Db, RemoteMailbox, UID, MessageId,
+    search_pairing_by_remote_message(Db, MailboxPair, UID, MessageId,
         MaybeError0, !IO),
     (
         MaybeError0 = ok(yes({PairingId, FlagDeltas0})),
@@ -198,8 +194,8 @@ do_update_db_with_remote_message_info(Db, LocalMailbox, RemoteMailbox, UID,
         )
     ;
         MaybeError0 = ok(no),
-        insert_new_pairing_only_remote_message(Db, MessageId, LocalMailbox,
-            RemoteMailbox, UID, Flags, MaybeError1, !IO),
+        insert_new_pairing_only_remote_message(Db, MailboxPair, MessageId,
+            UID, Flags, MaybeError1, !IO),
         (
             MaybeError1 = ok,
             MaybeError = ok
@@ -214,8 +210,7 @@ do_update_db_with_remote_message_info(Db, LocalMailbox, RemoteMailbox, UID,
 
 %-----------------------------------------------------------------------------%
 
-detect_remote_message_expunges(Db, IMAP, LocalMailbox, RemoteMailbox, Res, !IO)
-        :-
+detect_remote_message_expunges(Db, IMAP, MailboxPair, Res, !IO) :-
     % The search return option forces the server to return UIDs using
     % sequence-set syntax (RFC 4731).
     uid_search(IMAP, all, yes([all]), result(ResSearch, Text, Alerts), !IO),
@@ -224,8 +219,8 @@ detect_remote_message_expunges(Db, IMAP, LocalMailbox, RemoteMailbox, Res, !IO)
         ResSearch = ok_with_data(uid_search_result(_UIDs,
             _HighestModSeqValueOfFound, ReturnDatas)),
         ( get_all_uids_set(ReturnDatas, MaybeSequenceSet) ->
-            mark_expunged_remote_messages(Db, LocalMailbox, RemoteMailbox,
-                MaybeSequenceSet, Res, !IO)
+            mark_expunged_remote_messages(Db, MailboxPair, MaybeSequenceSet,
+                Res, !IO)
         ;
             Res = error("expected UID SEARCH response ALL sequence-set")
         )
@@ -252,12 +247,10 @@ get_all_uids_set(ReturnDatas, MaybeSequenceSet) :-
         MaybeSequenceSet = yes(SequenceSet)
     ).
 
-:- pred mark_expunged_remote_messages(database::in, local_mailbox::in,
-    remote_mailbox::in, maybe(sequence_set(uid))::in, maybe_error::out,
-    io::di, io::uo) is det.
+:- pred mark_expunged_remote_messages(database::in, mailbox_pair::in,
+    maybe(sequence_set(uid))::in, maybe_error::out, io::di, io::uo) is det.
 
-mark_expunged_remote_messages(Db, LocalMailbox, RemoteMailbox,
-        MaybeSequenceSet, Res, !IO) :-
+mark_expunged_remote_messages(Db, MailboxPair, MaybeSequenceSet, Res, !IO) :-
     create_detect_remote_expunge_temp_table(Db, Res0, !IO),
     (
         Res0 = ok,
@@ -271,8 +264,7 @@ mark_expunged_remote_messages(Db, LocalMailbox, RemoteMailbox,
         ),
         (
             Res1 = ok,
-            mark_expunged_remote_messages(Db, LocalMailbox, RemoteMailbox,
-                Res2, !IO),
+            mark_expunged_remote_messages(Db, MailboxPair, Res2, !IO),
             (
                 Res2 = ok(Count),
                 io.format("Detected %d expunged remote messages.\n",

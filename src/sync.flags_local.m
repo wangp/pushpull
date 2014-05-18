@@ -6,8 +6,8 @@
 :- import_module dir_cache.
 
 :- pred propagate_flag_deltas_from_remote(prog_config::in, database::in,
-    local_mailbox::in, remote_mailbox::in, dir_cache::in, maybe_error::out,
-    io::di, io::uo) is det.
+    mailbox_pair::in, dir_cache::in, maybe_error::out, io::di, io::uo)
+    is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -25,41 +25,40 @@
 
 %-----------------------------------------------------------------------------%
 
-propagate_flag_deltas_from_remote(Config, Db, LocalMailbox, RemoteMailbox,
-        DirCache, Res, !IO) :-
-    search_pending_flag_deltas_from_remote(Db, LocalMailbox, RemoteMailbox,
-        ResSearch, !IO),
+propagate_flag_deltas_from_remote(Config, Db, MailboxPair, DirCache, Res, !IO)
+        :-
+    search_pending_flag_deltas_from_remote(Db, MailboxPair, ResSearch, !IO),
     (
         ResSearch = ok(Pendings),
+        LocalMailboxPath = get_local_mailbox_path(MailboxPair),
         list.foldl2(propagate_flag_deltas_from_remote_2(Config, Db,
-            LocalMailbox, RemoteMailbox, DirCache), Pendings, ok, Res, !IO)
+            LocalMailboxPath, DirCache), Pendings, ok, Res, !IO)
     ;
         ResSearch = error(Error),
         Res = error(Error)
     ).
 
 :- pred propagate_flag_deltas_from_remote_2(prog_config::in, database::in,
-    local_mailbox::in, remote_mailbox::in, dir_cache::in,
-    pending_flag_deltas::in, maybe_error::in, maybe_error::out, io::di, io::uo)
-    is det.
+    local_mailbox_path::in, dir_cache::in, pending_flag_deltas::in,
+    maybe_error::in, maybe_error::out, io::di, io::uo) is det.
 
-propagate_flag_deltas_from_remote_2(Config, Db, LocalMailbox, RemoteMailbox,
-        DirCache, Pending, Res0, Res, !IO) :-
+propagate_flag_deltas_from_remote_2(Config, Db, LocalMailboxPath, DirCache,
+        Pending, Res0, Res, !IO) :-
     (
         Res0 = ok,
-        propagate_flag_deltas_from_remote_3(Config, Db, LocalMailbox,
-            RemoteMailbox, DirCache, Pending, Res, !IO)
+        propagate_flag_deltas_from_remote_3(Config, Db, LocalMailboxPath,
+            DirCache, Pending, Res, !IO)
     ;
         Res0 = error(Error),
         Res = error(Error)
     ).
 
 :- pred propagate_flag_deltas_from_remote_3(prog_config::in, database::in,
-    local_mailbox::in, remote_mailbox::in, dir_cache::in,
-    pending_flag_deltas::in, maybe_error::out, io::di, io::uo) is det.
+    local_mailbox_path::in, dir_cache::in, pending_flag_deltas::in,
+    maybe_error::out, io::di, io::uo) is det.
 
-propagate_flag_deltas_from_remote_3(_Config, Db, LocalMailbox, _RemoteMailbox,
-        DirCache, Pending, Res, !IO) :-
+propagate_flag_deltas_from_remote_3(_Config, Db, LocalMailboxPath, DirCache,
+        Pending, Res, !IO) :-
     Pending = pending_flag_deltas(PairingId,
         MaybeUnique, LocalFlags0, LocalExpunged,
         MaybeUID, RemoteFlags0, RemoteExpunged),
@@ -74,7 +73,7 @@ propagate_flag_deltas_from_remote_3(_Config, Db, LocalMailbox, _RemoteMailbox,
     (
         MaybeUnique = yes(Unique),
         expect(unify(LocalExpunged, exists), $module, $pred),
-        store_local_flags_add_rm(LocalMailbox, DirCache, Unique,
+        store_local_flags_add_rm(LocalMailboxPath, DirCache, Unique,
             AddFlags, RemoveFlags, Res0, !IO),
         (
             Res0 = ok,
@@ -103,13 +102,12 @@ propagate_flag_deltas_from_remote_3(_Config, Db, LocalMailbox, _RemoteMailbox,
         )
     ).
 
-:- pred store_local_flags_add_rm(local_mailbox::in, dir_cache::in,
+:- pred store_local_flags_add_rm(local_mailbox_path::in, dir_cache::in,
     uniquename::in, set(flag)::in, set(flag)::in, maybe_error::out,
     io::di, io::uo) is det.
 
-store_local_flags_add_rm(LocalMailbox, DirCache, Unique, AddFlags, RemoveFlags,
+store_local_flags_add_rm(MailboxPath, DirCache, Unique, AddFlags, RemoveFlags,
         Res, !IO) :-
-    MailboxPath = get_local_mailbox_path(LocalMailbox),
     find_file(DirCache, MailboxPath, Unique, ResFind),
     (
         ResFind = found(OldPath, MaybeInfoSuffix0),

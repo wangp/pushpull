@@ -29,13 +29,13 @@
 main(!IO) :-
     ignore_sigpipe(yes, !IO),
     io.command_line_arguments(Args, !IO),
-    ( Args = [DbFileName, Maildir, HostPort, UserName, Password] ->
+    ( Args = [DbFileName, Maildir, HostPort, UserName, Password, Mailbox] ->
         Config = prog_config(DbFileName, maildir(Maildir), HostPort,
-            username(UserName), password(Password), mailbox("INBOX")),
+            username(UserName), password(Password), mailbox(Mailbox)),
         open_database(DbFileName, ResOpenDb, !IO),
         (
             ResOpenDb = ok(Db),
-            main_1(Config, Db, !IO),
+            main_2(Config, Db, !IO),
             close_database(Db, !IO)
         ;
             ResOpenDb = error(Error),
@@ -45,31 +45,9 @@ main(!IO) :-
         report_error("unexpected arguments", !IO)
     ).
 
-:- pred main_1(prog_config::in, database::in, io::di, io::uo) is det.
+:- pred main_2(prog_config::in, database::in, io::di, io::uo) is det.
 
-main_1(Config, Db, !IO) :-
-    Config ^ maildir = maildir(MaildirRoot),
-    LocalMailboxPath = local_mailbox_path(MaildirRoot),
-    insert_or_ignore_local_mailbox(Db, LocalMailboxPath, ResInsert, !IO),
-    (
-        ResInsert = ok,
-        lookup_local_mailbox(Db, LocalMailboxPath, ResLookup, !IO),
-        (
-            ResLookup = ok(LocalMailbox),
-            main_2(Config, Db, LocalMailbox, !IO)
-        ;
-            ResLookup = error(Error),
-            report_error(Error, !IO)
-        )
-    ;
-        ResInsert = error(Error),
-        report_error(Error, !IO)
-    ).
-
-:- pred main_2(prog_config::in, database::in, local_mailbox::in,
-    io::di, io::uo) is det.
-
-main_2(Config, Db, LocalMailbox, !IO) :-
+main_2(Config, Db, !IO) :-
     HostPort = Config ^ hostport,
     UserName = Config ^ username,
     Password = Config ^ password,
@@ -84,7 +62,7 @@ main_2(Config, Db, LocalMailbox, !IO) :-
             ResLogin = ok,
             io.write_string(LoginMessage, !IO),
             io.nl(!IO),
-            logged_in(Config, Db, IMAP, LocalMailbox, !IO)
+            logged_in(Config, Db, IMAP, !IO)
         ;
             ( ResLogin = no
             ; ResLogin = bad
@@ -102,12 +80,12 @@ main_2(Config, Db, LocalMailbox, !IO) :-
         report_error(Error, !IO)
     ).
 
-:- pred logged_in(prog_config::in, database::in, imap::in, local_mailbox::in,
-    io::di, io::uo) is det.
+:- pred logged_in(prog_config::in, database::in, imap::in, io::di, io::uo)
+    is det.
 
-logged_in(Config, Db, IMAP, LocalMailbox, !IO) :-
-    MailboxName = Config ^ mailbox,
-    select(IMAP, MailboxName, result(ResExamine, Text, Alerts), !IO),
+logged_in(Config, Db, IMAP, !IO) :-
+    RemoteMailboxName = Config ^ mailbox,
+    select(IMAP, RemoteMailboxName, result(ResExamine, Text, Alerts), !IO),
     report_alerts(Alerts, !IO),
     (
         ResExamine = ok,
@@ -121,17 +99,20 @@ logged_in(Config, Db, IMAP, LocalMailbox, !IO) :-
             MaybeUIDValidity = yes(UIDValidity),
             MaybeHighestModSeqValue = yes(highestmodseq(HighestModSeqValue))
         ->
-            insert_or_ignore_remote_mailbox(Db, MailboxName, UIDValidity,
-                ResInsert, !IO),
+            % For now.
+            Config ^ maildir = maildir(Maildir),
+            LocalMailboxPath = local_mailbox_path(Maildir),
+
+            insert_or_ignore_mailbox_pair(Db, LocalMailboxPath,
+                RemoteMailboxName, UIDValidity, ResInsert, !IO),
             (
                 ResInsert = ok,
-                lookup_remote_mailbox(Db, MailboxName, UIDValidity, ResLookup,
-                    !IO),
+                lookup_mailbox_pair(Db, LocalMailboxPath, RemoteMailboxName,
+                    UIDValidity, ResLookup, !IO),
                 (
-                    ResLookup = found(RemoteMailbox, LastModSeqValzer),
-                    sync_mailboxes(Config, Db, IMAP, LocalMailbox,
-                        RemoteMailbox, LastModSeqValzer, HighestModSeqValue,
-                        Res, !IO),
+                    ResLookup = found(MailboxPair, LastModSeqValzer),
+                    sync_mailboxes(Config, Db, IMAP, MailboxPair,
+                        LastModSeqValzer, HighestModSeqValue, Res, !IO),
                     (
                         Res = ok
                     ;

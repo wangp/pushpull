@@ -12,8 +12,8 @@
 :- import_module prog_config.
 
 :- pred sync_mailboxes(prog_config::in, database::in, imap::in,
-    local_mailbox::in, remote_mailbox::in, mod_seq_valzer::in,
-    mod_seq_value::in, maybe_error::out, io::di, io::uo) is det.
+    mailbox_pair::in, mod_seq_valzer::in, mod_seq_value::in, maybe_error::out,
+    io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -36,42 +36,39 @@
 
 %-----------------------------------------------------------------------------%
 
-sync_mailboxes(Config, Db, IMAP, LocalMailbox, RemoteMailbox,
+sync_mailboxes(Config, Db, IMAP, MailboxPair,
         LastModSeqValzer, HighestModSeqValue, Res, !IO) :-
     % It might be better to get set of valid UIDs first, then use that
     % as part of update_db_remote_mailbox and for detecting expunges.
-    update_db_remote_mailbox(Config, Db, IMAP, LocalMailbox, RemoteMailbox,
+    update_db_remote_mailbox(Config, Db, IMAP, MailboxPair,
         LastModSeqValzer, HighestModSeqValue, ResUpdate, !IO),
     (
         ResUpdate = ok,
-        detect_remote_message_expunges(Db, IMAP, LocalMailbox, RemoteMailbox,
+        detect_remote_message_expunges(Db, IMAP, MailboxPair,
             ResRemoteExpunges, !IO),
         (
             ResRemoteExpunges = ok,
-            update_db_local_mailbox(Db, LocalMailbox, RemoteMailbox,
-                ResUpdateLocal, !IO),
+            update_db_local_mailbox(Db, MailboxPair, ResUpdateLocal, !IO),
             (
                 ResUpdateLocal = ok(DirCache),
                 % Propagate flags first to allow pairings with
                 % previously-expunged messages to be be reset, and thus
                 % downloaded in the following steps.
-                propagate_flag_deltas_from_remote(Config, Db, LocalMailbox,
-                    RemoteMailbox, DirCache, ResPropRemote, !IO),
+                propagate_flag_deltas_from_remote(Config, Db, MailboxPair,
+                    DirCache, ResPropRemote, !IO),
                 (
                     ResPropRemote = ok,
                     propagate_flag_deltas_from_local(Config, Db, IMAP,
-                        LocalMailbox, RemoteMailbox, ResPropLocal, !IO),
+                        MailboxPair, ResPropLocal, !IO),
                     (
                         ResPropLocal = ok,
                         download_unpaired_remote_messages(Config, Db, IMAP,
-                            LocalMailbox, RemoteMailbox, DirCache, ResDownload,
-                            !IO),
+                            MailboxPair, DirCache, ResDownload, !IO),
                         % DirCache does not include newly added messages.
                         (
                             ResDownload = ok,
                             upload_unpaired_local_messages(Config, Db, IMAP,
-                                LocalMailbox, RemoteMailbox, DirCache,
-                                ResUpload, !IO),
+                                MailboxPair, DirCache, ResUpload, !IO),
                             (
                                 ResUpload = ok,
                                 delete_expunged_pairings(Db, Res, !IO)

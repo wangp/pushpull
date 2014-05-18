@@ -11,6 +11,9 @@
 
 %-----------------------------------------------------------------------------%
 
+:- type local_mailbox ---> local_mailbox.
+:- type remote_mailbox ---> remote_mailbox.
+
 :- type flag_deltas(S)
     --->    sets(
                 % Set of current flags.

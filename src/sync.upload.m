@@ -8,8 +8,7 @@
 :- import_module dir_cache.
 
 :- pred upload_unpaired_local_messages(prog_config::in, database::in, imap::in,
-    local_mailbox::in, remote_mailbox::in, dir_cache::in, maybe_error::out,
-    io::di, io::uo) is det.
+    mailbox_pair::in, dir_cache::in, maybe_error::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -36,38 +35,38 @@
 
 %-----------------------------------------------------------------------------%
 
-upload_unpaired_local_messages(Config, Database, IMAP, LocalMailbox,
-        RemoteMailbox, DirCache, Res, !IO) :-
+upload_unpaired_local_messages(Config, Database, IMAP, MailboxPair, DirCache,
+        Res, !IO) :-
     % Currently we download unpaired remote messages first and try to pair them
     % with existing local messages, so the remaining unpaired local messages
     % should actually not have remote counterparts.
-    search_unpaired_local_messages(Database, LocalMailbox, ResSearch, !IO),
+    search_unpaired_local_messages(Database, MailboxPair, ResSearch, !IO),
     (
         ResSearch = ok(UnpairedLocals),
-        upload_messages(Config, Database, IMAP, LocalMailbox, RemoteMailbox,
-            DirCache, UnpairedLocals, Res, !IO)
+        upload_messages(Config, Database, IMAP, MailboxPair, DirCache,
+            UnpairedLocals, Res, !IO)
     ;
         ResSearch = error(Error),
         Res = error(Error)
     ).
 
 :- pred upload_messages(prog_config::in, database::in, imap::in,
-    local_mailbox::in, remote_mailbox::in, dir_cache::in,
-    list(unpaired_local_message)::in, maybe_error::out, io::di, io::uo) is det.
+    mailbox_pair::in, dir_cache::in, list(unpaired_local_message)::in,
+    maybe_error::out, io::di, io::uo) is det.
 
-upload_messages(Config, Database, IMAP, LocalMailbox, RemoteMailbox,
-        DirCache, UnpairedLocals, Res, !IO) :-
+upload_messages(Config, Database, IMAP, MailboxPair, DirCache, UnpairedLocals,
+        Res, !IO) :-
     (
         UnpairedLocals = [],
         Res = ok
     ;
         UnpairedLocals = [H | T],
-        upload_message(Config, Database, IMAP, LocalMailbox, RemoteMailbox,
-            DirCache, H, Res0, !IO),
+        upload_message(Config, Database, IMAP, MailboxPair, DirCache, H, Res0,
+            !IO),
         (
             Res0 = ok,
-            upload_messages(Config, Database, IMAP, LocalMailbox,
-                RemoteMailbox, DirCache, T, Res, !IO)
+            upload_messages(Config, Database, IMAP, MailboxPair, DirCache, T,
+                Res, !IO)
         ;
             Res0 = error(Error),
             Res = error(Error)
@@ -75,12 +74,12 @@ upload_messages(Config, Database, IMAP, LocalMailbox, RemoteMailbox,
     ).
 
 :- pred upload_message(prog_config::in, database::in, imap::in,
-    local_mailbox::in, remote_mailbox::in, dir_cache::in,
-    unpaired_local_message::in, maybe_error::out, io::di, io::uo) is det.
+    mailbox_pair::in, dir_cache::in, unpaired_local_message::in,
+    maybe_error::out, io::di, io::uo) is det.
 
-upload_message(_Config, Database, IMAP, LocalMailbox, RemoteMailbox,
-        DirCache, UnpairedLocal, Res, !IO) :-
-    LocalMailboxPath = get_local_mailbox_path(LocalMailbox),
+upload_message(_Config, Database, IMAP, MailboxPair, DirCache, UnpairedLocal,
+        Res, !IO) :-
+    LocalMailboxPath = get_local_mailbox_path(MailboxPair),
     UnpairedLocal = unpaired_local_message(PairingId, Unique),
     find_file(DirCache, LocalMailboxPath, Unique, ResFind),
     (
@@ -92,7 +91,7 @@ upload_message(_Config, Database, IMAP, LocalMailbox, RemoteMailbox,
             (
                 ResFileData = ok(FileData),
                 LocalFlags = LocalFlagDeltas ^ cur_set,
-                do_upload_message(IMAP, RemoteMailbox, FileData, LocalFlags,
+                do_upload_message(IMAP, MailboxPair, FileData, LocalFlags,
                     ResUpload, !IO),
                 (
                     ResUpload = ok(MaybeUID),
@@ -159,12 +158,12 @@ get_file_data(Path, Res, !IO) :-
         Res = error(Error)
     ).
 
-:- pred do_upload_message(imap::in, remote_mailbox::in, file_data::in,
+:- pred do_upload_message(imap::in, mailbox_pair::in, file_data::in,
     set(flag)::in, maybe_error(maybe(uid))::out, io::di, io::uo) is det.
 
-do_upload_message(IMAP, RemoteMailbox, FileData, Flags, Res, !IO) :-
-    MailboxName = get_remote_mailbox_name(RemoteMailbox),
-    UIDValidity = get_remote_mailbox_uidvalidity(RemoteMailbox),
+do_upload_message(IMAP, MailboxPair, FileData, Flags, Res, !IO) :-
+    MailboxName = get_remote_mailbox_name(MailboxPair),
+    UIDValidity = get_remote_mailbox_uidvalidity(MailboxPair),
     % Try to get an older mod-seq-value prior to APPEND if appending to the
     % selected mailbox.
     get_selected_mailbox_uidvalidity(IMAP, SelectedUIDValidity, !IO),
@@ -187,7 +186,7 @@ do_upload_message(IMAP, RemoteMailbox, FileData, Flags, Res, !IO) :-
         ResAppend = ok_with_data(MaybeAppendUID),
         io.write_string(Text, !IO),
         io.nl(!IO),
-        get_appended_uid(IMAP, RemoteMailbox, MaybeAppendUID, ContentLf,
+        get_appended_uid(IMAP, UIDValidity, MaybeAppendUID, ContentLf,
             PriorModSeqValue, Res, !IO)
     ;
         ( ResAppend = no
@@ -199,18 +198,17 @@ do_upload_message(IMAP, RemoteMailbox, FileData, Flags, Res, !IO) :-
         Res = error("unexpected response to APPEND: " ++ Text)
     ).
 
-:- pred get_appended_uid(imap::in, remote_mailbox::in, maybe(appenduid)::in,
+:- pred get_appended_uid(imap::in, uidvalidity::in, maybe(appenduid)::in,
     string::in, maybe(mod_seq_value)::in, maybe_error(maybe(uid))::out,
     io::di, io::uo) is det.
 
-get_appended_uid(IMAP, RemoteMailbox, MaybeAppendUID, ContentLf,
+get_appended_uid(IMAP, MailboxUIDValidity, MaybeAppendUID, ContentLf,
         PriorModSeqValue, Res, !IO) :-
     % In the best case the server sent an APPENDUID response with the UID.
     % Otherwise we search the mailbox for the Message-Id (if it's unique).
     % Otherwise we give up.
-    UIDValidity = get_remote_mailbox_uidvalidity(RemoteMailbox),
     (
-        MaybeAppendUID = yes(appenduid(UIDValidity, UIDSet)),
+        MaybeAppendUID = yes(appenduid(MailboxUIDValidity, UIDSet)),
         is_singleton_set(UIDSet, UID)
     ->
         Res = ok(yes(UID))
