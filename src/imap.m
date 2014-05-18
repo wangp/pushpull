@@ -9,6 +9,7 @@
 :- import_module maybe.
 :- import_module pair.
 
+:- include_module imap.charclass.
 :- include_module imap.time.
 :- include_module imap.types.
 
@@ -132,7 +133,6 @@
 :- import_module string.
 :- import_module unit.
 
-:- include_module imap.charclass.
 :- include_module imap.command.
 :- include_module imap.io.
 :- include_module imap.parsing.

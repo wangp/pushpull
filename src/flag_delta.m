@@ -66,9 +66,15 @@
 
 :- implementation.
 
-:- import_module io.
+:- import_module char.
 :- import_module list.
+:- import_module parsing_utils.
 :- import_module string.
+:- import_module unit.
+
+:- import_module imap.
+:- import_module imap.charclass.
+:- import_module imap.types.
 
 %-----------------------------------------------------------------------------%
 
@@ -160,15 +166,156 @@ require_attn(Sets) = Attn :-
         Attn = yes
     ).
 
-% For now.
+%-----------------------------------------------------------------------------%
 
-to_string(Sets) = string(Sets).
+% Flags are represented by single char like maildir where possible,
+% otherwise surrounded by parentheses. Atoms are as for IMAP.
+%
+%   R       \Answered
+%   F       \Flagged
+%   T       \Deleted
+%   S       \Seen
+%   D       \Draft
+%   (\EXT)  \EXT
+%   (ATOM)  ATOM
+%
+%   + signifies plus set if present
+%   - signifies minus set if present
 
-from_string(Input0, Sets) :-
-    Input = Input0 ++ ".",
-    io.read_from_string("", Input, length(Input), Result,
-        posn(1, 0, 0), _Posn),
-    Result = ok(Sets).
+to_string(Sets) = String :-
+    Sets = sets(Cur, Plus, Minus),
+    CurNotPlus = Cur `difference` Plus,
+    some [!Acc] (
+        !:Acc = [],
+        ( set.is_empty(Minus) ->
+            true
+        ;
+            list.foldr(cons, set.to_sorted_list(Minus), !Acc),
+            cons("-", !Acc)
+        ),
+        ( set.is_empty(Plus) ->
+            true
+        ;
+            list.foldr(cons, set.to_sorted_list(Plus), !Acc),
+            cons("+", !Acc)
+        ),
+        list.foldr(cons, set.to_sorted_list(CurNotPlus), !Acc),
+        string.append_list(!.Acc, String)
+    ).
+
+:- pred cons(flag::in, list(string)::in, list(string)::out) is det.
+
+cons(Flag, !Acc) :-
+    (
+        Flag = system(SystemFlag),
+        cons_system_flag(SystemFlag, !Acc)
+    ;
+        Flag = keyword(atom(Atom)),
+        cons("(" ++ Atom ++ ")", !Acc)
+    ).
+
+:- pred cons_system_flag(system_flag::in, list(string)::in, list(string)::out)
+    is det.
+
+cons_system_flag(Flag, !Acc) :-
+    (
+        Flag = answered,
+        cons("R", !Acc)
+    ;
+        Flag = flagged,
+        cons("F", !Acc)
+    ;
+        Flag = deleted,
+        cons("T", !Acc)
+    ;
+        Flag = seen,
+        cons("S", !Acc)
+    ;
+        Flag = draft,
+        cons("D", !Acc)
+    ;
+        Flag = extension(atom(Atom)),
+        cons("(\\" ++ Atom ++ ")", !Acc)
+    ).
+
+%-----------------------------------------------------------------------------%
+
+from_string(Input, Sets) :-
+    promise_equivalent_solutions [ParseResult] (
+        parsing_utils.parse(Input, no_skip_whitespace, parse_sets, ParseResult)
+    ),
+    ParseResult = ok(Sets).
+
+:- pred no_skip_whitespace(src::in, unit::out, ps::in, ps::out) is semidet.
+
+no_skip_whitespace(_Src, unit, !PS) :-
+    semidet_true.
+
+:- pred parse_sets(src::in, flag_deltas(S)::out, ps::in, ps::out) is semidet.
+
+parse_sets(Src, Sets, !PS) :-
+    zero_or_more(parse_flag, Src, Cur0, !PS),
+    ( next_char(Src, '+', !PS) ->
+        zero_or_more(parse_flag, Src, PlusList, !PS),
+        Plus = set.from_list(PlusList),
+        Cur = set.from_list(PlusList ++ Cur0)
+    ;
+        Plus = set.init,
+        Cur = set.from_list(Cur0)
+    ),
+    ( next_char(Src, '-', !PS) ->
+        zero_or_more(parse_flag, Src, MinusList, !PS),
+        Minus = set.from_list(MinusList)
+    ;
+        Minus = set.init
+    ),
+    eof(Src, _, !PS),
+    Sets = sets(Cur, Plus, Minus).
+
+:- pred parse_flag(src::in, flag::out, ps::in, ps::out) is semidet.
+
+parse_flag(Src, Flag, !PS) :-
+    next_char(Src, Char, !PS),
+    (
+        Char = 'R',
+        Flag = system(answered)
+    ;
+        Char = 'F',
+        Flag = system(flagged)
+    ;
+        Char = 'T',
+        Flag = system(deleted)
+    ;
+        Char = 'S',
+        Flag = system(seen)
+    ;
+        Char = 'D',
+        Flag = system(draft)
+    ;
+        Char = ('('),
+        ( next_char(Src, ('\\'), !PS) ->
+            atom(Src, Atom, !PS),
+            system_flag(Atom, SystemFlag),
+            Flag = system(SystemFlag)
+        ;
+            atom(Src, Atom, !PS),
+            Flag = keyword(Atom)
+        ),
+        next_char(Src, ')', !PS)
+    ).
+
+:- pred atom(src::in, atom::out, ps::in, ps::out) is semidet.
+
+atom(Src, atom(Atom), !PS) :-
+    one_or_more(atom_char, Src, Chars, !PS),
+    string.from_char_list(Chars, Atom0),
+    string.to_upper(Atom0, Atom).
+
+:- pred atom_char(src::in, char::out, ps::in, ps::out) is semidet.
+
+atom_char(Src, Char, !PS) :-
+    next_char(Src, Char, !PS),
+    'ATOM-CHAR'(Char).
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

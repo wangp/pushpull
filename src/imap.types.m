@@ -286,6 +286,8 @@
 
 :- func from_imap_string(imap_string) = string.
 
+:- pred system_flag(atom::in, system_flag::out) is semidet.
+
 :- pred month(string, month).
 :- mode month(in, out) is semidet.
 :- mode month(out, in) is det.
@@ -336,6 +338,26 @@ make_astring(S) = AString :-
 
 from_imap_string(quoted(S)) = S.
 from_imap_string(literal(S)) = S.
+
+%-----------------------------------------------------------------------------%
+
+system_flag(Atom, Flag) :-
+    ( Atom = atom("ANSWERED") ->
+        Flag = answered
+    ; Atom = atom("FLAGGED") ->
+        Flag = flagged
+    ; Atom = atom("DELETED") ->
+        Flag = deleted
+    ; Atom = atom("SEEN") ->
+        Flag = seen
+    ; Atom = atom("DRAFT") ->
+        Flag = draft
+    ;
+        not Atom = atom("RECENT"),
+        Flag = extension(Atom)
+    ).
+
+%-----------------------------------------------------------------------------%
 
 month("JAN", jan).
 month("FEB", feb).

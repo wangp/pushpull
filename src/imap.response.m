@@ -658,24 +658,6 @@ flag(Src, Flag, !PS) :-
         Flag = keyword(Atom)
     ).
 
-:- pred system_flag(atom::in, system_flag::out) is semidet.
-
-system_flag(Atom, Flag) :-
-    ( Atom = atom("ANSWERED") ->
-        Flag = answered
-    ; Atom = atom("FLAGGED") ->
-        Flag = flagged
-    ; Atom = atom("DELETED") ->
-        Flag = deleted
-    ; Atom = atom("SEEN") ->
-        Flag = seen
-    ; Atom = atom("DRAFT") ->
-        Flag = draft
-    ;
-        not Atom = atom("RECENT"),
-        Flag = extension(Atom)
-    ).
-
 :- pred mailbox_or_message_data(src::in, untagged_response_data::out,
     ps::in, ps::out, io::di, io::uo) is det.
 
