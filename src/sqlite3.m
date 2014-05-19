@@ -161,6 +161,11 @@
     db(RwRo)::in, string::in, assoc_list(bind_index, bind_value)::in,
     T::out(TI), io::di, io::uo) is det.
 
+:- pred with_prepared_stmt(
+    pred(db(RwRo), stmt, T, io, io)::in(pred(in, in, out(TI), di, uo) is det),
+    db(RwRo)::in, stmt::in, assoc_list(bind_index, bind_value)::in,
+    T::out(TI), io::di, io::uo) is det.
+
 :- pred with_stmt_acc(
     pred(db(RwRo), stmt, T, T, io, io)::in(pred(in, in, in, out, di, uo) is det),
     db(RwRo)::in, string::in, assoc_list(bind_index, bind_value)::in,
@@ -845,6 +850,20 @@ with_stmt(Pred, Db, Sql, Bindings, Result, !IO) :-
     ;
         ResStmt = error(Error),
         throw(sqlite_error(Error))
+    ).
+
+with_prepared_stmt(Pred, Db, Stmt, Bindings, Result, !IO) :-
+    promise_equivalent_solutions [Result, !:IO]
+    (try [io(!IO)] (
+        bind_checked(Db, Stmt, Bindings, !IO),
+        Pred(Db, Stmt, Result, !IO),
+        keep_alive(Bindings, !IO)
+     )
+     then
+        sqlite3.reset(Db, Stmt, _, !IO)
+     catch_any Excp ->
+        sqlite3.reset(Db, Stmt, _, !IO),
+        throw(Excp)
     ).
 
 with_stmt_acc(Pred, Db, Sql, Bindings, !Acc, !IO) :-

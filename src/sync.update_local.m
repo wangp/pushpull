@@ -28,6 +28,21 @@
 %-----------------------------------------------------------------------------%
 
 update_db_local_mailbox(Db, MailboxPair, Res, !IO) :-
+    prepare_search_pairing_by_local_message(Db, ResStmt, !IO),
+    (
+        ResStmt = ok(Stmt),
+        update_db_local_mailbox_2(Db, Stmt, MailboxPair, Res, !IO),
+        finalize_search_pairing_by_local_message(Stmt, !IO)
+    ;
+        ResStmt = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred update_db_local_mailbox_2(database::in,
+    search_pairing_by_local_message_stmt::in, mailbox_pair::in,
+    maybe_error(dir_cache)::out, io::di, io::uo) is det.
+
+update_db_local_mailbox_2(Db, Stmt, MailboxPair, Res, !IO) :-
     LocalMailboxPath = get_local_mailbox_path(MailboxPair),
     update_file_list(LocalMailboxPath, init, ResCache, !IO),
     (
@@ -35,11 +50,11 @@ update_db_local_mailbox(Db, MailboxPair, Res, !IO) :-
         list_files(DirCache, LocalMailboxPath, NewFiles, CurFiles),
 
         LocalMailboxPath = local_mailbox_path(DirName),
-        update_db_local_message_files(Db, MailboxPair,
+        update_db_local_message_files(Db, Stmt, MailboxPair,
             DirName / "new", NewFiles, Res1, !IO),
         (
             Res1 = ok,
-            update_db_local_message_files(Db, MailboxPair,
+            update_db_local_message_files(Db, Stmt, MailboxPair,
                 DirName / "cur", CurFiles, Res2, !IO),
             (
                 Res2 = ok,
@@ -65,43 +80,48 @@ update_db_local_mailbox(Db, MailboxPair, Res, !IO) :-
         Res = error(Error)
     ).
 
-:- pred update_db_local_message_files(database::in, mailbox_pair::in,
-    string::in, list(string)::in, maybe_error::out, io::di, io::uo) is det.
+:- pred update_db_local_message_files(database::in,
+    search_pairing_by_local_message_stmt::in, mailbox_pair::in, string::in,
+    list(string)::in, maybe_error::out, io::di, io::uo) is det.
 
-update_db_local_message_files(_Db, _MailboxPair, _DirName,
+update_db_local_message_files(_Db, _Stmt, _MailboxPair, _DirName,
         [], ok, !IO).
-update_db_local_message_files(Db, MailboxPair, DirName,
+update_db_local_message_files(Db, Stmt, MailboxPair, DirName,
         [BaseName | BaseNames], Res, !IO) :-
-    update_db_local_message_file(Db, MailboxPair, DirName,
+    update_db_local_message_file(Db, Stmt, MailboxPair, DirName,
         BaseName, Res0, !IO),
     (
         Res0 = ok,
-        update_db_local_message_files(Db, MailboxPair, DirName,
+        update_db_local_message_files(Db, Stmt, MailboxPair, DirName,
             BaseNames, Res, !IO)
     ;
         Res0 = error(Error),
         Res = error(Error)
     ).
 
-:- pred update_db_local_message_file(database::in, mailbox_pair::in,
-    string::in, string::in, maybe_error::out, io::di, io::uo) is det.
+:- pred update_db_local_message_file(database::in,
+    search_pairing_by_local_message_stmt::in, mailbox_pair::in, string::in,
+    string::in, maybe_error::out, io::di, io::uo) is det.
 
-update_db_local_message_file(Db, MailboxPair, DirName, BaseName, Res, !IO) :-
+update_db_local_message_file(Db, Stmt, MailboxPair, DirName, BaseName, Res,
+        !IO) :-
     ( parse_basename(BaseName, Unique, Flags) ->
-        update_db_local_message_file_2(Db, MailboxPair, DirName, BaseName,
-            Unique, Flags, Res, !IO)
+        update_db_local_message_file_2(Db, Stmt, MailboxPair, DirName,
+            BaseName, Unique, Flags, Res, !IO)
     ;
         % Should just skip.
         Res = error("cannot parse message filename: " ++ BaseName)
     ).
 
-:- pred update_db_local_message_file_2(database::in, mailbox_pair::in,
-    string::in, string::in, uniquename::in, set(flag)::in, maybe_error::out,
-    io::di, io::uo) is det.
+:- pred update_db_local_message_file_2(database::in,
+    search_pairing_by_local_message_stmt::in,
+    mailbox_pair::in, string::in, string::in, uniquename::in, set(flag)::in,
+    maybe_error::out, io::di, io::uo) is det.
 
-update_db_local_message_file_2(Db, MailboxPair, DirName, BaseName, Unique,
-        Flags, Res, !IO) :-
-    search_pairing_by_local_message(Db, MailboxPair, Unique, ResSearch, !IO),
+update_db_local_message_file_2(Db, Stmt, MailboxPair, DirName, BaseName,
+        Unique, Flags, Res, !IO) :-
+    search_pairing_by_local_message(Db, Stmt, MailboxPair, Unique,
+        ResSearch, !IO),
     (
         ResSearch = ok(yes({PairingId, LocalFlagDeltas0})),
         update_maildir_standard_flags(Flags, LocalFlagDeltas0, LocalFlagDeltas,
@@ -157,13 +177,13 @@ update_db_local_message_file_2(Db, MailboxPair, DirName, BaseName, Unique,
     is det.
 
 mark_expunged_local_messages(Db, MailboxPair, NewFiles, CurFiles, Res, !IO) :-
-    create_detect_local_expunge_temp_table(Db, Res0, !IO),
+    begin_detect_expunge(Db, Res0, !IO),
     (
-        Res0 = ok,
-        insert_into_detect_local_expunge_table(Db, NewFiles, Res1, !IO),
+        Res0 = ok(InsertStmt),
+        insert(Db, InsertStmt, NewFiles, Res1, !IO),
         (
             Res1 = ok,
-            insert_into_detect_local_expunge_table(Db, CurFiles, Res2, !IO),
+            insert(Db, InsertStmt, CurFiles, Res2, !IO),
             (
                 Res2 = ok,
                 mark_expunged_local_messages(Db, MailboxPair, Res3, !IO),
@@ -184,27 +204,27 @@ mark_expunged_local_messages(Db, MailboxPair, NewFiles, CurFiles, Res, !IO) :-
         ),
         (
             Res3 = ok(_),
-            drop_detect_local_expunge_temp_table(Db, Res, !IO)
+            end_detect_expunge(Db, InsertStmt, Res, !IO)
         ;
             Res3 = error(Error),
             Res = error(Error),
-            drop_detect_local_expunge_temp_table(Db, _, !IO)
+            end_detect_expunge(Db, InsertStmt, _, !IO)
         )
     ;
         Res0 = error(Error),
         Res = error(Error)
     ).
 
-:- pred insert_into_detect_local_expunge_table(database::in, list(string)::in,
-    maybe_error::out, io::di, io::uo) is det.
+:- pred insert(database::in, insert_into_detect_expunge_stmt::in,
+    list(string)::in, maybe_error::out, io::di, io::uo) is det.
 
-insert_into_detect_local_expunge_table(_Db, [], ok, !IO).
-insert_into_detect_local_expunge_table(Db, [BaseName | BaseNames], Res, !IO) :-
+insert(_Db, _InsertStmt, [], ok, !IO).
+insert(Db, InsertStmt, [BaseName | BaseNames], Res, !IO) :-
     ( parse_basename(BaseName, Unique, _Flags) ->
-        insert_into_detect_local_expunge_table(Db, Unique, Res0, !IO),
+        detect_expunge_insert_uniquename(Db, InsertStmt, Unique, Res0, !IO),
         (
             Res0 = ok,
-            insert_into_detect_local_expunge_table(Db, BaseNames, Res, !IO)
+            insert(Db, InsertStmt, BaseNames, Res, !IO)
         ;
             Res0 = error(Error),
             Res = error(Error)

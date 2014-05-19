@@ -57,8 +57,17 @@
 
 :- type pairing_id.
 
+:- type search_pairing_by_local_message_stmt.
+
+:- pred prepare_search_pairing_by_local_message(database::in,
+    maybe_error(search_pairing_by_local_message_stmt)::out,
+    io::di, io::uo) is det.
+
+:- pred finalize_search_pairing_by_local_message(
+    search_pairing_by_local_message_stmt::in, io::di, io::uo) is det.
+
 :- pred search_pairing_by_local_message(database::in,
-    mailbox_pair::in, uniquename::in,
+    search_pairing_by_local_message_stmt::in, mailbox_pair::in, uniquename::in,
     maybe_error(maybe({pairing_id, flag_deltas(local_mailbox)}))::out,
     io::di, io::uo) is det.
 
@@ -169,28 +178,24 @@
 
 %-----------------------------------------------------------------------------%
 
-:- pred create_detect_local_expunge_temp_table(database::in, maybe_error::out,
-    io::di, io::uo) is det.
+:- type insert_into_detect_expunge_stmt.
 
-:- pred drop_detect_local_expunge_temp_table(database::in, maybe_error::out,
-    io::di, io::uo) is det.
+:- pred begin_detect_expunge(database::in,
+    maybe_error(insert_into_detect_expunge_stmt)::out, io::di, io::uo) is det.
 
-:- pred insert_into_detect_local_expunge_table(database::in, uniquename::in,
+:- pred end_detect_expunge(database::in, insert_into_detect_expunge_stmt::in,
     maybe_error::out, io::di, io::uo) is det.
+
+:- pred detect_expunge_insert_uniquename(database::in,
+    insert_into_detect_expunge_stmt::in, uniquename::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+:- pred detect_expunge_insert_uid(database::in,
+    insert_into_detect_expunge_stmt::in, uid::in, maybe_error::out,
+    io::di, io::uo) is det.
 
 :- pred mark_expunged_local_messages(database::in, mailbox_pair::in,
     maybe_error(int)::out, io::di, io::uo) is det.
-
-%-----------------------------------------------------------------------------%
-
-:- pred create_detect_remote_expunge_temp_table(database::in, maybe_error::out,
-    io::di, io::uo) is det.
-
-:- pred drop_detect_remote_expunge_temp_table(database::in, maybe_error::out,
-    io::di, io::uo) is det.
-
-:- pred insert_into_detect_remote_expunge_table(database::in, uid::in,
-    maybe_error::out, io::di, io::uo) is det.
 
 :- pred mark_expunged_remote_messages(database::in, mailbox_pair::in,
     maybe_error(int)::out, io::di, io::uo) is det.
@@ -562,15 +567,26 @@ update_remote_mailbox_modseqvalue_2(Db, Stmt, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-search_pairing_by_local_message(Db, MailboxPair, Unique, Res, !IO) :-
-    MailboxPair = mailbox_pair(MailboxPairId, _, _, _),
-    Stmt = "SELECT pairing_id, local_flags FROM pairing"
+:- type search_pairing_by_local_message_stmt == stmt.
+
+prepare_search_pairing_by_local_message(Database, Res, !IO) :-
+    Sql =  "SELECT pairing_id, local_flags FROM pairing"
         ++ " WHERE mailbox_pair_id = :mailbox_pair_id"
         ++ "   AND local_uniquename = :local_uniquename",
-    with_stmt(search_pairing_by_local_message_2, Db, Stmt, [
-        name(":mailbox_pair_id") - bind_value(MailboxPairId),
-        name(":local_uniquename") - bind_value(Unique)
-    ], Res, !IO).
+    prepare(Database, Sql, Res, !IO).
+
+finalize_search_pairing_by_local_message(Stmt, !IO) :-
+    finalize(Stmt, !IO).
+
+search_pairing_by_local_message(Database, Stmt, MailboxPair, Unique, Res, !IO)
+        :-
+    MailboxPair = mailbox_pair(MailboxPairId, _, _, _),
+    with_prepared_stmt(search_pairing_by_local_message_2,
+        Database, Stmt,
+        [
+            name(":mailbox_pair_id") - bind_value(MailboxPairId),
+            name(":local_uniquename") - bind_value(Unique)
+        ], Res, !IO).
 
 :- pred search_pairing_by_local_message_2(db(rw)::in, stmt::in,
     maybe_error(maybe({pairing_id, flag_deltas(local_mailbox)}))::out,
@@ -1289,24 +1305,54 @@ record_flag_deltas_applied_2(Db, Stmt, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-create_detect_local_expunge_temp_table(Db, Res, !IO) :-
-    Stmt = "CREATE TEMP TABLE detect_local_expunge(local_uniquename NOT NULL)",
-    exec(Db, Stmt, Res, !IO).
+:- type insert_into_detect_expunge_stmt == stmt.
 
-drop_detect_local_expunge_temp_table(Db, Res, !IO) :-
-    Stmt = "DROP TABLE detect_local_expunge",
-    exec(Db, Stmt, Res, !IO).
+begin_detect_expunge(Db, Res, !IO) :-
+    CreateStmt = "CREATE TEMP TABLE detect_expunge(uniq NOT NULL)",
+    exec(Db, CreateStmt, Res0, !IO),
+    (
+        Res0 = ok,
+        prepare(Db, insert_into_detect_expunge_sql, Res1, !IO),
+        (
+            Res1 = ok(InsertStmt),
+            Res = ok(InsertStmt)
+        ;
+            Res1 = error(Error),
+            Res = error(Error),
+            drop_detect_expunge(Db, _, !IO)
+        )
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
 
-insert_into_detect_local_expunge_table(Db, UniqueName, Res, !IO) :-
-    Stmt = "INSERT INTO detect_local_expunge VALUES(?1)",
-    with_stmt(insert_into_detect_local_expunge_table_2, Db, Stmt, [
-        num(1) - bind_value(UniqueName)
-    ], Res, !IO).
+end_detect_expunge(Db, InsertStmt, Res, !IO) :-
+    sqlite3.finalize(InsertStmt, !IO),
+    drop_detect_expunge(Db, Res, !IO).
 
-:- pred insert_into_detect_local_expunge_table_2(db(rw)::in, stmt::in,
+:- pred drop_detect_expunge(database::in, maybe_error::out, io::di, io::uo)
+    is det.
+
+drop_detect_expunge(Db, Res, !IO) :-
+    DropStmt = "DROP TABLE detect_expunge",
+    exec(Db, DropStmt, Res, !IO).
+
+:- func insert_into_detect_expunge_sql = string.
+
+insert_into_detect_expunge_sql = "INSERT INTO detect_expunge VALUES(?1)".
+
+detect_expunge_insert_uniquename(Db, InsertStmt, UniqueName, Res, !IO) :-
+    with_prepared_stmt(detect_expunge_insert_2,
+        Db, InsertStmt, [num(1) - bind_value(UniqueName)], Res, !IO).
+
+detect_expunge_insert_uid(Db, InsertStmt, UID, Res, !IO) :-
+    with_prepared_stmt(detect_expunge_insert_2,
+        Db, InsertStmt, [num(1) - bind_value(UID)], Res, !IO).
+
+:- pred detect_expunge_insert_2(db(rw)::in, stmt::in,
     maybe_error::out, io::di, io::uo) is det.
 
-insert_into_detect_local_expunge_table_2(Db, Stmt, Res, !IO) :-
+detect_expunge_insert_2(Db, Stmt, Res, !IO) :-
     step(Db, Stmt, StepResult, !IO),
     (
         StepResult = done,
@@ -1319,14 +1365,13 @@ insert_into_detect_local_expunge_table_2(Db, Stmt, Res, !IO) :-
         Res = error(Error)
     ).
 
-    % XXX maybe unmark messages which "reappear" as not expunged?
 mark_expunged_local_messages(Db, MailboxPair, Res, !IO) :-
     MailboxPair = mailbox_pair(MailboxPairId, _, _, _),
     Where = 
        " WHERE mailbox_pair_id = :mailbox_pair_id
            AND NOT local_expunged
            AND local_uniquename IS NOT NULL
-           AND local_uniquename NOT IN detect_local_expunge",
+           AND local_uniquename NOT IN detect_expunge",
     Bindings = [
         name(":mailbox_pair_id") - bind_value(MailboxPairId)
     ],
@@ -1343,7 +1388,43 @@ mark_expunged_local_messages(Db, MailboxPair, Res, !IO) :-
             ++ " local_expunged = 1,"
             ++ " local_flags_attn = 1 "
             ++ Where,
-        with_stmt(mark_expunged_local_messages_2, Db, StmtUpdate, Bindings,
+        with_stmt(mark_expunged_2, Db, StmtUpdate, Bindings,
+            ResUpdate, !IO),
+        (
+            ResUpdate = ok,
+            Res = ResCount
+        ;
+            ResUpdate = error(Error),
+            Res = error(Error)
+        )
+    ;
+        Res = ResCount
+    ).
+
+mark_expunged_remote_messages(Db, MailboxPair, Res, !IO) :-
+    MailboxPair = mailbox_pair(MailboxPairId, _, _, _),
+    Where = 
+       " WHERE mailbox_pair_id = :mailbox_pair_id
+           AND NOT remote_expunged
+           AND remote_uid IS NOT NULL
+           AND remote_uid NOT IN detect_expunge",
+    Bindings = [
+        name(":mailbox_pair_id") - bind_value(MailboxPairId)
+    ],
+
+    StmtCount = "SELECT count(*) FROM pairing" ++ Where,
+    with_stmt(count, Db, StmtCount, Bindings, ResCount, !IO),
+    (
+        ResCount = ok(Count),
+        Count > 0
+    ->
+        StmtUpdate
+            = "UPDATE pairing SET"
+            ++ " remote_uid = NULL,"
+            ++ " remote_expunged = 1,"
+            ++ " remote_flags_attn = 1"
+            ++ Where,
+        with_stmt(mark_expunged_2, Db, StmtUpdate, Bindings,
             ResUpdate, !IO),
         (
             ResUpdate = ok,
@@ -1373,94 +1454,10 @@ count(Db, Stmt, Res, !IO) :-
         Res = error(Error)
     ).
 
-:- pred mark_expunged_local_messages_2(db(rw)::in, stmt::in,
+:- pred mark_expunged_2(db(rw)::in, stmt::in,
     maybe_error::out, io::di, io::uo) is det.
 
-mark_expunged_local_messages_2(Db, Stmt, Res, !IO) :-
-    step(Db, Stmt, StepResult, !IO),
-    (
-        StepResult = done,
-        Res = ok
-    ;
-        StepResult = row,
-        Res = error("unexpected row")
-    ;
-        StepResult = error(Error),
-        Res = error(Error)
-    ).
-
-%-----------------------------------------------------------------------------%
-
-create_detect_remote_expunge_temp_table(Db, Res, !IO) :-
-    Stmt = "CREATE TEMP TABLE detect_remote_expunge(remote_uid NOT NULL)",
-    exec(Db, Stmt, Res, !IO).
-
-drop_detect_remote_expunge_temp_table(Db, Res, !IO) :-
-    Stmt = "DROP TABLE detect_remote_expunge",
-    exec(Db, Stmt, Res, !IO).
-
-insert_into_detect_remote_expunge_table(Db, UID, Res, !IO) :-
-    Stmt = "INSERT INTO detect_remote_expunge VALUES(?1)",
-    with_stmt(insert_into_detect_remote_expunge_table_2, Db, Stmt, [
-        num(1) - bind_value(UID)
-    ], Res, !IO).
-
-:- pred insert_into_detect_remote_expunge_table_2(db(rw)::in, stmt::in,
-    maybe_error::out, io::di, io::uo) is det.
-
-insert_into_detect_remote_expunge_table_2(Db, Stmt, Res, !IO) :-
-    step(Db, Stmt, StepResult, !IO),
-    (
-        StepResult = done,
-        Res = ok
-    ;
-        StepResult = row,
-        Res = error("unexpected row")
-    ;
-        StepResult = error(Error),
-        Res = error(Error)
-    ).
-
-mark_expunged_remote_messages(Db, MailboxPair, Res, !IO) :-
-    MailboxPair = mailbox_pair(MailboxPairId, _, _, _),
-    Where = 
-       " WHERE mailbox_pair_id = :mailbox_pair_id
-           AND NOT remote_expunged
-           AND remote_uid IS NOT NULL
-           AND remote_uid NOT IN detect_remote_expunge",
-    Bindings = [
-        name(":mailbox_pair_id") - bind_value(MailboxPairId)
-    ],
-
-    StmtCount = "SELECT count(*) FROM pairing" ++ Where,
-    with_stmt(count, Db, StmtCount, Bindings, ResCount, !IO),
-    (
-        ResCount = ok(Count),
-        Count > 0
-    ->
-        StmtUpdate
-            = "UPDATE pairing SET"
-            ++ " remote_uid = NULL,"
-            ++ " remote_expunged = 1,"
-            ++ " remote_flags_attn = 1"
-            ++ Where,
-        with_stmt(mark_expunged_remote_message_2, Db, StmtUpdate, Bindings,
-            ResUpdate, !IO),
-        (
-            ResUpdate = ok,
-            Res = ResCount
-        ;
-            ResUpdate = error(Error),
-            Res = error(Error)
-        )
-    ;
-        Res = ResCount
-    ).
-
-:- pred mark_expunged_remote_message_2(db(rw)::in, stmt::in,
-    maybe_error::out, io::di, io::uo) is det.
-
-mark_expunged_remote_message_2(Db, Stmt, Res, !IO) :-
+mark_expunged_2(Db, Stmt, Res, !IO) :-
     step(Db, Stmt, StepResult, !IO),
     (
         StepResult = done,

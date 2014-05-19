@@ -337,13 +337,12 @@ get_all_uids_set(ReturnDatas, MaybeSequenceSet) :-
     maybe(sequence_set(uid))::in, maybe_error::out, io::di, io::uo) is det.
 
 mark_expunged_remote_messages(Db, MailboxPair, MaybeSequenceSet, Res, !IO) :-
-    create_detect_remote_expunge_temp_table(Db, Res0, !IO),
+    begin_detect_expunge(Db, Res0, !IO),
     (
-        Res0 = ok,
+        Res0 = ok(InsertStmt),
         (
             MaybeSequenceSet = yes(SequenceSet),
-            insert_into_detect_remote_expunge_table(Db, SequenceSet, Res1,
-                !IO)
+            insert(Db, InsertStmt, SequenceSet, Res1, !IO)
         ;
             MaybeSequenceSet = no,
             Res1 = ok
@@ -364,80 +363,77 @@ mark_expunged_remote_messages(Db, MailboxPair, MaybeSequenceSet, Res, !IO) :-
         ),
         (
             Res2 = ok(_),
-            drop_detect_remote_expunge_temp_table(Db, Res, !IO)
+            end_detect_expunge(Db, InsertStmt, Res, !IO)
         ;
             Res2 = error(Error),
             Res = error(Error),
-            drop_detect_remote_expunge_temp_table(Db, _, !IO)
+            end_detect_expunge(Db, InsertStmt, _, !IO)
         )
     ;
         Res0 = error(Error),
         Res = error(Error)
     ).
 
-:- pred insert_into_detect_remote_expunge_table(database::in,
+:- pred insert(database::in, insert_into_detect_expunge_stmt::in,
     sequence_set(uid)::in, maybe_error::out, io::di, io::uo) is det.
 
-insert_into_detect_remote_expunge_table(Db, SequenceSet, Res, !IO) :-
+insert(Db, Stmt, SequenceSet, Res, !IO) :-
     (
         SequenceSet = last(Elem),
-        insert_element_into_detect_remote_expunge_table(Db, Elem, Res, !IO)
+        insert_element(Db, Stmt, Elem, Res, !IO)
     ;
         SequenceSet = cons(Head, Tail),
-        insert_element_into_detect_remote_expunge_table(Db, Head, Res0, !IO),
+        insert_element(Db, Stmt, Head, Res0, !IO),
         (
             Res0 = ok,
-            insert_into_detect_remote_expunge_table(Db, Tail, Res, !IO)
+            insert(Db, Stmt, Tail, Res, !IO)
         ;
             Res0 = error(Error),
             Res = error(Error)
         )
     ).
 
-:- pred insert_element_into_detect_remote_expunge_table(database::in,
+:- pred insert_element(database::in, insert_into_detect_expunge_stmt::in,
     sequence_set_element(uid)::in, maybe_error::out, io::di, io::uo) is det.
 
-insert_element_into_detect_remote_expunge_table(Db, Elem, Res, !IO) :-
+insert_element(Db, Stmt, Elem, Res, !IO) :-
     (
         Elem = element(SeqNumber),
-        insert_seqnr_into_detect_remote_expunge_table(Db, SeqNumber, Res, !IO)
+        insert_seqnr(Db, Stmt, SeqNumber, Res, !IO)
     ;
         Elem = range(Low, High),
         (
             Low = number(LowUID),
             High = number(HighUID)
         ->
-            insert_range_into_detect_remote_expunge_table(Db, LowUID, HighUID,
-                Res, !IO)
+            insert_range(Db, Stmt, LowUID, HighUID, Res, !IO)
         ;
             Res = error("UID range contains *")
         )
     ).
 
-:- pred insert_seqnr_into_detect_remote_expunge_table(database::in,
+:- pred insert_seqnr(database::in, insert_into_detect_expunge_stmt::in,
     seq_number(uid)::in, maybe_error::out, io::di, io::uo) is det.
 
-insert_seqnr_into_detect_remote_expunge_table(Db, SeqNumber, Res, !IO) :-
+insert_seqnr(Db, Stmt, SeqNumber, Res, !IO) :-
     (
         SeqNumber = number(UID),
-        insert_into_detect_remote_expunge_table(Db, UID, Res, !IO)
+        detect_expunge_insert_uid(Db, Stmt, UID, Res, !IO)
     ;
         SeqNumber = star,
         Res = error("UID range contains *")
     ).
 
-:- pred insert_range_into_detect_remote_expunge_table(database::in,
+:- pred insert_range(database::in, insert_into_detect_expunge_stmt::in,
     uid::in, uid::in, maybe_error::out, io::di, io::uo) is det.
 
-insert_range_into_detect_remote_expunge_table(Db, uid(Low), uid(High), Res,
-        !IO) :-
+insert_range(Db, Stmt, uid(Low), uid(High), Res, !IO) :-
     % Low, High are inclusive.
     ( Low =< High ->
-        insert_into_detect_remote_expunge_table(Db, uid(Low), Res0, !IO),
+        detect_expunge_insert_uid(Db, Stmt, uid(Low), Res0, !IO),
         (
             Res0 = ok,
-            insert_range_into_detect_remote_expunge_table(Db,
-                uid(Low + one), uid(High), Res, !IO)
+            insert_range(Db, Stmt, uid(Low + one), uid(High), Res, !IO)
         ;
             Res0 = error(Error),
             Res = error(Error)
