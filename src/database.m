@@ -186,8 +186,8 @@
 :- pred end_detect_expunge(database::in, insert_into_detect_expunge_stmt::in,
     maybe_error::out, io::di, io::uo) is det.
 
-:- pred detect_expunge_insert_uniquename(database::in,
-    insert_into_detect_expunge_stmt::in, uniquename::in, maybe_error::out,
+:- pred detect_expunge_insert_pairing_id(database::in,
+    insert_into_detect_expunge_stmt::in, pairing_id::in, maybe_error::out,
     io::di, io::uo) is det.
 
 :- pred detect_expunge_insert_uid(database::in,
@@ -1341,9 +1341,9 @@ drop_detect_expunge(Db, Res, !IO) :-
 
 insert_into_detect_expunge_sql = "INSERT INTO detect_expunge VALUES(?1)".
 
-detect_expunge_insert_uniquename(Db, InsertStmt, UniqueName, Res, !IO) :-
+detect_expunge_insert_pairing_id(Db, InsertStmt, PairingId, Res, !IO) :-
     with_prepared_stmt(detect_expunge_insert_2,
-        Db, InsertStmt, [num(1) - bind_value(UniqueName)], Res, !IO).
+        Db, InsertStmt, [num(1) - bind_value(PairingId)], Res, !IO).
 
 detect_expunge_insert_uid(Db, InsertStmt, UID, Res, !IO) :-
     with_prepared_stmt(detect_expunge_insert_2,
@@ -1370,8 +1370,7 @@ mark_expunged_local_messages(Db, MailboxPair, Res, !IO) :-
     Where = 
        " WHERE mailbox_pair_id = :mailbox_pair_id
            AND NOT local_expunged
-           AND local_uniquename IS NOT NULL
-           AND local_uniquename NOT IN detect_expunge",
+           AND pairing_id NOT IN detect_expunge",
     Bindings = [
         name(":mailbox_pair_id") - bind_value(MailboxPairId)
     ],
