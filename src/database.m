@@ -6,6 +6,7 @@
 :- import_module bool.
 :- import_module io.
 :- import_module list.
+:- import_module map.
 :- import_module maybe.
 :- import_module set.
 
@@ -57,19 +58,19 @@
 
 :- type pairing_id.
 
-:- type search_pairing_by_local_message_stmt.
+:- pred search_pairing_by_local_uniquename(database::in, mailbox_pair::in,
+    uniquename::in, maybe_error(maybe(pairing_id))::out, io::di, io::uo)
+    is det.
 
-:- pred prepare_search_pairing_by_local_message(database::in,
-    maybe_error(search_pairing_by_local_message_stmt)::out,
-    io::di, io::uo) is det.
+:- type pairing_flag_deltas
+    --->    pairing_flag_deltas(
+                pairing_id,
+                flag_deltas(local_mailbox)
+            ).
 
-:- pred finalize_search_pairing_by_local_message(
-    search_pairing_by_local_message_stmt::in, io::di, io::uo) is det.
-
-:- pred search_pairing_by_local_message(database::in,
-    search_pairing_by_local_message_stmt::in, mailbox_pair::in, uniquename::in,
-    maybe_error(maybe({pairing_id, flag_deltas(local_mailbox)}))::out,
-    io::di, io::uo) is det.
+:- pred get_unexpunged_pairings_by_uniquename(database::in, mailbox_pair::in,
+    maybe_error(map(uniquename, pairing_flag_deltas))::out, io::di, io::uo)
+    is det.
 
 :- pred search_pairing_by_remote_message(database::in,
     mailbox_pair::in, uid::in, maybe_message_id::in,
@@ -567,32 +568,20 @@ update_remote_mailbox_modseqvalue_2(Db, Stmt, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-:- type search_pairing_by_local_message_stmt == stmt.
-
-prepare_search_pairing_by_local_message(Database, Res, !IO) :-
-    Sql =  "SELECT pairing_id, local_flags FROM pairing"
+search_pairing_by_local_uniquename(Database, MailboxPair, Unique, Res, !IO) :-
+    MailboxPair = mailbox_pair(MailboxPairId, _, _, _),
+    Stmt = "SELECT pairing_id, local_flags FROM pairing"
         ++ " WHERE mailbox_pair_id = :mailbox_pair_id"
         ++ "   AND local_uniquename = :local_uniquename",
-    prepare(Database, Sql, Res, !IO).
+    with_stmt(search_pairing_by_local_uniquename_2, Database, Stmt, [
+        name(":mailbox_pair_id") - bind_value(MailboxPairId),
+        name(":local_uniquename") - bind_value(Unique)
+    ], Res, !IO).
 
-finalize_search_pairing_by_local_message(Stmt, !IO) :-
-    finalize(Stmt, !IO).
+:- pred search_pairing_by_local_uniquename_2(db(rw)::in, stmt::in,
+    maybe_error(maybe(pairing_id))::out, io::di, io::uo) is det.
 
-search_pairing_by_local_message(Database, Stmt, MailboxPair, Unique, Res, !IO)
-        :-
-    MailboxPair = mailbox_pair(MailboxPairId, _, _, _),
-    with_prepared_stmt(search_pairing_by_local_message_2,
-        Database, Stmt,
-        [
-            name(":mailbox_pair_id") - bind_value(MailboxPairId),
-            name(":local_uniquename") - bind_value(Unique)
-        ], Res, !IO).
-
-:- pred search_pairing_by_local_message_2(db(rw)::in, stmt::in,
-    maybe_error(maybe({pairing_id, flag_deltas(local_mailbox)}))::out,
-    io::di, io::uo) is det.
-
-search_pairing_by_local_message_2(Db, Stmt, Res, !IO) :-
+search_pairing_by_local_uniquename_2(Db, Stmt, Res, !IO) :-
     step(Db, Stmt, StepResult, !IO),
     (
         StepResult = done,
@@ -600,12 +589,64 @@ search_pairing_by_local_message_2(Db, Stmt, Res, !IO) :-
     ;
         StepResult = row,
         column_int(Stmt, column(0), X0, !IO),
+        ( convert(X0, PairingId) ->
+            Res = ok(yes(PairingId))
+        ;
+            Res = error("database error")
+        )
+    ;
+        StepResult = error(Error),
+        Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
+get_unexpunged_pairings_by_uniquename(Db, MailboxPair, Res, !IO) :-
+    MailboxPair = mailbox_pair(MailboxPairId, _, _, _),
+    Stmt = "SELECT pairing_id, local_uniquename, local_flags FROM pairing"
+        ++ " WHERE mailbox_pair_id = :mailbox_pair_id"
+        ++ "   AND local_uniquename IS NOT NULL"
+        ++ "   AND NOT local_expunged",
+    with_stmt(get_unexpunged_pairings_by_uniquename_2, Db, Stmt, [
+        name(":mailbox_pair_id") - bind_value(MailboxPairId)
+    ], Res, !IO).
+
+:- pred get_unexpunged_pairings_by_uniquename_2(db(rw)::in, stmt::in,
+    maybe_error(map(uniquename, pairing_flag_deltas))::out, io::di, io::uo)
+    is det.
+
+get_unexpunged_pairings_by_uniquename_2(Db, Stmt, Res, !IO) :-
+    get_unexpunged_pairings_by_uniquename_3(Db, Stmt, Res0, map.init, Map, !IO),
+    (
+        Res0 = ok,
+        Res = ok(Map)
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred get_unexpunged_pairings_by_uniquename_3(db(rw)::in, stmt::in,
+    maybe_error::out, map(uniquename, pairing_flag_deltas)::in,
+    map(uniquename, pairing_flag_deltas)::out, io::di, io::uo) is det.
+
+get_unexpunged_pairings_by_uniquename_3(Db, Stmt, Res, !Map, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
+    (
+        StepResult = done,
+        Res = ok
+    ;
+        StepResult = row,
+        column_int(Stmt, column(0), X0, !IO),
         column_text(Stmt, column(1), X1, !IO),
+        column_text(Stmt, column(2), X2, !IO),
         (
             convert(X0, PairingId),
-            convert(X1, FlagDeltas)
+            convert(X1, Unique),
+            convert(X2, LocalFlagDeltas),
+            map.insert(Unique, pairing_flag_deltas(PairingId, LocalFlagDeltas),
+                !Map)
         ->
-            Res = ok(yes({PairingId, FlagDeltas}))
+            get_unexpunged_pairings_by_uniquename_3(Db, Stmt, Res, !Map, !IO)
         ;
             Res = error("database error")
         )
@@ -1367,10 +1408,11 @@ detect_expunge_insert_2(Db, Stmt, Res, !IO) :-
 
 mark_expunged_local_messages(Db, MailboxPair, Res, !IO) :-
     MailboxPair = mailbox_pair(MailboxPairId, _, _, _),
+    % NOTE: inverted compared to mark_expunged_remote_messages
     Where = 
        " WHERE mailbox_pair_id = :mailbox_pair_id
            AND NOT local_expunged
-           AND pairing_id NOT IN detect_expunge",
+           AND pairing_id IN detect_expunge",
     Bindings = [
         name(":mailbox_pair_id") - bind_value(MailboxPairId)
     ],

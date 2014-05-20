@@ -18,61 +18,63 @@
 :- import_module bool.
 :- import_module dir.
 :- import_module list.
+:- import_module map.
 :- import_module set.
+:- import_module set_tree234.
 :- import_module string.
 
 :- import_module flag_delta.
 :- import_module maildir.
 :- import_module message_file.
 
+    % diet might be good.
+:- type pairing_id_set == set_tree234(pairing_id).
+
 %-----------------------------------------------------------------------------%
 
 update_db_local_mailbox(Db, MailboxPair, Res, !IO) :-
-    prepare_search_pairing_by_local_message(Db, ResStmt, !IO),
-    (
-        ResStmt = ok(Stmt),
-        update_db_local_mailbox_2(Db, Stmt, MailboxPair, Res, !IO),
-        finalize_search_pairing_by_local_message(Stmt, !IO)
-    ;
-        ResStmt = error(Error),
-        Res = error(Error)
-    ).
-
-:- pred update_db_local_mailbox_2(database::in,
-    search_pairing_by_local_message_stmt::in, mailbox_pair::in,
-    maybe_error(dir_cache)::out, io::di, io::uo) is det.
-
-update_db_local_mailbox_2(Db, Stmt, MailboxPair, Res, !IO) :-
     LocalMailboxPath = get_local_mailbox_path(MailboxPair),
-    update_file_list(LocalMailboxPath, init, ResCache, !IO),
+    update_file_list(LocalMailboxPath, dir_cache.init, ResCache, !IO),
     (
         ResCache = ok(DirCache),
         list_files(DirCache, LocalMailboxPath, NewFiles, CurFiles),
 
-        LocalMailboxPath = local_mailbox_path(DirName),
-        update_db_local_message_files(Db, Stmt, MailboxPair,
-            DirName / "new", NewFiles, Res1, [], PairingIds1, !IO),
+        get_unexpunged_pairings_by_uniquename(Db, MailboxPair,
+            ResExistingPairings, !IO),
         (
-            Res1 = ok,
-            update_db_local_message_files(Db, Stmt, MailboxPair,
-                DirName / "cur", CurFiles, Res2, [], PairingIds2, !IO),
+            ResExistingPairings = ok(ExistingPairings),
+            make_pairing_id_set(ExistingPairings, UnseenPairingIds0),
+
+            LocalMailboxPath = local_mailbox_path(DirName),
+            update_db_local_message_files(Db, MailboxPair, ExistingPairings,
+                DirName / "new", NewFiles, Res1,
+                UnseenPairingIds0, UnseenPairingIds1, !IO),
             (
-                Res2 = ok,
-                mark_expunged_local_messages(Db, MailboxPair, PairingIds1,
-                    PairingIds2, Res3, !IO),
+                Res1 = ok,
+                update_db_local_message_files(Db, MailboxPair,
+                    ExistingPairings, DirName / "cur", CurFiles, Res2,
+                    UnseenPairingIds1, UnseenPairingIds, !IO),
                 (
-                    Res3 = ok,
-                    Res = ok(DirCache)
+                    Res2 = ok,
+                    mark_expunged_local_messages(Db, MailboxPair,
+                        UnseenPairingIds, Res3, !IO),
+                    (
+                        Res3 = ok,
+                        Res = ok(DirCache)
+                    ;
+                        Res3 = error(Error),
+                        Res = error(Error)
+                    )
                 ;
-                    Res3 = error(Error),
+                    Res2 = error(Error),
                     Res = error(Error)
                 )
             ;
-                Res2 = error(Error),
+                Res1 = error(Error),
                 Res = error(Error)
             )
         ;
-            Res1 = error(Error),
+            ResExistingPairings = error(Error),
             Res = error(Error)
         )
     ;
@@ -80,54 +82,65 @@ update_db_local_mailbox_2(Db, Stmt, MailboxPair, Res, !IO) :-
         Res = error(Error)
     ).
 
-:- pred update_db_local_message_files(database::in,
-    search_pairing_by_local_message_stmt::in, mailbox_pair::in, string::in,
-    list(string)::in, maybe_error::out,
-    list(pairing_id)::in, list(pairing_id)::out, io::di, io::uo) is det.
+:- pred make_pairing_id_set(map(uniquename, pairing_flag_deltas)::in,
+    pairing_id_set::out) is det.
 
-update_db_local_message_files(_Db, _Stmt, _MailboxPair, _DirName,
-        [], ok, !PairingIds, !IO).
-update_db_local_message_files(Db, Stmt, MailboxPair, DirName,
-        [BaseName | BaseNames], Res, !PairingIds, !IO) :-
-    update_db_local_message_file(Db, Stmt, MailboxPair, DirName,
-        BaseName, Res0, !PairingIds, !IO),
+make_pairing_id_set(Map, Set) :-
+    map.foldl_values(make_pairing_id_set, Map, init, Set).
+
+:- pred make_pairing_id_set(pairing_flag_deltas::in,
+    pairing_id_set::in, pairing_id_set::out) is det.
+
+make_pairing_id_set(pairing_flag_deltas(PairingId, _), !Set) :-
+    insert(PairingId, !Set).
+
+:- pred update_db_local_message_files(database::in, mailbox_pair::in,
+    map(uniquename, pairing_flag_deltas)::in, string::in, list(string)::in,
+    maybe_error::out, pairing_id_set::in, pairing_id_set::out, io::di, io::uo)
+    is det.
+
+update_db_local_message_files(_Db, _MailboxPair, _ExistingPairings, _DirName,
+        [], ok, !UnseenPairingIds, !IO).
+update_db_local_message_files(Db, MailboxPair, ExistingPairings, DirName,
+        [BaseName | BaseNames], Res, !UnseenPairingIds, !IO) :-
+    update_db_local_message_file(Db, MailboxPair, ExistingPairings,
+        DirName, BaseName, Res0, !UnseenPairingIds, !IO),
     (
         Res0 = ok,
-        update_db_local_message_files(Db, Stmt, MailboxPair, DirName,
-            BaseNames, Res, !PairingIds, !IO)
+        update_db_local_message_files(Db, MailboxPair, ExistingPairings,
+            DirName, BaseNames, Res, !UnseenPairingIds, !IO)
     ;
         Res0 = error(Error),
         Res = error(Error)
     ).
 
-:- pred update_db_local_message_file(database::in,
-    search_pairing_by_local_message_stmt::in, mailbox_pair::in, string::in,
-    string::in, maybe_error::out, list(pairing_id)::in, list(pairing_id)::out,
+:- pred update_db_local_message_file(database::in, mailbox_pair::in,
+    map(uniquename, pairing_flag_deltas)::in, string::in, string::in,
+    maybe_error::out, pairing_id_set::in, pairing_id_set::out,
     io::di, io::uo) is det.
 
-update_db_local_message_file(Db, Stmt, MailboxPair, DirName, BaseName, Res,
-        !PairingIds, !IO) :-
+update_db_local_message_file(Db, MailboxPair, ExistingPairings,
+        DirName, BaseName, Res, !UnseenPairingIds, !IO) :-
     ( parse_basename(BaseName, Unique, Flags) ->
-        update_db_local_message_file_2(Db, Stmt, MailboxPair, DirName,
-            BaseName, Unique, Flags, Res, !PairingIds, !IO)
+        update_db_local_message_file_2(Db, MailboxPair, ExistingPairings,
+            DirName, BaseName, Unique, Flags, Res, !UnseenPairingIds, !IO)
     ;
         % Should just skip.
         Res = error("cannot parse message filename: " ++ BaseName)
     ).
 
-:- pred update_db_local_message_file_2(database::in,
-    search_pairing_by_local_message_stmt::in,
-    mailbox_pair::in, string::in, string::in, uniquename::in, set(flag)::in,
-    maybe_error::out, list(pairing_id)::in, list(pairing_id)::out,
-    io::di, io::uo) is det.
+:- pred update_db_local_message_file_2(database::in, mailbox_pair::in,
+    map(uniquename, pairing_flag_deltas)::in, string::in, string::in,
+    uniquename::in, set(flag)::in, maybe_error::out,
+    pairing_id_set::in, pairing_id_set::out, io::di, io::uo) is det.
 
-update_db_local_message_file_2(Db, Stmt, MailboxPair, DirName, BaseName,
-        Unique, Flags, Res, !PairingIds, !IO) :-
-    search_pairing_by_local_message(Db, Stmt, MailboxPair, Unique,
-        ResSearch, !IO),
+update_db_local_message_file_2(Db, MailboxPair, ExistingPairings,
+        DirName, BaseName, Unique, Flags, Res, !UnseenPairingIds, !IO) :-
     (
-        ResSearch = ok(yes({PairingId, LocalFlagDeltas0})),
-        cons(PairingId, !PairingIds),
+        map.search(ExistingPairings, Unique,
+            pairing_flag_deltas(PairingId, LocalFlagDeltas0))
+    ->
+        set_tree234.delete(PairingId, !UnseenPairingIds),
         update_maildir_standard_flags(Flags, LocalFlagDeltas0, LocalFlagDeltas,
             IsChanged),
         (
@@ -142,22 +155,16 @@ update_db_local_message_file_2(Db, Stmt, MailboxPair, DirName, BaseName,
             Res = ok
         )
     ;
-        ResSearch = ok(no),
-        update_db_local_message_file_3(Db, Stmt, MailboxPair, DirName,
-            BaseName, Unique, Flags, Res, !PairingIds, !IO)
-    ;
-        ResSearch = error(Error),
-        Res = error(Error)
+        update_db_local_message_file_3(Db, MailboxPair, DirName, BaseName,
+            Unique, Flags, Res, !IO)
     ).
 
 :- pred update_db_local_message_file_3(database::in,
-    search_pairing_by_local_message_stmt::in,
     mailbox_pair::in, string::in, string::in, uniquename::in, set(flag)::in,
-    maybe_error::out, list(pairing_id)::in, list(pairing_id)::out,
-    io::di, io::uo) is det.
+    maybe_error::out, io::di, io::uo) is det.
 
-update_db_local_message_file_3(Db, Stmt, MailboxPair, DirName, BaseName,
-        Unique, Flags, Res, !PairingIds, !IO) :-
+update_db_local_message_file_3(Db, MailboxPair, DirName, BaseName, Unique,
+        Flags, Res, !IO) :-
     Path = DirName / BaseName,
     read_message_id_from_file(Path, ResRead, !IO),
     (
@@ -172,20 +179,7 @@ update_db_local_message_file_3(Db, Stmt, MailboxPair, DirName, BaseName,
             message_id(MessageId), Unique, Flags, ResInsert, !IO),
         (
             ResInsert = ok,
-            % Search for it again.
-            search_pairing_by_local_message(Db, Stmt, MailboxPair, Unique,
-                ResSearch, !IO),
-            (
-                ResSearch = ok(yes({PairingId, _})),
-                cons(PairingId, !PairingIds),
-                Res = ok
-            ;
-                ResSearch = ok(no),
-                Res = error("cannot find inserted message")
-            ;
-                ResSearch = error(Error),
-                Res = error(Error)
-            )
+            Res = ok
         ;
             ResInsert = error(Error),
             Res = error(Error)
@@ -208,40 +202,32 @@ update_db_local_message_file_3(Db, Stmt, MailboxPair, DirName, BaseName,
 %-----------------------------------------------------------------------------%
 
 :- pred mark_expunged_local_messages(database::in, mailbox_pair::in,
-    list(pairing_id)::in, list(pairing_id)::in, maybe_error::out,
-    io::di, io::uo) is det.
+    pairing_id_set::in, maybe_error::out, io::di, io::uo) is det.
 
-mark_expunged_local_messages(Db, MailboxPair, NewFiles, CurFiles, Res, !IO) :-
+mark_expunged_local_messages(Db, MailboxPair, UnseenPairingIds, Res, !IO) :-
     begin_detect_expunge(Db, Res0, !IO),
     (
         Res0 = ok(InsertStmt),
-        insert(Db, InsertStmt, NewFiles, Res1, !IO),
+        insert(Db, InsertStmt, to_sorted_list(UnseenPairingIds), Res1, !IO),
         (
             Res1 = ok,
-            insert(Db, InsertStmt, CurFiles, Res2, !IO),
+            mark_expunged_local_messages(Db, MailboxPair, Res2, !IO),
             (
-                Res2 = ok,
-                mark_expunged_local_messages(Db, MailboxPair, Res3, !IO),
-                (
-                    Res3 = ok(Count),
-                    io.format("Detected %d expunged local messages.\n",
-                        [i(Count)], !IO)
-                ;
-                    Res3 = error(_)
-                )
+                Res2 = ok(Count),
+                io.format("Detected %d expunged local messages.\n",
+                    [i(Count)], !IO)
             ;
-                Res2 = error(Error2),
-                Res3 = error(Error2)
+                Res2 = error(_)
             )
         ;
             Res1 = error(Error1),
-            Res3 = error(Error1)
+            Res2 = error(Error1)
         ),
         (
-            Res3 = ok(_),
+            Res2 = ok(_),
             end_detect_expunge(Db, InsertStmt, Res, !IO)
         ;
-            Res3 = error(Error),
+            Res2 = error(Error),
             Res = error(Error),
             end_detect_expunge(Db, InsertStmt, _, !IO)
         )
