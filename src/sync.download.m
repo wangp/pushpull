@@ -85,7 +85,11 @@ download_message_batch(Config, Database, IMAP, MailboxPair, DirCache,
     ( make_sequence_set(UIDs, SequenceSet) ->
         % Need FLAGS for Maildir filename.
         % INTERNALDATE for setting mtime on new files.
-        % XXX MODSEQ could be used to update remote_message row.
+        %
+        % [RFC 4551] "Once the client specified the MODSEQ message data item in
+        % a FETCH request, the server MUST include the MODSEQ fetch response
+        % data items in all subsequent unsolicited FETCH responses."
+        % We will use this to update our highest mod-seq-value.
         Items = atts(rfc822, [flags, modseq, internaldate]),
         uid_fetch(IMAP, SequenceSet, Items, no,
             result(ResFetch, Text, Alerts), !IO),
