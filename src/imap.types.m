@@ -284,6 +284,9 @@
 :- pred make_sequence_set(list(T)::in, sequence_set(T)::out) is semidet
     <= sequence_set_number(T).
 
+:- pred sequence_set_only_numbers(sequence_set(T)::in) is semidet
+    <= sequence_set_number(T).
+
 :- func make_astring(string) = astring.
 
 :- func from_imap_string(imap_string) = string.
@@ -345,6 +348,28 @@ make_sequence_set_element(Lo, Hi, Elem) :-
         Elem = element(number(Lo))
     ;
         Elem = range(number(Lo), number(Hi))
+    ).
+
+sequence_set_only_numbers(Set) :-
+    require_complete_switch [Set]
+    (
+        Set = cons(Elem, Tail),
+        sequence_set_element_only_numbers(Elem),
+        sequence_set_only_numbers(Tail)
+    ;
+        Set = last(Elem),
+        sequence_set_element_only_numbers(Elem)
+    ).
+
+:- pred sequence_set_element_only_numbers(sequence_set_element(T)::in)
+    is semidet.
+
+sequence_set_element_only_numbers(Elem) :-
+    require_complete_switch [Elem]
+    (
+        Elem = element(number(_))
+    ;
+        Elem = range(number(_), number(_))
     ).
 
 %-----------------------------------------------------------------------------%

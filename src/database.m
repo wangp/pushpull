@@ -113,6 +113,9 @@
     flag_deltas(remote_mailbox)::in, bool::in, mod_seq_value::in,
     maybe_error::out, io::di, io::uo) is det.
 
+:- pred search_min_max_uid(database::in, mailbox_pair::in,
+    maybe_error(maybe({uid, uid}))::out, io::di, io::uo) is det.
+
 :- pred search_max_uid_more_recent_than(database::in, mailbox_pair::in,
     mod_seq_valzer::in, maybe_error(maybe(uid))::out, io::di, io::uo) is det.
 
@@ -994,6 +997,46 @@ update_remote_message_flags_2(Db, Stmt, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
+search_min_max_uid(Db, MailboxPair, Res, !IO) :-
+    MailboxPair = mailbox_pair(MailboxPairId, _, _, _),
+    Stmt =
+        "SELECT MIN(remote_uid), MAX(remote_uid) FROM pairing
+          WHERE mailbox_pair_id = :mailbox_pair_id",
+    with_stmt(search_min_max_uid_2, Db, Stmt, [
+        name(":mailbox_pair_id") - bind_value(MailboxPairId)
+    ], Res, !IO).
+
+:- pred search_min_max_uid_2(db(rw)::in, stmt::in,
+    maybe_error(maybe({uid, uid}))::out, io::di, io::uo) is det.
+
+search_min_max_uid_2(Db, Stmt, Res, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
+    (
+        StepResult = done,
+        Res = ok(no)
+    ;
+        StepResult = row,
+        column_text(Stmt, column(0), X0, !IO),
+        column_text(Stmt, column(1), X1, !IO),
+        (
+            X0 = ""
+        ->
+            Res = ok(no)
+        ;
+            convert(X0, MinUID),
+            convert(X1, MaxUID)
+        ->
+            Res = ok(yes({MinUID, MaxUID}))
+        ;
+            Res = error("database error")
+        )
+    ;
+        StepResult = error(Error),
+        Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
 search_max_uid_more_recent_than(Db, MailboxPair, ModSeqValzer, Res, !IO) :-
     MailboxPair = mailbox_pair(MailboxPairId, _, _, _),
     Stmt =
@@ -1408,7 +1451,6 @@ detect_expunge_insert_2(Db, Stmt, Res, !IO) :-
 
 mark_expunged_local_messages(Db, MailboxPair, Res, !IO) :-
     MailboxPair = mailbox_pair(MailboxPairId, _, _, _),
-    % NOTE: inverted compared to mark_expunged_remote_messages
     Where = 
        " WHERE mailbox_pair_id = :mailbox_pair_id
            AND NOT local_expunged
@@ -1447,8 +1489,7 @@ mark_expunged_remote_messages(Db, MailboxPair, Res, !IO) :-
     Where = 
        " WHERE mailbox_pair_id = :mailbox_pair_id
            AND NOT remote_expunged
-           AND remote_uid IS NOT NULL
-           AND remote_uid NOT IN detect_expunge",
+           AND remote_uid IN detect_expunge",
     Bindings = [
         name(":mailbox_pair_id") - bind_value(MailboxPairId)
     ],
