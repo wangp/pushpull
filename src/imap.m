@@ -63,6 +63,8 @@
 :- pred login(imap::in, username::in, imap.password::in, imap_result::out,
     io::di, io::uo) is det.
 
+:- pred noop(imap::in, imap_result::out, io::di, io::uo) is det.
+
 :- pred logout(imap::in, imap_result::out, io::di, io::uo) is det.
 
 :- func mailbox(string) = mailbox.
@@ -597,6 +599,56 @@ apply_login_response(Response, unit, !State, !Alerts, !IO) :-
     (
         FinalMaybeTag = tagged(_, ok),
         !State ^ connection_state := authenticated
+    ;
+        FinalMaybeTag = tagged(_, no)
+    ;
+        FinalMaybeTag = tagged(_, bad)
+    ;
+        ( FinalMaybeTag = bye
+        ; FinalMaybeTag = continue % unexpected
+        ),
+        !State ^ connection_state := logout
+    ).
+
+%-----------------------------------------------------------------------------%
+
+noop(IMAP, Res, !IO) :-
+    command_wrapper(do_noop, [not_authenticated, authenticated, selected],
+        IMAP, Res, !IO).
+
+:- pred do_noop(imap::in, imap_result::out, io::di, io::uo) is det.
+
+do_noop(IMAP, Res, !IO) :-
+    get_new_tag(IMAP, Pipe, Tag, !IO),
+    make_command_stream(Tag - command_any(noop), CommandStream),
+    write_command_stream(Pipe, Tag, CommandStream, Res0, !IO),
+    (
+        Res0 = ok,
+        wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
+        (
+            MaybeResponse = ok(Response),
+            update_state(apply_noop_response, IMAP, Response, _ : unit,
+                [], Alerts, !IO),
+            Response = complete_response(_, FinalMaybeTag, FinalRespText),
+            make_result(FinalMaybeTag, FinalRespText, Alerts, Res)
+        ;
+            MaybeResponse = error(Error),
+            Res = result(error, Error, [])
+        )
+    ;
+        Res0 = error(Error),
+        Res = result(error, Error, [])
+    ).
+
+:- pred apply_noop_response(complete_response::in, unit::out,
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
+    io::di, io::uo) is det.
+
+apply_noop_response(Response, unit, !State, !Alerts, !IO) :-
+    apply_complete_response(Response, !State, !Alerts, !IO),
+    Response = complete_response(_, FinalMaybeTag, _),
+    (
+        FinalMaybeTag = tagged(_, ok)
     ;
         FinalMaybeTag = tagged(_, no)
     ;
