@@ -79,6 +79,9 @@
 :- pred get_selected_mailbox_highest_modseqvalue(imap::in,
     maybe(highestmodseq)::out, io::di, io::uo) is det.
 
+:- pred update_selected_mailbox_highest_modseqvalue_from_fetches(imap::in,
+    io::di, io::uo) is det.
+
 :- pred append(imap::in, mailbox::in, list(flag)::in, maybe(date_time)::in,
     string::in, imap_result(maybe(appenduid))::out, io::di, io::uo) is det.
 
@@ -128,6 +131,7 @@
 :- import_module bool.
 :- import_module int.
 :- import_module integer.
+:- import_module maybe.
 :- import_module require.
 :- import_module store.
 :- import_module string.
@@ -194,7 +198,22 @@
                 uidvalidity :: maybe(uidvalidity),
                 % If this is missing, the server does not support
                 % unique identifiers.
-                highestmodseq :: highestmodseq
+                highestmodseq :: highestmodseq,
+
+                % [RFC 5162] Whenever the client receives a tagged response to
+                % a command, it calculates the highest value among all MODSEQ
+                % FETCH data items received since the last tagged response.
+                % If this value is bigger than the client's copy of the
+                % HIGHESTMODSEQ value, then the client MUST use this value as
+                % its new HIGHESTMODSEQ value.
+                %
+                % Note: It is not safe to update the client's copy of the
+                % HIGHESTMODSEQ value with a MODSEQ FETCH data item value as
+                % soon as it is received because servers are not required to
+                % send MODSEQ FETCH data items in increasing modseqence order.
+                % This can lead to the client missing some changes in case of
+                % connectivity loss.
+                fetch_highestmodseq :: maybe(mod_seq_value)
             ).
 
 :- type access
@@ -718,7 +737,7 @@ apply_select_or_examine_response(Mailbox, Response, unit, !State, !Alerts, !IO)
 
 new_selected_mailbox(Mailbox) =
     selected_mailbox(Mailbox, read_only, [], zero, zero, no, no, no, no,
-        unknown).
+        unknown, no).
 
 %-----------------------------------------------------------------------------%
 
@@ -746,6 +765,36 @@ get_selected_mailbox_highest_modseqvalue(IMAP, Res, !IO) :-
     ;
         MaybeSel = no,
         Res = no
+    ).
+
+update_selected_mailbox_highest_modseqvalue_from_fetches(IMAP, !IO) :-
+    IMAP = imap(_PipeMutvar, _TagMutvar, StateMutvar),
+    get_mutvar(StateMutvar, State0, !IO),
+    some [!Sel]
+    (
+        State0 ^ selected = yes(!:Sel),
+        !.Sel ^ fetch_highestmodseq = yes(FetchModSeq)
+    ->
+        (
+            !.Sel ^ highestmodseq = unknown,
+            !Sel ^ highestmodseq := highestmodseq(FetchModSeq)
+        ;
+            !.Sel ^ highestmodseq = nomodseq,
+            % Weird.
+            !Sel ^ highestmodseq := highestmodseq(FetchModSeq)
+        ;
+            !.Sel ^ highestmodseq = highestmodseq(PrevHighest),
+            ( FetchModSeq > PrevHighest ->
+                !Sel ^ highestmodseq := highestmodseq(FetchModSeq)
+            ;
+                true
+            )
+        ),
+        !Sel ^ fetch_highestmodseq := no,
+        State = State0 ^ selected := yes(!.Sel),
+        set_mutvar(StateMutvar, State, !IO)
+    ;
+        true
     ).
 
 %-----------------------------------------------------------------------------%
@@ -1428,6 +1477,13 @@ apply_message_data(MessageData, !State, !R) :-
         )
     ;
         MessageData = fetch(MsgSeqNr, Atts),
+        (
+            !.State ^ selected = yes(Sel0),
+            list.foldl(bump_fetch_highestmodseq, Atts, Sel0, Sel),
+            !State ^ selected := yes(Sel)
+        ;
+            !.State ^ selected = no
+        ),
         handle_fetch_results(MsgSeqNr, Atts, !R)
     ).
 
@@ -1440,6 +1496,24 @@ decrement_exists(Sel0, Sel) :-
     ;
         % Shouldn't happen.
         Sel = Sel0
+    ).
+
+:- pred bump_fetch_highestmodseq(msg_att::in,
+    selected_mailbox::in, selected_mailbox::out) is det.
+
+bump_fetch_highestmodseq(Att, !Sel) :-
+    (
+        Att = modseq(ModSeqValue),
+        (
+            !.Sel ^ fetch_highestmodseq = no
+        ;
+            !.Sel ^ fetch_highestmodseq = yes(Old),
+            ModSeqValue > Old
+        )
+    ->
+        !Sel ^ fetch_highestmodseq := yes(ModSeqValue)
+    ;
+        true
     ).
 
 %-----------------------------------------------------------------------------%

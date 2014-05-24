@@ -278,6 +278,12 @@
 
 %-----------------------------------------------------------------------------%
 
+:- pred mod_seq_value < mod_seq_value.
+:- mode in < in is semidet.
+
+:- pred mod_seq_value > mod_seq_value.
+:- mode in > in is semidet.
+
 :- func singleton_sequence_set(T) = sequence_set(T)
     <= sequence_set_number(T).
 
@@ -306,6 +312,12 @@
 :- import_module string.
 
 :- import_module imap.charclass.
+
+%-----------------------------------------------------------------------------%
+
+mod_seq_value(X) < mod_seq_value(Y) :- X < Y.
+
+mod_seq_value(X) > mod_seq_value(Y) :- X > Y.
 
 %-----------------------------------------------------------------------------%
 
