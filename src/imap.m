@@ -127,12 +127,7 @@
     %
 :- pred idle_done(imap::in, imap_result::out, io::di, io::uo) is det.
 
-:- type select_result
-    --->    ready
-    ;       timeout
-    ;       error(string).
-
-:- pred select_read(imap::in, int::in, select_result::out, io::di, io::uo)
+:- pred get_read_filedes(imap::in, maybe_error(int)::out, io::di, io::uo)
     is det.
 
 %-----------------------------------------------------------------------------%
@@ -1302,21 +1297,12 @@ apply_idle_done_response(ResumeConnState, Response, Result, !State, unit, unit,
 
 %-----------------------------------------------------------------------------%
 
-select_read(IMAP, TimeoutSeconds, Res, !IO) :-
+get_read_filedes(IMAP, Res, !IO) :-
     get_pipe(IMAP, Pipe, !IO),
     (
         Pipe = open(Proc),
-        select_read(Proc, TimeoutSeconds, Res0, !IO),
-        (
-            Res0 = ready,
-            Res = ready
-        ;
-            Res0 = timeout,
-            Res = timeout
-        ;
-            Res0 = error,
-            Res = error("select error")
-        )
+        get_read_filedes(Proc, Fd),
+        Res = ok(Fd)
     ;
         Pipe = closed,
         Res = error("connection closed")

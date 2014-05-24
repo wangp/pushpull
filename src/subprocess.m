@@ -30,13 +30,7 @@
 
 :- pred close_pipes(subprocess::in, io::di, io::uo) is det.
 
-:- type select_result
-    --->    ready
-    ;       timeout
-    ;       error.
-
-:- pred select_read(subprocess::in, int::in, select_result::out,
-    io::di, io::uo) is det.
+:- pred get_read_filedes(subprocess::in, int::out) is det.
 
 :- pred read_byte(subprocess::in, io.result(int)::out, io::di, io::uo) is det.
 
@@ -65,10 +59,6 @@
                 rd :: int,
                 wr :: int
             ).
-
-:- pragma foreign_decl("C", local, "
-#include <sys/select.h>
-").
 
 :- pragma foreign_decl("C", local, "
 static int close_eintr(int fd)
@@ -301,42 +291,7 @@ close_pipes(subprocess(_Pid, Rd, Wr), !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-select_read(subprocess(_Pid, Rd, _Wr), TimeoutSeconds, Res, !IO) :-
-    select_read_2(Rd, TimeoutSeconds, RC, !IO),
-    ( RC = 0 ->
-        Res = timeout
-    ; RC < 0 ->
-        Res = error
-    ;
-        Res = ready
-    ).
-
-:- pred select_read_2(int::in, int::in, int::out, io::di, io::uo) is det.
-
-:- pragma foreign_proc("C",
-    select_read_2(Fd::in, TimeoutSeconds::in, RC::out, _IO0::di, _IO::uo),
-    [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
-        may_not_duplicate],
-"
-    int nfds;
-    fd_set rfds;
-    struct timeval timeout;
-
-    FD_ZERO(&rfds);
-    FD_SET(Fd, &rfds);
-    nfds = Fd + 1;
-    timeout.tv_sec = TimeoutSeconds;
-    timeout.tv_usec = 0;
-
-    RC = select(nfds, &rfds, NULL, NULL, &timeout);
-    if (RC == 0) {
-        RC = 0; /* timeout */
-    } else if (RC == -1) {
-        RC = -1; /* error */
-    } else {
-        RC = FD_ISSET(Fd, &rfds) ? 1 : 0;
-    }
-").
+get_read_filedes(subprocess(_Pid, Rd, _Wr), Rd).
 
 %-----------------------------------------------------------------------------%
 

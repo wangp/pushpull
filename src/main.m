@@ -13,6 +13,7 @@
 :- implementation.
 
 :- import_module bool.
+:- import_module dir.
 :- import_module int.
 :- import_module integer.
 :- import_module list.
@@ -23,11 +24,17 @@
 :- import_module gettimeofday.
 :- import_module imap.
 :- import_module imap.types.
+:- import_module inotify.
 :- import_module log.
 :- import_module maildir.
 :- import_module prog_config.
+:- import_module select.
 :- import_module signal.
 :- import_module sync.
+
+:- type idle_next
+    --->    sync
+    ;       restart_idle.
 
 %-----------------------------------------------------------------------------%
 
@@ -116,8 +123,15 @@ logged_in(Config, Db, IMAP, !IO) :-
                     UIDValidity, ResLookup, !IO),
                 (
                     ResLookup = found(MailboxPair, LastModSeqValzer),
-                    sync_and_repeat(Config, Db, IMAP, MailboxPair,
-                        LastModSeqValzer, !IO)
+                    watch_local_mailbox(LocalMailboxPath, ResInotify, !IO),
+                    (
+                        ResInotify = ok(Inotify),
+                        sync_and_repeat(Config, Db, IMAP, Inotify,
+                            MailboxPair, LastModSeqValzer, !IO)
+                    ;
+                        ResInotify = error(Error),
+                        report_error(Error, !IO)
+                    )
                 ;
                     ResLookup = error(Error),
                     report_error(Error, !IO)
@@ -139,10 +153,42 @@ logged_in(Config, Db, IMAP, !IO) :-
         report_error(Text, !IO)
     ).
 
-:- pred sync_and_repeat(prog_config::in, database::in, imap::in,
-    mailbox_pair::in, mod_seq_valzer::in, io::di, io::uo) is det.
+:- some [S] pred watch_local_mailbox(local_mailbox_path::in,
+    maybe_error(inotify(S))::out, io::di, io::uo) is det.
 
-sync_and_repeat(Config, Db, IMAP, MailboxPair, LastModSeqValzer, !IO) :-
+watch_local_mailbox(local_mailbox_path(DirName), Res, !IO) :-
+    inotify.init(ResInotify, !IO),
+    (
+        ResInotify = ok(Inotify),
+        Events = [modify, close_write],
+        add_watch(Inotify, DirName / "new", Events, ResWatchA, !IO),
+        (
+            ResWatchA = ok(_WatchA),
+            add_watch(Inotify, DirName / "cur", Events, ResWatchB, !IO),
+            (
+                ResWatchB = ok(_WatchB),
+                Res = ok(Inotify)
+            ;
+                ResWatchB = error(Error),
+                Res = error(Error),
+                close(Inotify, !IO)
+            )
+        ;
+            ResWatchA = error(Error),
+            Res = error(Error),
+            close(Inotify, !IO)
+        )
+    ;
+        ResInotify = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred sync_and_repeat(prog_config::in, database::in, imap::in,
+    inotify(S)::in, mailbox_pair::in, mod_seq_valzer::in, io::di, io::uo)
+    is det.
+
+sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer, !IO)
+        :-
     % This is the highest MODSEQ value that we know of, which could be higher
     % by now.
     get_selected_mailbox_highest_modseqvalue(IMAP, MaybeHighestModSeqValue,
@@ -153,32 +199,43 @@ sync_and_repeat(Config, Db, IMAP, MailboxPair, LastModSeqValzer, !IO) :-
         io.format("Synchronising from MODSEQ %s (highest MODSEQ >= %s)\n",
             [s(to_string(Low)), s(to_string(High))], !IO),
 
-        sync_mailboxes(Config, Db, IMAP, MailboxPair, LastModSeqValzer,
-            HighestModSeqValue, ResSync, !IO),
+        % Clear inotify buffer as of now.
+        % Events which come in between now and the end of the sync cycle can
+        % cause a potentially unnecessary sync cycle.
+        read_all(Inotify, ResClearInotify, !IO),
         (
-            ResSync = ok,
-            idling(IMAP, ResIdle, !IO),
+            ResClearInotify = ok,
+            sync_mailboxes(Config, Db, IMAP, MailboxPair, LastModSeqValzer,
+                HighestModSeqValue, ResSync, !IO),
             (
-                ResIdle = ok,
-                update_selected_mailbox_highest_modseqvalue_from_fetches(IMAP,
-                    !IO),
-                sync_and_repeat(Config, Db, IMAP, MailboxPair,
-                    mod_seq_valzer(High), !IO)
+                ResSync = ok,
+                idle_until_sync(IMAP, Inotify, ResIdle, !IO),
+                (
+                    ResIdle = ok,
+                    update_selected_mailbox_highest_modseqvalue_from_fetches(
+                        IMAP, !IO),
+                    sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair,
+                        mod_seq_valzer(High), !IO)
+                ;
+                    ResIdle = error(Error),
+                    report_error(Error, !IO)
+                )
             ;
-                ResIdle = error(Error),
+                ResSync = error(Error),
                 report_error(Error, !IO)
             )
         ;
-            ResSync = error(Error),
+            ResClearInotify = error(Error),
             report_error(Error, !IO)
         )
     ;
         report_error("Cannot support this server.", !IO)
     ).
 
-:- pred idling(imap::in, maybe_error::out, io::di, io::uo) is det.
+:- pred idle_until_sync(imap::in, inotify(S)::in, maybe_error::out,
+    io::di, io::uo) is det.
 
-idling(IMAP, Res, !IO) :-
+idle_until_sync(IMAP, Inotify, Res, !IO) :-
     % Send IDLE command.
     gettimeofday(StartTime, _StartUsec, !IO),
     idle(IMAP, result(Res0, IdleText, IdleAlerts), !IO),
@@ -187,35 +244,13 @@ idling(IMAP, Res, !IO) :-
         Res0 = continue,
         io.write_string(IdleText, !IO),
         io.nl(!IO),
-        idling_loop(IMAP, StartTime, Res1, !IO),
+        idle_until_done(IMAP, Inotify, StartTime, Res1, !IO),
         (
-            (
-                Res1 = ready
-            ;
-                Res1 = timeout
-            ),
-            % Send IDLE DONE.
-            idle_done(IMAP, result(ResDone, DoneText, DoneAlerts), !IO),
-            report_alerts(DoneAlerts, !IO),
-            (
-                ResDone = ok,
-                (
-                    Res1 = ready,
-                    Res = ok
-                ;
-                    Res1 = timeout,
-                    % Restart IDLE.
-                    idling(IMAP, Res, !IO)
-                )
-            ;
-                ( ResDone = no
-                ; ResDone = bad
-                ; ResDone = bye
-                ; ResDone = continue
-                ; ResDone = error
-                ),
-                Res = error("unexpected response to IDLE DONE: " ++ DoneText)
-            )
+            Res1 = ok(sync),
+            Res = ok
+        ;
+            Res1 = ok(restart_idle),
+            idle_until_sync(IMAP, Inotify, Res, !IO)
         ;
             Res1 = error(Error),
             Res = error(Error)
@@ -232,38 +267,99 @@ idling(IMAP, Res, !IO) :-
         Res = error("unexpected response to IDLE: " ++ IdleText)
     ).
 
-:- pred idling_loop(imap::in, int::in, select_result::out, io::di, io::uo)
-    is det.
+:- pred idle_until_done(imap::in, inotify(S)::in, int::in,
+    maybe_error(idle_next)::out, io::di, io::uo) is det.
 
-idling_loop(IMAP, StartTime, Res, !IO) :-
-    gettimeofday(Now, _, !IO),
-    TimeoutSecs = StartTime - Now + idle_timeout_secs,
-    ( TimeoutSecs > 0 ->
-        select_read(IMAP, TimeoutSecs, Res0, !IO)
-    ;
-        Res0 = timeout
-    ),
+idle_until_done(IMAP, Inotify, StartTime, Res, !IO) :-
+    idle_loop(IMAP, Inotify, StartTime, Res0, !IO),
     (
-        Res0 = ready,
-        read_single_idle_response(IMAP, Res1, !IO),
+        Res0 = ok(Next),
+        % Send IDLE DONE.
+        idle_done(IMAP, result(ResDone, DoneText, DoneAlerts), !IO),
+        report_alerts(DoneAlerts, !IO),
         (
-            Res1 = stop_idling(Alerts),
-            report_alerts(Alerts, !IO),
-            Res = ready
+            ResDone = ok,
+            Res = ok(Next)
         ;
-            Res1 = continue_idling(Alerts),
-            report_alerts(Alerts, !IO),
-            idling_loop(IMAP, StartTime, Res, !IO)
-        ;
-            Res1 = error(Error),
-            Res = error(Error)
+            ( ResDone = no
+            ; ResDone = bad
+            ; ResDone = bye
+            ; ResDone = continue
+            ; ResDone = error
+            ),
+            Res = error("unexpected response to IDLE DONE: " ++ DoneText)
         )
-    ;
-        Res0 = timeout,
-        Res = timeout
     ;
         Res0 = error(Error),
         Res = error(Error)
+    ).
+
+:- pred idle_loop(imap::in, inotify(S)::in, int::in,
+    maybe_error(idle_next)::out, io::di, io::uo) is det.
+
+idle_loop(IMAP, Inotify, StartTime, Res, !IO) :-
+    gettimeofday(Now, _, !IO),
+    TimeoutSecs = StartTime - Now + idle_timeout_secs,
+    get_filedes(Inotify, InotifyFd),
+    get_read_filedes(IMAP, ResIMAP_Fd, !IO),
+    (
+        ResIMAP_Fd = ok(IMAP_Fd),
+        select_read([IMAP_Fd, InotifyFd], TimeoutSecs, Res0, !IO),
+        (
+            Res0 = ready(_NumReady, FdSet),
+            ( fd_isset(FdSet, InotifyFd) ->
+                Sync1 = yes
+            ;
+                Sync1 = no
+            ),
+            ( fd_isset(FdSet, IMAP_Fd) ->
+                do_read_idle_response(IMAP, Res2, Sync2, !IO)
+            ;
+                Res2 = ok,
+                Sync2 = no
+            ),
+            (
+                Res2 = ok,
+                ( Sync1 `or` Sync2 = yes ->
+                    Res = ok(sync)
+                ;
+                    idle_loop(IMAP, Inotify, StartTime, Res, !IO)
+                )
+            ;
+                Res2 = error(Error),
+                Res = error(Error)
+            )
+        ;
+            Res0 = timeout,
+            Res = ok(restart_idle)
+        ;
+            Res0 = error(Error),
+            Res = error(Error)
+        )
+    ;
+        ResIMAP_Fd = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred do_read_idle_response(imap::in, maybe_error::out, bool::out,
+    io::di, io::uo) is det.
+
+do_read_idle_response(IMAP, Res, Sync, !IO) :-
+    read_single_idle_response(IMAP, ResRead, !IO),
+    (
+        (
+            ResRead = stop_idling(Alerts),
+            Sync = yes
+        ;
+            ResRead = continue_idling(Alerts),
+            Sync = no
+        ),
+        report_alerts(Alerts, !IO),
+        Res = ok
+    ;
+        ResRead = error(Error),
+        Res = error(Error),
+        Sync = no
     ).
 
 :- func idle_timeout_secs = int.
