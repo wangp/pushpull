@@ -112,6 +112,16 @@
     %
 :- pred idle(imap::in, imap_result::out, io::di, io::uo) is det.
 
+:- type idle_response_result
+    --->    stop_idling(list(alert))
+    ;       continue_idling(list(alert))
+    ;       error(string).
+
+    % Read an untagged message that the server may send while in IDLE state.
+    %
+:- pred read_single_idle_response(imap::in, idle_response_result::out,
+    io::di, io::uo) is det.
+
     % Must call this after successful idle,
     % before issuing another command.
     %
@@ -120,7 +130,7 @@
 :- type select_result
     --->    ready
     ;       timeout
-    ;       error.
+    ;       error(string).
 
 :- pred select_read(imap::in, int::in, select_result::out, io::di, io::uo)
     is det.
@@ -1159,6 +1169,64 @@ apply_idle_response(Tag, Response, Result, !State, unit, unit, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
+read_single_idle_response(IMAP, Res, !IO) :-
+    get_pipe(IMAP, Pipe, !IO),
+    read_crlf_line_chop(Pipe, ResRead, !IO),
+    (
+        ResRead = ok(Bytes),
+        parse_response_single(Pipe, Bytes, ParseResult, !IO),
+        (
+            ParseResult = yes(continue_req(_)),
+            Res = error("unexpected continue request")
+        ;
+            ParseResult = yes(untagged(ResponseData)),
+            update_state(apply_idle_untagged_response, IMAP, ResponseData,
+                Res, unit, _ : unit, !IO)
+        ;
+            ParseResult = yes(tagged(_, _, _)),
+            Res = error("unexpected tagged response")
+        ;
+            ParseResult = no,
+            Res = error("failed to parse response")
+        )
+    ;
+        ResRead = eof,
+        Res = error("unexpected eof")
+    ;
+        ResRead = error(Error),
+        Res = error(io.error_message(Error))
+    ).
+
+:- pred apply_idle_untagged_response(untagged_response_data::in,
+    idle_response_result::out, imap_state::in, imap_state::out,
+    unit::in, unit::out, io::di, io::uo) is det.
+
+apply_idle_untagged_response(ResponseData, Res, !State, !R, !IO) :-
+    apply_untagged_response(ResponseData, !State, [], Alerts, !R),
+    ( stop_idling(ResponseData) ->
+        Res = stop_idling(Alerts)
+    ;
+        Res = continue_idling(Alerts)
+    ).
+
+:- pred stop_idling(untagged_response_data::in) is semidet.
+
+stop_idling(ResponseData) :-
+    require_complete_switch [ResponseData]
+    (
+        ResponseData = cond_or_bye(Cond, _),
+        % Dovecot sends OK Still here which we can ignore.
+        Cond \= ok
+    ;
+        ResponseData = mailbox_data(_)
+    ;
+        ResponseData = message_data(_)
+    ;
+        ResponseData = capability_data(_)
+    ).
+
+%-----------------------------------------------------------------------------%
+
 idle_done(IMAP, Res, !IO) :-
     get_connection_state(IMAP, ConnState, !IO),
     (
@@ -1239,13 +1307,19 @@ select_read(IMAP, TimeoutSeconds, Res, !IO) :-
     (
         Pipe = open(Proc),
         select_read(Proc, TimeoutSeconds, Res0, !IO),
-        ( Res0 = ready, Res = ready
-        ; Res0 = timeout, Res = timeout
-        ; Res0 = error, Res = error
+        (
+            Res0 = ready,
+            Res = ready
+        ;
+            Res0 = timeout,
+            Res = timeout
+        ;
+            Res0 = error,
+            Res = error("select error")
         )
     ;
         Pipe = closed,
-        Res = error
+        Res = error("connection closed")
     ).
 
 %-----------------------------------------------------------------------------%
@@ -1264,16 +1338,6 @@ wait_for_complete_response_2(Pipe, Tag, RevUntagged0, Res, !IO) :-
     read_crlf_line_chop(Pipe, ResRead, !IO),
     (
         ResRead = ok(Bytes),
-        trace [runtime(env("DEBUG_IMAP")), io(!IO2)] (
-            ( string.from_code_unit_list(Bytes, String) ->
-                Stream = io.stderr_stream,
-                io.write_string(Stream, "\x1B\[34;01m", !IO2),
-                io.write_string(Stream, String, !IO2),
-                io.write_string(Stream, "\x1B\[0m\n", !IO2)
-            ;
-                true
-            )
-        ),
         parse_response_single(Pipe, Bytes, ParseResult, !IO),
         (
             ParseResult = yes(continue_req(ContinueReq)),

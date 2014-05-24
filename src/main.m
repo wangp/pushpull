@@ -20,6 +20,7 @@
 :- import_module string.
 
 :- import_module database.
+:- import_module gettimeofday.
 :- import_module imap.
 :- import_module imap.types.
 :- import_module log.
@@ -178,32 +179,32 @@ sync_and_repeat(Config, Db, IMAP, MailboxPair, LastModSeqValzer, !IO) :-
 :- pred idling(imap::in, maybe_error::out, io::di, io::uo) is det.
 
 idling(IMAP, Res, !IO) :-
-    idle(IMAP, result(ResIdle, IdleText, IdleAlerts), !IO),
+    % Send IDLE command.
+    gettimeofday(StartTime, _StartUsec, !IO),
+    idle(IMAP, result(Res0, IdleText, IdleAlerts), !IO),
     report_alerts(IdleAlerts, !IO),
     (
-        ResIdle = continue,
+        Res0 = continue,
         io.write_string(IdleText, !IO),
         io.nl(!IO),
-        % Idle up to 29 minutes.
-        TimeoutSeconds = 29 * 60,
-        select_read(IMAP, TimeoutSeconds, ResSelect, !IO),
+        idling_loop(IMAP, StartTime, Res1, !IO),
         (
             (
-                ResSelect = ready,
-                io.write_string("Leaving idle (ready).\n", !IO)
+                Res1 = ready
             ;
-                ResSelect = timeout,
-                io.write_string("Leaving idle (timeout).\n", !IO)
+                Res1 = timeout
             ),
+            % Send IDLE DONE.
             idle_done(IMAP, result(ResDone, DoneText, DoneAlerts), !IO),
             report_alerts(DoneAlerts, !IO),
             (
                 ResDone = ok,
                 (
-                    ResSelect = ready,
+                    Res1 = ready,
                     Res = ok
                 ;
-                    ResSelect = timeout,
+                    Res1 = timeout,
+                    % Restart IDLE.
                     idling(IMAP, Res, !IO)
                 )
             ;
@@ -216,20 +217,58 @@ idling(IMAP, Res, !IO) :-
                 Res = error("unexpected response to IDLE DONE: " ++ DoneText)
             )
         ;
-            ResSelect = error,
-            Res = error("connection closed")
+            Res1 = error(Error),
+            Res = error(Error)
         )
     ;
-        ResIdle = no,
+        Res0 = no,
         Res = error("IDLE not supported: " ++ IdleText)
     ;
-        ( ResIdle = ok
-        ; ResIdle = bad
-        ; ResIdle = bye
-        ; ResIdle = error
+        ( Res0 = ok
+        ; Res0 = bad
+        ; Res0 = bye
+        ; Res0 = error
         ),
         Res = error("unexpected response to IDLE: " ++ IdleText)
     ).
+
+:- pred idling_loop(imap::in, int::in, select_result::out, io::di, io::uo)
+    is det.
+
+idling_loop(IMAP, StartTime, Res, !IO) :-
+    gettimeofday(Now, _, !IO),
+    TimeoutSecs = StartTime - Now + idle_timeout_secs,
+    ( TimeoutSecs > 0 ->
+        select_read(IMAP, TimeoutSecs, Res0, !IO)
+    ;
+        Res0 = timeout
+    ),
+    (
+        Res0 = ready,
+        read_single_idle_response(IMAP, Res1, !IO),
+        (
+            Res1 = stop_idling(Alerts),
+            report_alerts(Alerts, !IO),
+            Res = ready
+        ;
+            Res1 = continue_idling(Alerts),
+            report_alerts(Alerts, !IO),
+            idling_loop(IMAP, StartTime, Res, !IO)
+        ;
+            Res1 = error(Error),
+            Res = error(Error)
+        )
+    ;
+        Res0 = timeout,
+        Res = timeout
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
+
+:- func idle_timeout_secs = int.
+
+idle_timeout_secs = 29 * 60.
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

@@ -29,7 +29,18 @@ read_crlf_line_chop(open(Pipe), Res, !IO) :-
     (
         Res0 = ok,
         ( RevBytes0 = [_LF, _CR | RevBytes] ->
-            Res = ok(reverse(RevBytes))
+            list.reverse(RevBytes, Bytes),
+            Res = ok(Bytes),
+            trace [runtime(env("DEBUG_IMAP")), io(!IO2)] (
+                ( string.from_code_unit_list(Bytes, String) ->
+                    Stream = io.stderr_stream,
+                    io.write_string(Stream, "\x1B\[34;01m", !IO2),
+                    io.write_string(Stream, String, !IO2),
+                    io.write_string(Stream, "\x1B\[0m\n", !IO2)
+                ;
+                    true
+                )
+            )
         ;
             unexpected($module, $pred, "RevBytes0 too short")
         )
