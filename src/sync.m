@@ -38,7 +38,7 @@
 %-----------------------------------------------------------------------------%
 
 sync_mailboxes(Config, Db, IMAP, MailboxPair,
-        LastModSeqValzer, HighestModSeqValue, Res, DirCache0, DirCache, !IO) :-
+        LastModSeqValzer, HighestModSeqValue, Res, !DirCache, !IO) :-
     % It might be better to get set of valid UIDs first, then use that
     % as part of update_db_remote_mailbox and for detecting expunges.
     update_db_remote_mailbox(Config, Db, IMAP, MailboxPair,
@@ -49,15 +49,15 @@ sync_mailboxes(Config, Db, IMAP, MailboxPair,
             ResRemoteExpunges, !IO),
         (
             ResRemoteExpunges = ok,
-            update_db_local_mailbox(Config, Db, MailboxPair, DirCache0,
-                ResUpdateLocal, !IO),
+            update_db_local_mailbox(Config, Db, MailboxPair, ResUpdateLocal,
+                !DirCache, !IO),
             (
-                ResUpdateLocal = ok(DirCache),
+                ResUpdateLocal = ok,
                 % Propagate flags first to allow pairings with
                 % previously-expunged messages to be be reset, and thus
                 % downloaded in the following steps.
                 propagate_flag_deltas_from_remote(Config, Db, MailboxPair,
-                    DirCache, ResPropRemote, !IO),
+                    ResPropRemote, !DirCache, !IO),
                 (
                     ResPropRemote = ok,
                     propagate_flag_deltas_from_local(Config, Db, IMAP,
@@ -65,12 +65,12 @@ sync_mailboxes(Config, Db, IMAP, MailboxPair,
                     (
                         ResPropLocal = ok,
                         download_unpaired_remote_messages(Config, Db, IMAP,
-                            MailboxPair, DirCache, ResDownload, !IO),
+                            MailboxPair, !.DirCache, ResDownload, !IO),
                         % DirCache does not include newly added messages.
                         (
                             ResDownload = ok,
                             upload_unpaired_local_messages(Config, Db, IMAP,
-                                MailboxPair, DirCache, ResUpload, !IO),
+                                MailboxPair, !.DirCache, ResUpload, !IO),
                             (
                                 ResUpload = ok,
                                 delete_expunged_pairings(Db, Res, !IO)
@@ -92,18 +92,15 @@ sync_mailboxes(Config, Db, IMAP, MailboxPair,
                 )
             ;
                 ResUpdateLocal = error(Error),
-                Res = error(Error),
-                DirCache = DirCache0
+                Res = error(Error)
             )
         ;
             ResRemoteExpunges = error(Error),
-            Res = error(Error),
-            DirCache = DirCache0
+            Res = error(Error)
         )
     ;
         ResUpdate = error(Error),
-        Res = error(Error),
-        DirCache = DirCache0
+        Res = error(Error)
     ).
 
 %-----------------------------------------------------------------------------%

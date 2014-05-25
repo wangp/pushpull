@@ -6,14 +6,15 @@
 :- import_module dir_cache.
 
 :- pred propagate_flag_deltas_from_remote(prog_config::in, database::in,
-    mailbox_pair::in, dir_cache::in, maybe_error::out, io::di, io::uo)
-    is det.
+    mailbox_pair::in, maybe_error::out, dir_cache::in, dir_cache::out,
+    io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
 :- implementation.
 
+:- import_module dir.
 :- import_module integer.
 :- import_module list.
 :- import_module require.
@@ -25,41 +26,49 @@
 
 %-----------------------------------------------------------------------------%
 
-propagate_flag_deltas_from_remote(Config, Db, MailboxPair, DirCache, Res, !IO)
+propagate_flag_deltas_from_remote(Config, Db, MailboxPair, Res, !DirCache, !IO)
         :-
     search_pending_flag_deltas_from_remote(Db, MailboxPair, ResSearch, !IO),
     (
         ResSearch = ok(Pendings),
         LocalMailboxName = get_local_mailbox_name(MailboxPair),
         LocalMailboxPath = make_local_mailbox_path(Config, LocalMailboxName),
-        list.foldl2(propagate_flag_deltas_from_remote_2(Config, Db,
-            LocalMailboxPath, DirCache), Pendings, ok, Res, !IO)
+        propagate_flag_deltas_from_remote_2(Config, Db, LocalMailboxPath,
+            Pendings, Res, !DirCache, !IO)
     ;
         ResSearch = error(Error),
         Res = error(Error)
     ).
 
 :- pred propagate_flag_deltas_from_remote_2(prog_config::in, database::in,
-    local_mailbox_path::in, dir_cache::in, pending_flag_deltas::in,
-    maybe_error::in, maybe_error::out, io::di, io::uo) is det.
+    local_mailbox_path::in, list(pending_flag_deltas)::in, maybe_error::out,
+    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
-propagate_flag_deltas_from_remote_2(Config, Db, LocalMailboxPath, DirCache,
-        Pending, Res0, Res, !IO) :-
+propagate_flag_deltas_from_remote_2(Config, Db, LocalMailboxPath, Pendings,
+        Res, !DirCache, !IO) :-
     (
-        Res0 = ok,
-        propagate_flag_deltas_from_remote_3(Config, Db, LocalMailboxPath,
-            DirCache, Pending, Res, !IO)
+        Pendings = [],
+        Res = ok
     ;
-        Res0 = error(Error),
-        Res = error(Error)
+        Pendings = [Head | Tail],
+        propagate_flag_deltas_from_remote_3(Config, Db, LocalMailboxPath,
+            Head, Res0, !DirCache, !IO),
+        (
+            Res0 = ok,
+            propagate_flag_deltas_from_remote_2(Config, Db, LocalMailboxPath,
+                Tail, Res, !DirCache, !IO)
+        ;
+            Res0 = error(Error),
+            Res = error(Error)
+        )
     ).
 
 :- pred propagate_flag_deltas_from_remote_3(prog_config::in, database::in,
-    local_mailbox_path::in, dir_cache::in, pending_flag_deltas::in,
-    maybe_error::out, io::di, io::uo) is det.
+    local_mailbox_path::in, pending_flag_deltas::in, maybe_error::out,
+    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
-propagate_flag_deltas_from_remote_3(_Config, Db, LocalMailboxPath, DirCache,
-        Pending, Res, !IO) :-
+propagate_flag_deltas_from_remote_3(_Config, Db, LocalMailboxPath,
+        Pending, Res, !DirCache, !IO) :-
     Pending = pending_flag_deltas(PairingId,
         MaybeUnique, LocalFlags0, LocalExpunged,
         MaybeUID, RemoteFlags0, RemoteExpunged),
@@ -74,8 +83,8 @@ propagate_flag_deltas_from_remote_3(_Config, Db, LocalMailboxPath, DirCache,
     (
         MaybeUnique = yes(Unique),
         expect(unify(LocalExpunged, exists), $module, $pred),
-        store_local_flags_add_rm(LocalMailboxPath, DirCache, Unique,
-            AddFlags, RemoveFlags, Res0, !IO),
+        store_local_flags_add_rm(LocalMailboxPath, Unique,
+            AddFlags, RemoveFlags, Res0, !DirCache, !IO),
         (
             Res0 = ok,
             record_remote_flag_deltas_applied_to_local(Db, PairingId,
@@ -103,13 +112,13 @@ propagate_flag_deltas_from_remote_3(_Config, Db, LocalMailboxPath, DirCache,
         )
     ).
 
-:- pred store_local_flags_add_rm(local_mailbox_path::in, dir_cache::in,
-    uniquename::in, set(flag)::in, set(flag)::in, maybe_error::out,
-    io::di, io::uo) is det.
+:- pred store_local_flags_add_rm(local_mailbox_path::in, uniquename::in,
+    set(flag)::in, set(flag)::in, maybe_error::out,
+    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
-store_local_flags_add_rm(MailboxPath, DirCache, Unique, AddFlags, RemoveFlags,
-        Res, !IO) :-
-    find_file(DirCache, MailboxPath, Unique, ResFind),
+store_local_flags_add_rm(MailboxPath, Unique, AddFlags, RemoveFlags, Res,
+        !DirCache, !IO) :-
+    find_file(!.DirCache, MailboxPath, Unique, ResFind),
     (
         ResFind = found(OldPath, MaybeInfoSuffix0),
         (
@@ -121,18 +130,27 @@ store_local_flags_add_rm(MailboxPath, DirCache, Unique, AddFlags, RemoveFlags,
                 InfoSuffix0, InfoSuffix)
         ),
         make_path(MailboxPath, cur, Unique, yes(InfoSuffix), NewPath),
-        ( OldPath = NewPath ->
-            ResRename = ok
-        ;
-            io.format("Renaming %s to %s\n", [s(OldPath), s(NewPath)], !IO),
-            io.rename_file(OldPath, NewPath, ResRename, !IO)
-        ),
         (
-            ResRename = ok,
+            OldPath = NewPath
+        ->
             Res = ok
         ;
-            ResRename = error(Error),
-            Res = error(io.error_message(Error))
+            dir.split_name(OldPath, OldDirName, OldFileName),
+            dir.split_name(NewPath, NewDirName, NewFileName)
+        ->
+            io.format("Renaming %s to %s\n", [s(OldPath), s(NewPath)], !IO),
+            io.rename_file(OldPath, NewPath, ResRename, !IO),
+            (
+                ResRename = ok,
+                update_for_rename(OldDirName, OldFileName,
+                    NewDirName, NewFileName, !DirCache),
+                Res = ok
+            ;
+                ResRename = error(Error),
+                Res = error(io.error_message(Error))
+            )
+        ;
+            unexpected($module, $pred, "dir.split_name failed")
         )
     ;
         ResFind = not_found,

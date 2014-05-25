@@ -21,6 +21,9 @@
 :- pred update_file_list(dirname::in, dir_cache::in,
     maybe_error(dir_cache)::out, io::di, io::uo) is det.
 
+:- pred update_for_rename(dirname::in, filename::in, dirname::in, filename::in,
+    dir_cache::in, dir_cache::out) is det.
+
     % Mostly for debugging.
     %
 :- pred get_file_list(dir_cache::in, dirname::in, list(filename)::out)
@@ -110,6 +113,49 @@ maybe_regular_file(unknown).
 
 dot_file(S) :-
     string.prefix(S, ".").
+
+%-----------------------------------------------------------------------------%
+
+update_for_rename(OldDirName, OldFileName, NewDirName, NewFileName,
+        !DirCache) :-
+    (
+        OldDirName = NewDirName,
+        OldFileName = NewFileName
+    ->
+        true
+    ;
+        OldDirName = NewDirName
+    ->
+        map.lookup(!.DirCache, OldDirName, Dir0),
+        Dir0 = dir(ModTime, Files0),
+        (
+            remove(OldFileName, Files0, Files1),
+            insert_new(NewFileName, Files1, Files)
+        ->
+            Dir = dir(ModTime, Files),
+            map.det_update(NewDirName, Dir, !DirCache)
+        ;
+            unexpected($module, $pred, "remove or insert_new failed")
+        )
+    ;
+        map.lookup(!.DirCache, OldDirName, OldDir0),
+        OldDir0 = dir(OldModTime, OldFiles0),
+        ( remove(OldFileName, OldFiles0, OldFiles) ->
+            OldDir = dir(OldModTime, OldFiles),
+            map.det_update(OldDirName, OldDir, !DirCache)
+        ;
+            unexpected($module, $pred, "remove failed")
+        ),
+
+        map.lookup(!.DirCache, NewDirName, NewDir0),
+        NewDir0 = dir(NewModTime, NewFiles0),
+        ( insert_new(NewFileName, NewFiles0, NewFiles) ->
+            NewDir = dir(NewModTime, NewFiles),
+            map.det_update(NewDirName, NewDir, !DirCache)
+        ;
+            unexpected($module, $pred, "remove failed")
+        )
+    ).
 
 %-----------------------------------------------------------------------------%
 
@@ -210,6 +256,81 @@ bst_to_list(node(L, X, R), !List) :-
     bst_to_list(R, !List),
     cons(X, !List),
     bst_to_list(L, !List).
+
+:- pred insert_new(T::in, bst(T)::in, bst(T)::out) is semidet.
+
+insert_new(X, T0, T) :-
+    (
+        T0 = nil,
+        T = node(nil, X, nil)
+    ;
+        T0 = node(L0, X0, R0),
+        compare(Rel, X, X0),
+        (
+            Rel = (=),
+            fail
+        ;
+            Rel = (<),
+            insert_new(X, L0, L),
+            T = node(L, X0, R0)
+        ;
+            Rel = (>),
+            insert_new(X, R0, R),
+            T = node(L0, X0, R)
+        )
+    ).
+
+:- pred remove(T::in, bst(T)::in, bst(T)::out) is semidet.
+
+remove(X, T0, T) :-
+    (
+        T0 = nil,
+        fail
+    ;
+        T0 = node(L0, X0, R0),
+        compare(Rel, X, X0),
+        (
+            Rel = (=),
+            T = join(L0, R0)
+        ;
+            Rel = (<),
+            remove(X, L0, L),
+            T = node(L, X0, R0)
+        ;
+            Rel = (>),
+            remove(X, R0, R),
+            T = node(L0, X0, R)
+        )
+    ).
+
+:- func join(bst(T), bst(T)) = bst(T).
+
+join(L, R) = T :-
+    (
+        L = nil,
+        R = nil,
+        T = nil
+    ;
+        L = nil,
+        R = node(_, _, _) @ T
+    ;
+        L = node(_, _, _) @ T,
+        R = nil
+    ;
+        L = node(LL, LX, LR),
+        R = node(RL, RX, RR),
+        expect(LX @< RX, $module, $pred, "LX >= RX"),
+        ( height(L) =< height(R) ->
+            T = node(LL, LX, join(LR, R))
+        ;
+            T = node(join(L, RL), RX, RR)
+        )
+    ).
+
+:- func height(bst(T)) = int.
+
+height(nil) = 0.
+height(node(L, _, R)) = max(height(L), height(R)).
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et
