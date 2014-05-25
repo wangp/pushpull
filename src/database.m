@@ -442,6 +442,8 @@ create_tables =
     CREATE INDEX IF NOT EXISTS message_id_index ON pairing(message_id);
     CREATE INDEX IF NOT EXISTS local_attn_index ON pairing(local_flags_attn);
     CREATE INDEX IF NOT EXISTS remote_attn_index ON pairing(remote_flags_attn);
+
+    ATTACH DATABASE ':memory:' AS mem;
 ".
 
 %   name,expunged   state
@@ -1392,7 +1394,7 @@ record_flag_deltas_applied_2(Db, Stmt, Res, !IO) :-
 :- type insert_into_detect_expunge_stmt == stmt.
 
 begin_detect_expunge(Db, Res, !IO) :-
-    CreateStmt = "CREATE TEMP TABLE detect_expunge(uniq NOT NULL)",
+    CreateStmt = "CREATE TABLE mem.detect_expunge(uniq NOT NULL)",
     exec(Db, CreateStmt, Res0, !IO),
     (
         Res0 = ok,
@@ -1418,12 +1420,12 @@ end_detect_expunge(Db, InsertStmt, Res, !IO) :-
     is det.
 
 drop_detect_expunge(Db, Res, !IO) :-
-    DropStmt = "DROP TABLE detect_expunge",
+    DropStmt = "DROP TABLE mem.detect_expunge",
     exec(Db, DropStmt, Res, !IO).
 
 :- func insert_into_detect_expunge_sql = string.
 
-insert_into_detect_expunge_sql = "INSERT INTO detect_expunge VALUES(?1)".
+insert_into_detect_expunge_sql = "INSERT INTO mem.detect_expunge VALUES(?1)".
 
 detect_expunge_insert_pairing_id(Db, InsertStmt, PairingId, Res, !IO) :-
     with_prepared_stmt(detect_expunge_insert_2,
@@ -1454,7 +1456,7 @@ mark_expunged_local_messages(Db, MailboxPair, Res, !IO) :-
     Where = 
        " WHERE mailbox_pair_id = :mailbox_pair_id
            AND NOT local_expunged
-           AND pairing_id IN detect_expunge",
+           AND pairing_id IN mem.detect_expunge",
     Bindings = [
         name(":mailbox_pair_id") - bind_value(MailboxPairId)
     ],
@@ -1489,7 +1491,7 @@ mark_expunged_remote_messages(Db, MailboxPair, Res, !IO) :-
     Where = 
        " WHERE mailbox_pair_id = :mailbox_pair_id
            AND NOT remote_expunged
-           AND remote_uid IN detect_expunge",
+           AND remote_uid IN mem.detect_expunge",
     Bindings = [
         name(":mailbox_pair_id") - bind_value(MailboxPairId)
     ],
