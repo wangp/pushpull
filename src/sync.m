@@ -49,8 +49,8 @@ sync_mailboxes(Config, Db, IMAP, MailboxPair,
             ResRemoteExpunges, !IO),
         (
             ResRemoteExpunges = ok,
-            update_db_local_mailbox(Db, MailboxPair, DirCache0, ResUpdateLocal,
-                !IO),
+            update_db_local_mailbox(Config, Db, MailboxPair, DirCache0,
+                ResUpdateLocal, !IO),
             (
                 ResUpdateLocal = ok(DirCache),
                 % Propagate flags first to allow pairings with

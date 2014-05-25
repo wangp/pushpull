@@ -30,7 +30,8 @@ propagate_flag_deltas_from_remote(Config, Db, MailboxPair, DirCache, Res, !IO)
     search_pending_flag_deltas_from_remote(Db, MailboxPair, ResSearch, !IO),
     (
         ResSearch = ok(Pendings),
-        LocalMailboxPath = get_local_mailbox_path(MailboxPair),
+        LocalMailboxName = get_local_mailbox_name(MailboxPair),
+        LocalMailboxPath = make_local_mailbox_path(Config, LocalMailboxName),
         list.foldl2(propagate_flag_deltas_from_remote_2(Config, Db,
             LocalMailboxPath, DirCache), Pendings, ok, Res, !IO)
     ;

@@ -27,7 +27,6 @@
 :- import_module imap.types.
 :- import_module inotify.
 :- import_module log.
-:- import_module maildir.
 :- import_module prog_config.
 :- import_module select.
 :- import_module signal.
@@ -42,9 +41,13 @@
 main(!IO) :-
     ignore_sigpipe(yes, !IO),
     io.command_line_arguments(Args, !IO),
-    ( Args = [DbFileName, Maildir, HostPort, UserName, Password, Mailbox] ->
-        Config = prog_config(DbFileName, maildir(Maildir), HostPort,
-            username(UserName), password(Password), mailbox(Mailbox)),
+    (
+        Args = [DbFileName, MaildirRoot, LocalMailboxName, HostPort, UserName,
+            Password, RemoteMailbox]
+    ->
+        Config = prog_config(DbFileName, maildir_root(MaildirRoot),
+            local_mailbox_name(LocalMailboxName), HostPort, username(UserName),
+            password(Password), mailbox(RemoteMailbox)),
         open_database(DbFileName, ResOpenDb, !IO),
         (
             ResOpenDb = ok(Db),
@@ -97,6 +100,8 @@ main_2(Config, Db, !IO) :-
     is det.
 
 logged_in(Config, Db, IMAP, !IO) :-
+    % For now.
+    LocalMailboxName = Config ^ local_mailbox_name,
     RemoteMailboxName = Config ^ mailbox,
     select(IMAP, RemoteMailboxName, result(ResExamine, Text, Alerts), !IO),
     report_alerts(Alerts, !IO),
@@ -112,19 +117,16 @@ logged_in(Config, Db, IMAP, !IO) :-
             MaybeUIDValidity = yes(UIDValidity),
             MaybeHighestModSeqValue = yes(highestmodseq(_))
         ->
-            % For now.
-            Config ^ maildir = maildir(Maildir),
-            LocalMailboxPath = local_mailbox_path(Maildir),
-
-            insert_or_ignore_mailbox_pair(Db, LocalMailboxPath,
+            insert_or_ignore_mailbox_pair(Db, LocalMailboxName,
                 RemoteMailboxName, UIDValidity, ResInsert, !IO),
             (
                 ResInsert = ok,
-                lookup_mailbox_pair(Db, LocalMailboxPath, RemoteMailboxName,
+                lookup_mailbox_pair(Db, LocalMailboxName, RemoteMailboxName,
                     UIDValidity, ResLookup, !IO),
                 (
                     ResLookup = found(MailboxPair, LastModSeqValzer),
-                    watch_local_mailbox(LocalMailboxPath, ResInotify, !IO),
+                    watch_local_mailbox(Config, LocalMailboxName, ResInotify,
+                        !IO),
                     (
                         ResInotify = ok(Inotify),
                         sync_and_repeat(Config, Db, IMAP, Inotify,
@@ -155,10 +157,12 @@ logged_in(Config, Db, IMAP, !IO) :-
         report_error(Text, !IO)
     ).
 
-:- some [S] pred watch_local_mailbox(local_mailbox_path::in,
+:- some [S] pred watch_local_mailbox(prog_config::in, local_mailbox_name::in,
     maybe_error(inotify(S))::out, io::di, io::uo) is det.
 
-watch_local_mailbox(local_mailbox_path(DirName), Res, !IO) :-
+watch_local_mailbox(Config, LocalMailboxName, Res, !IO) :-
+    LocalMailboxPath = make_local_mailbox_path(Config, LocalMailboxName),
+    LocalMailboxPath = local_mailbox_path(DirName),
     inotify.init(ResInotify, !IO),
     (
         ResInotify = ok(Inotify),

@@ -44,43 +44,44 @@ upload_unpaired_local_messages(Config, Database, IMAP, MailboxPair, DirCache,
     search_unpaired_local_messages(Database, MailboxPair, ResSearch, !IO),
     (
         ResSearch = ok(UnpairedLocals),
-        upload_messages(Config, Database, IMAP, MailboxPair, DirCache,
-            UnpairedLocals, Res, !IO)
+        LocalMailboxName = get_local_mailbox_name(MailboxPair),
+        LocalMailboxPath = make_local_mailbox_path(Config, LocalMailboxName),
+        upload_messages(Database, IMAP, MailboxPair, DirCache,
+            LocalMailboxPath, UnpairedLocals, Res, !IO)
     ;
         ResSearch = error(Error),
         Res = error(Error)
     ).
 
-:- pred upload_messages(prog_config::in, database::in, imap::in,
-    mailbox_pair::in, dir_cache::in, list(unpaired_local_message)::in,
+:- pred upload_messages(database::in, imap::in, mailbox_pair::in,
+    dir_cache::in, local_mailbox_path::in, list(unpaired_local_message)::in,
     maybe_error::out, io::di, io::uo) is det.
 
-upload_messages(Config, Database, IMAP, MailboxPair, DirCache, UnpairedLocals,
-        Res, !IO) :-
+upload_messages(Database, IMAP, MailboxPair, DirCache, LocalMailboxPath,
+        UnpairedLocals, Res, !IO) :-
     (
         UnpairedLocals = [],
         Res = ok
     ;
         UnpairedLocals = [H | T],
-        upload_message(Config, Database, IMAP, MailboxPair, DirCache, H, Res0,
-            !IO),
+        upload_message(Database, IMAP, MailboxPair, DirCache, LocalMailboxPath,
+            H, Res0, !IO),
         (
             Res0 = ok,
-            upload_messages(Config, Database, IMAP, MailboxPair, DirCache, T,
-                Res, !IO)
+            upload_messages(Database, IMAP, MailboxPair, DirCache,
+                LocalMailboxPath, T, Res, !IO)
         ;
             Res0 = error(Error),
             Res = error(Error)
         )
     ).
 
-:- pred upload_message(prog_config::in, database::in, imap::in,
-    mailbox_pair::in, dir_cache::in, unpaired_local_message::in,
-    maybe_error::out, io::di, io::uo) is det.
+:- pred upload_message(database::in, imap::in, mailbox_pair::in, dir_cache::in,
+    local_mailbox_path::in, unpaired_local_message::in, maybe_error::out,
+    io::di, io::uo) is det.
 
-upload_message(_Config, Database, IMAP, MailboxPair, DirCache, UnpairedLocal,
-        Res, !IO) :-
-    LocalMailboxPath = get_local_mailbox_path(MailboxPair),
+upload_message(Database, IMAP, MailboxPair, DirCache, LocalMailboxPath,
+        UnpairedLocal, Res, !IO) :-
     UnpairedLocal = unpaired_local_message(PairingId, Unique),
     find_file(DirCache, LocalMailboxPath, Unique, ResFind),
     (

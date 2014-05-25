@@ -12,14 +12,9 @@
 :- import_module dir_cache.
 :- import_module imap.
 :- import_module imap.types.
+:- import_module prog_config.
 
 %-----------------------------------------------------------------------------%
-
-    % Path to a Maildir directory, also known as a mail folder.
-    % It should have tmp/new/cur subdirectories.
-    %
-:- type local_mailbox_path
-    --->    local_mailbox_path(string). % XXX canonicalise
 
 :- type uniquename
     --->    uniquename(string).

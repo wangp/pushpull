@@ -14,6 +14,7 @@
 :- import_module imap.
 :- import_module imap.types.
 :- import_module maildir.
+:- import_module prog_config.
 
 %-----------------------------------------------------------------------------%
 
@@ -30,7 +31,7 @@
 
 :- type remote_mailbox_name == imap.types.mailbox.
 
-:- func get_local_mailbox_path(mailbox_pair) = local_mailbox_path.
+:- func get_local_mailbox_name(mailbox_pair) = local_mailbox_name.
 
 :- func get_remote_mailbox_name(mailbox_pair) = remote_mailbox_name.
 
@@ -40,7 +41,7 @@
     % If such a row already exists then do nothing.
     %
 :- pred insert_or_ignore_mailbox_pair(database::in,
-    local_mailbox_path::in, remote_mailbox_name::in, uidvalidity::in,
+    local_mailbox_name::in, remote_mailbox_name::in, uidvalidity::in,
     maybe_error::out, io::di, io::uo) is det.
 
 :- type lookup_mailbox_pair_result
@@ -48,7 +49,7 @@
     ;       error(string).
 
 :- pred lookup_mailbox_pair(database::in,
-    local_mailbox_path::in, remote_mailbox_name::in, uidvalidity::in,
+    local_mailbox_name::in, remote_mailbox_name::in, uidvalidity::in,
     lookup_mailbox_pair_result::out, io::di, io::uo) is det.
 
 :- pred update_remote_mailbox_modseqvalue(database::in, mailbox_pair::in,
@@ -229,7 +230,7 @@
 :- type mailbox_pair
     --->    mailbox_pair(
                 mailbox_pair_id,
-                local_mailbox_path,
+                local_mailbox_name,
                 remote_mailbox_name,
                 uidvalidity
             ).
@@ -304,8 +305,8 @@
     bind_value(message_id(S)) = bind_value(S)
 ].
 
-:- instance bind_value(local_mailbox_path) where [
-    bind_value(local_mailbox_path(S)) = bind_value(S)
+:- instance bind_value(local_mailbox_name) where [
+    bind_value(local_mailbox_name(S)) = bind_value(S)
 ].
 
 :- instance bind_value(uniquename) where [
@@ -455,8 +456,7 @@ close_database(Db, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-get_local_mailbox_path(mailbox_pair(_, LocalMailboxPath, _, _))
-    = LocalMailboxPath.
+get_local_mailbox_name(mailbox_pair(_, LocalMailbox, _, _)) = LocalMailbox.
 
 get_remote_mailbox_name(mailbox_pair(_, _, Mailbox, _)) = Mailbox.
 
@@ -465,14 +465,14 @@ get_remote_mailbox_uidvalidity(mailbox_pair(_, _, _, UIDValidity))
 
 %-----------------------------------------------------------------------------%
 
-insert_or_ignore_mailbox_pair(Db, LocalMailboxPath, RemoteMailboxName,
+insert_or_ignore_mailbox_pair(Db, LocalMailboxName, RemoteMailboxName,
         UIDValidity, Res, !IO) :-
     Stmt =
         "INSERT OR IGNORE INTO mailbox_pair(
             local_mailbox, remote_mailbox, uidvalidity, last_modseqvalzer)
         VALUES (:local_mailbox, :remote_mailbox, :uidvalidity, 0)",
     with_stmt(insert_or_ignore_local_mailbox_2, Db, Stmt, [
-        name(":local_mailbox") - bind_value(LocalMailboxPath),
+        name(":local_mailbox") - bind_value(LocalMailboxName),
         name(":remote_mailbox") - bind_value(RemoteMailboxName),
         name(":uidvalidity") - bind_value(UIDValidity)
     ], Res, !IO).
@@ -495,7 +495,7 @@ insert_or_ignore_local_mailbox_2(Db, Stmt, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-lookup_mailbox_pair(Db, LocalMailboxPath, RemoteMailboxName, UIDValidity, Res,
+lookup_mailbox_pair(Db, LocalMailboxName, RemoteMailboxName, UIDValidity, Res,
         !IO) :-
     Stmt =
         "SELECT mailbox_pair_id, last_modseqvalzer FROM mailbox_pair
@@ -503,20 +503,20 @@ lookup_mailbox_pair(Db, LocalMailboxPath, RemoteMailboxName, UIDValidity, Res,
             AND remote_mailbox = :remote_mailbox
             AND uidvalidity = :uidvalidity",
     Bindings = [
-        name(":local_mailbox") - bind_value(LocalMailboxPath),
+        name(":local_mailbox") - bind_value(LocalMailboxName),
         name(":remote_mailbox") - bind_value(RemoteMailboxName),
         name(":uidvalidity") - bind_value(UIDValidity)
     ],
     with_stmt(
-        lookup_mailbox_pair_2(LocalMailboxPath, RemoteMailboxName,
+        lookup_mailbox_pair_2(LocalMailboxName, RemoteMailboxName,
             UIDValidity),
         Db, Stmt, Bindings, Res, !IO).
 
-:- pred lookup_mailbox_pair_2(local_mailbox_path::in, remote_mailbox_name::in,
+:- pred lookup_mailbox_pair_2(local_mailbox_name::in, remote_mailbox_name::in,
     uidvalidity::in, db(rw)::in, stmt::in, lookup_mailbox_pair_result::out,
     io::di, io::uo) is det.
 
-lookup_mailbox_pair_2(LocalMailboxPath, RemoteMailboxName, UIDValidity,
+lookup_mailbox_pair_2(LocalMailboxName, RemoteMailboxName, UIDValidity,
         Db, Stmt, Res, !IO) :-
     step(Db, Stmt, StepResult, !IO),
     (
@@ -530,7 +530,7 @@ lookup_mailbox_pair_2(LocalMailboxPath, RemoteMailboxName, UIDValidity,
             convert(X0, MailboxPairId),
             convert(X1, ModSeqValzer)
         ->
-            MailboxPair = mailbox_pair(MailboxPairId, LocalMailboxPath,
+            MailboxPair = mailbox_pair(MailboxPairId, LocalMailboxName,
                 RemoteMailboxName, UIDValidity),
             Res = found(MailboxPair, ModSeqValzer)
         ;
