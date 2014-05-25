@@ -484,12 +484,17 @@ resp_text(Src, resp_text(MaybeCode, Text), !PS) :-
     ( next_char(Src, '[', !PS) ->
         resp_text_code(Src, Code, !PS),
         next_char(Src, ']', !PS),
-        sp(Src, !PS),
+        ( sp(Src, !PS) ->
+            text(Src, Text, !PS)
+        ;
+            % GMail does not send SP and text.
+            Text = ""
+        ),
         MaybeCode = yes(Code)
     ;
-        MaybeCode = no
-    ),
-    text(Src, Text, !PS).
+        MaybeCode = no,
+        text(Src, Text, !PS)
+    ).
 
 :- pred resp_text_code(src::in, resp_text_code::out, ps::in, ps::out)
     is semidet.
