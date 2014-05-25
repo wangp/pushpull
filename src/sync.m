@@ -7,13 +7,14 @@
 :- import_module maybe.
 
 :- import_module database.
+:- import_module dir_cache.
 :- import_module imap.
 :- import_module imap.types.
 :- import_module prog_config.
 
 :- pred sync_mailboxes(prog_config::in, database::in, imap::in,
     mailbox_pair::in, mod_seq_valzer::in, mod_seq_value::in, maybe_error::out,
-    io::di, io::uo) is det.
+    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -37,7 +38,7 @@
 %-----------------------------------------------------------------------------%
 
 sync_mailboxes(Config, Db, IMAP, MailboxPair,
-        LastModSeqValzer, HighestModSeqValue, Res, !IO) :-
+        LastModSeqValzer, HighestModSeqValue, Res, DirCache0, DirCache, !IO) :-
     % It might be better to get set of valid UIDs first, then use that
     % as part of update_db_remote_mailbox and for detecting expunges.
     update_db_remote_mailbox(Config, Db, IMAP, MailboxPair,
@@ -48,7 +49,8 @@ sync_mailboxes(Config, Db, IMAP, MailboxPair,
             ResRemoteExpunges, !IO),
         (
             ResRemoteExpunges = ok,
-            update_db_local_mailbox(Db, MailboxPair, ResUpdateLocal, !IO),
+            update_db_local_mailbox(Db, MailboxPair, DirCache0, ResUpdateLocal,
+                !IO),
             (
                 ResUpdateLocal = ok(DirCache),
                 % Propagate flags first to allow pairings with
@@ -90,15 +92,18 @@ sync_mailboxes(Config, Db, IMAP, MailboxPair,
                 )
             ;
                 ResUpdateLocal = error(Error),
-                Res = error(Error)
+                Res = error(Error),
+                DirCache = DirCache0
             )
         ;
             ResRemoteExpunges = error(Error),
-            Res = error(Error)
+            Res = error(Error),
+            DirCache = DirCache0
         )
     ;
         ResUpdate = error(Error),
-        Res = error(Error)
+        Res = error(Error),
+        DirCache = DirCache0
     ).
 
 %-----------------------------------------------------------------------------%

@@ -21,6 +21,7 @@
 :- import_module string.
 
 :- import_module database.
+:- import_module dir_cache.
 :- import_module gettimeofday.
 :- import_module imap.
 :- import_module imap.types.
@@ -127,7 +128,8 @@ logged_in(Config, Db, IMAP, !IO) :-
                     (
                         ResInotify = ok(Inotify),
                         sync_and_repeat(Config, Db, IMAP, Inotify,
-                            MailboxPair, LastModSeqValzer, !IO)
+                            MailboxPair, LastModSeqValzer,
+                            dir_cache.init, _DirCache, !IO)
                     ;
                         ResInotify = error(Error),
                         report_error(Error, !IO)
@@ -184,11 +186,11 @@ watch_local_mailbox(local_mailbox_path(DirName), Res, !IO) :-
     ).
 
 :- pred sync_and_repeat(prog_config::in, database::in, imap::in,
-    inotify(S)::in, mailbox_pair::in, mod_seq_valzer::in, io::di, io::uo)
-    is det.
+    inotify(S)::in, mailbox_pair::in, mod_seq_valzer::in,
+    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
-sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer, !IO)
-        :-
+sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
+        !DirCache, !IO) :-
     % This is the highest MODSEQ value that we know of, which could be higher
     % by now.
     get_selected_mailbox_highest_modseqvalue(IMAP, MaybeHighestModSeqValue,
@@ -206,7 +208,7 @@ sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer, !IO)
         (
             ResClearInotify = ok,
             sync_mailboxes(Config, Db, IMAP, MailboxPair, LastModSeqValzer,
-                HighestModSeqValue, ResSync, !IO),
+                HighestModSeqValue, ResSync, !DirCache, !IO),
             (
                 ResSync = ok,
                 idle_until_sync(IMAP, Inotify, ResIdle, !IO),
@@ -215,7 +217,7 @@ sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer, !IO)
                     update_selected_mailbox_highest_modseqvalue_from_fetches(
                         IMAP, !IO),
                     sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair,
-                        mod_seq_valzer(High), !IO)
+                        mod_seq_valzer(High), !DirCache, !IO)
                 ;
                     ResIdle = error(Error),
                     report_error(Error, !IO)

@@ -40,8 +40,15 @@
 :- import_module map.
 :- import_module require.
 :- import_module string.
+:- import_module time.
 
-:- type dir_cache == map(dirname, bst(string)).
+:- type dir_cache == map(dirname, dir).
+
+:- type dir
+    --->    dir(
+                mtime   :: time_t,
+                files   :: bst(string)
+            ).
 
 :- type bst(T)
     --->    nil
@@ -52,14 +59,31 @@
 init = map.init.
 
 update_file_list(DirName, DirCache0, Res, !IO) :-
-    dir.foldl2(enumerate_files, DirName, [], Res0, !IO),
+    io.file_modification_time(DirName, ResModTime, !IO),
     (
-        Res0 = ok(FilesList),
-        make_bst(FilesList, FilesTree),
-        map.set(DirName, FilesTree, DirCache0, DirCache),
-        Res = ok(DirCache)
+        ResModTime = ok(ModTime),
+        (
+            map.search(DirCache0, DirName, Dir0),
+            Dir0 = dir(ModTime0, _Files0),
+            ModTime0 = ModTime
+        ->
+            % Entry already up-to-date.
+            Res = ok(DirCache0)
+        ;
+            dir.foldl2(enumerate_files, DirName, [], ResFiles, !IO),
+            (
+                ResFiles = ok(FilesList),
+                make_bst(FilesList, FilesTree),
+                Dir = dir(ModTime, FilesTree),
+                map.set(DirName, Dir, DirCache0, DirCache),
+                Res = ok(DirCache)
+            ;
+                ResFiles = error(_, Error),
+                Res = error(io.error_message(Error))
+            )
+        )
     ;
-        Res0 = error(_, Error),
+        ResModTime = error(Error),
         Res = error(io.error_message(Error))
     ).
 
@@ -90,7 +114,8 @@ dot_file(S) :-
 %-----------------------------------------------------------------------------%
 
 get_file_list(DirCache, DirName, FileList) :-
-    ( map.search(DirCache, DirName, BST) ->
+    ( map.search(DirCache, DirName, Dir) ->
+        Dir = dir(_ModTime, BST),
         bst_to_list(BST, FileList)
     ;
         FileList = []
@@ -99,7 +124,8 @@ get_file_list(DirCache, DirName, FileList) :-
 %-----------------------------------------------------------------------------%
 
 search_files_with_prefix(DirCache, DirName, Prefix, Matching) :-
-    ( map.search(DirCache, DirName, BST) ->
+    ( map.search(DirCache, DirName, Dir) ->
+        Dir = dir(_ModTime, BST),
         search_bst_prefix(BST, Prefix, [], Matching)
     ;
         Matching = []
