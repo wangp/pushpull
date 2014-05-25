@@ -152,6 +152,12 @@ update_uid_range(Db, IMAP, MailboxPair, SeqMin, SeqMax, SinceModSeqValzer,
         ResFetch = ok_with_data(FetchResults),
         io.write_string(Text, !IO),
         io.nl(!IO),
+        % XXX If changes are being made on the remote mailbox concurrently the
+        % server (at least Dovecot) may send unsolicited FETCH responses which
+        % are not directly in response to our FETCH request, and therefore not
+        % matching the items that we asked for.  We probably need to filter
+        % those responses out, or add them to the responses that we did ask
+        % for.
         (
             list.foldl(make_remote_message_info, FetchResults,
                 map.init, RemoteMessageInfos)
