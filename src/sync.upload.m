@@ -82,10 +82,12 @@ upload_message(Database, IMAP, MailboxPair, DirCache, UnpairedLocal, Res, !IO)
     find_file(DirCache, Unique, ResFind),
     (
         ResFind = found(DirName, BaseName, _InfoSuffix),
+        Path = DirName / BaseName,
+        io.format("Uploading %s\n", [s(Path ^ path)], !IO),
         lookup_local_message_flags(Database, PairingId, ResFlags, !IO),
         (
             ResFlags = ok(LocalFlagDeltas),
-            get_file_data(DirName / BaseName, ResFileData, !IO),
+            get_file_data(Path, ResFileData, !IO),
             (
                 ResFileData = ok(FileData),
                 get_selected_mailbox_highest_modseqvalue(IMAP,
