@@ -166,7 +166,7 @@ watch_local_mailbox(Config, LocalMailboxName, Res, !IO) :-
     inotify.init(ResInotify, !IO),
     (
         ResInotify = ok(Inotify),
-        Events = [modify, close_write],
+        Events = [modify, close_write, moved_from, delete],
         add_watch(Inotify, DirName / "new", Events, ResWatchA, !IO),
         (
             ResWatchA = ok(_WatchA),
