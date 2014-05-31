@@ -14,7 +14,6 @@
 
 :- implementation.
 
-:- import_module dir.
 :- import_module integer.
 :- import_module list.
 :- import_module require.
@@ -23,6 +22,7 @@
 
 :- import_module flag_delta.
 :- import_module maildir.
+:- import_module path.
 
 %-----------------------------------------------------------------------------%
 
@@ -118,9 +118,9 @@ propagate_flag_deltas_from_remote_3(_Config, Db, LocalMailboxPath,
 
 store_local_flags_add_rm(MailboxPath, Unique, AddFlags, RemoveFlags, Res,
         !DirCache, !IO) :-
-    find_file(!.DirCache, MailboxPath, Unique, ResFind),
+    find_file(!.DirCache, Unique, ResFind),
     (
-        ResFind = found(OldPath, MaybeInfoSuffix0),
+        ResFind = found(OldDirName, OldBaseName, MaybeInfoSuffix0),
         (
             MaybeInfoSuffix0 = no,
             InfoSuffix = flags_to_info_suffix(AddFlags)
@@ -129,35 +129,35 @@ store_local_flags_add_rm(MailboxPath, Unique, AddFlags, RemoveFlags, Res,
             add_remove_standard_flags(AddFlags, RemoveFlags,
                 InfoSuffix0, InfoSuffix)
         ),
-        make_path(MailboxPath, cur, Unique, yes(InfoSuffix), NewPath),
+        make_path(MailboxPath, cur, Unique, yes(InfoSuffix),
+            NewDirName, NewBaseName),
         (
-            OldPath = NewPath
+            OldDirName = NewDirName,
+            OldBaseName = NewBaseName
         ->
             Res = ok
         ;
-            dir.split_name(OldPath, OldDirName, OldFileName),
-            dir.split_name(NewPath, NewDirName, NewFileName)
-        ->
-            io.format("Renaming %s to %s\n", [s(OldPath), s(NewPath)], !IO),
-            io.rename_file(OldPath, NewPath, ResRename, !IO),
+            OldPath = OldDirName / OldBaseName,
+            NewPath = NewDirName / NewBaseName,
+            io.format("Renaming %s to %s\n",
+                [s(OldPath ^ path), s(NewPath ^ path)], !IO),
+            io.rename_file(OldPath ^ path, NewPath ^ path, ResRename, !IO),
             (
                 ResRename = ok,
-                update_for_rename(OldDirName, OldFileName,
-                    NewDirName, NewFileName, !DirCache),
+                update_for_rename(OldDirName, OldBaseName,
+                    NewDirName, NewBaseName, !DirCache),
                 Res = ok
             ;
                 ResRename = error(Error),
                 Res = error(io.error_message(Error))
             )
-        ;
-            unexpected($module, $pred, "dir.split_name failed")
         )
     ;
         ResFind = not_found,
         Unique = uniquename(UniqueString),
         Res = error("missing uniquename " ++ UniqueString)
     ;
-        ResFind = found_but_unexpected(Path),
+        ResFind = found_but_unexpected(path(Path)),
         Res = error("found unique name but unexpected: " ++ Path)
     ).
 

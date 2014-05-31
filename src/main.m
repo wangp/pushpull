@@ -27,6 +27,7 @@
 :- import_module imap.types.
 :- import_module inotify.
 :- import_module log.
+:- import_module path.
 :- import_module prog_config.
 :- import_module select.
 :- import_module signal.
@@ -129,9 +130,14 @@ logged_in(Config, Db, IMAP, !IO) :-
                         !IO),
                     (
                         ResInotify = ok(Inotify),
+                        LocalMailboxPath = make_local_mailbox_path(Config,
+                            LocalMailboxName),
+                        LocalMailboxPath = local_mailbox_path(DirName),
+                        DirCache0 = dir_cache.init(dirname(DirName)),
+
                         sync_and_repeat(Config, Db, IMAP, Inotify,
                             MailboxPair, LastModSeqValzer,
-                            dir_cache.init, _DirCache, !IO)
+                            DirCache0, _DirCache, !IO)
                     ;
                         ResInotify = error(Error),
                         report_error(Error, !IO)

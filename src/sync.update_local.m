@@ -17,7 +17,6 @@
 :- implementation.
 
 :- import_module bool.
-:- import_module dir.
 :- import_module list.
 :- import_module map.
 :- import_module set.
@@ -27,52 +26,32 @@
 :- import_module flag_delta.
 :- import_module maildir.
 :- import_module message_file.
+:- import_module path.
 
     % diet might be good.
 :- type pairing_id_set == set_tree234(pairing_id).
 
 %-----------------------------------------------------------------------------%
 
-update_db_local_mailbox(Config, Db, MailboxPair, Res, !DirCache, !IO) :-
-    LocalMailboxName = get_local_mailbox_name(MailboxPair),
-    LocalMailboxPath = make_local_mailbox_path(Config, LocalMailboxName),
-    update_file_list(LocalMailboxPath, !.DirCache, ResCache, !IO),
+update_db_local_mailbox(_Config, Db, MailboxPair, Res, !DirCache, !IO) :-
+    update_mailbox_file_list(ResCache, !DirCache, !IO),
     (
-        ResCache = ok(!:DirCache),
-        list_files(!.DirCache, LocalMailboxPath, NewFiles, CurFiles),
-
+        ResCache = ok,
         get_unexpunged_pairings_by_uniquename(Db, MailboxPair,
             ResExistingPairings, !IO),
         (
             ResExistingPairings = ok(ExistingPairings),
             make_pairing_id_set(ExistingPairings, UnseenPairingIds0),
-
-            LocalMailboxPath = local_mailbox_path(DirName),
+            begin(!.DirCache, Index0),
             update_db_local_message_files(Db, MailboxPair, ExistingPairings,
-                DirName / "new", NewFiles, Res1,
-                UnseenPairingIds0, UnseenPairingIds1, !IO),
+                !.DirCache, Index0, _Index, ResUpdate, UnseenPairingIds0,
+                UnseenPairingIds, !IO),
             (
-                Res1 = ok,
-                update_db_local_message_files(Db, MailboxPair,
-                    ExistingPairings, DirName / "cur", CurFiles, Res2,
-                    UnseenPairingIds1, UnseenPairingIds, !IO),
-                (
-                    Res2 = ok,
-                    mark_expunged_local_messages(Db, MailboxPair,
-                        UnseenPairingIds, Res3, !IO),
-                    (
-                        Res3 = ok,
-                        Res = ok
-                    ;
-                        Res3 = error(Error),
-                        Res = error(Error)
-                    )
-                ;
-                    Res2 = error(Error),
-                    Res = error(Error)
-                )
+                ResUpdate = ok,
+                mark_expunged_local_messages(Db, MailboxPair, UnseenPairingIds,
+                    Res, !IO)
             ;
-                Res1 = error(Error),
+                ResUpdate = error(Error),
                 Res = error(Error)
             )
         ;
@@ -97,42 +76,44 @@ make_pairing_id_set(pairing_flag_deltas(PairingId, _), !Set) :-
     insert(PairingId, !Set).
 
 :- pred update_db_local_message_files(database::in, mailbox_pair::in,
-    map(uniquename, pairing_flag_deltas)::in, string::in, list(string)::in,
-    maybe_error::out, pairing_id_set::in, pairing_id_set::out, io::di, io::uo)
-    is det.
+    map(uniquename, pairing_flag_deltas)::in, dir_cache::in,
+    dir_cache.index::in, dir_cache.index::out, maybe_error::out,
+    pairing_id_set::in, pairing_id_set::out, io::di, io::uo) is det.
 
-update_db_local_message_files(_Db, _MailboxPair, _ExistingPairings, _DirName,
-        [], ok, !UnseenPairingIds, !IO).
-update_db_local_message_files(Db, MailboxPair, ExistingPairings, DirName,
-        [BaseName | BaseNames], Res, !UnseenPairingIds, !IO) :-
-    update_db_local_message_file(Db, MailboxPair, ExistingPairings,
-        DirName, BaseName, Res0, !UnseenPairingIds, !IO),
-    (
-        Res0 = ok,
-        update_db_local_message_files(Db, MailboxPair, ExistingPairings,
-            DirName, BaseNames, Res, !UnseenPairingIds, !IO)
+update_db_local_message_files(Db, MailboxPair, ExistingPairings,
+        DirCache, !Index, Res, !UnseenPairingIds, !IO) :-
+    ( get(DirCache, !Index, File) ->
+        update_db_local_message_file(Db, MailboxPair, ExistingPairings, File,
+            Res0, !UnseenPairingIds, !IO),
+        (
+            Res0 = ok,
+            update_db_local_message_files(Db, MailboxPair, ExistingPairings,
+                DirCache, !Index, Res, !UnseenPairingIds, !IO)
+        ;
+            Res0 = error(Error),
+            Res = error(Error)
+        )
     ;
-        Res0 = error(Error),
-        Res = error(Error)
+        Res = ok
     ).
 
 :- pred update_db_local_message_file(database::in, mailbox_pair::in,
-    map(uniquename, pairing_flag_deltas)::in, string::in, string::in,
+    map(uniquename, pairing_flag_deltas)::in, dir_cache.file::in,
     maybe_error::out, pairing_id_set::in, pairing_id_set::out,
     io::di, io::uo) is det.
 
 update_db_local_message_file(Db, MailboxPair, ExistingPairings,
-        DirName, BaseName, Res, !UnseenPairingIds, !IO) :-
+        file(BaseName, DirName), Res, !UnseenPairingIds, !IO) :-
     ( parse_basename(BaseName, Unique, Flags) ->
         update_db_local_message_file_2(Db, MailboxPair, ExistingPairings,
             DirName, BaseName, Unique, Flags, Res, !UnseenPairingIds, !IO)
     ;
         % Should just skip.
-        Res = error("cannot parse message filename: " ++ BaseName)
+        Res = error("cannot parse message filename: " ++ BaseName ^ bn)
     ).
 
 :- pred update_db_local_message_file_2(database::in, mailbox_pair::in,
-    map(uniquename, pairing_flag_deltas)::in, string::in, string::in,
+    map(uniquename, pairing_flag_deltas)::in, dirname::in, basename::in,
     uniquename::in, set(flag)::in, maybe_error::out,
     pairing_id_set::in, pairing_id_set::out, io::di, io::uo) is det.
 
@@ -162,12 +143,12 @@ update_db_local_message_file_2(Db, MailboxPair, ExistingPairings,
     ).
 
 :- pred update_db_local_message_file_3(database::in,
-    mailbox_pair::in, string::in, string::in, uniquename::in, set(flag)::in,
+    mailbox_pair::in, dirname::in, basename::in, uniquename::in, set(flag)::in,
     maybe_error::out, io::di, io::uo) is det.
 
 update_db_local_message_file_3(Db, MailboxPair, DirName, BaseName, Unique,
         Flags, Res, !IO) :-
-    Path = DirName / BaseName,
+    DirName / BaseName = path(Path),
     read_message_id_from_file(Path, ResRead, !IO),
     (
         ResRead = yes(MessageId),
@@ -190,11 +171,12 @@ update_db_local_message_file_3(Db, MailboxPair, DirName, BaseName, Unique,
         ResRead = no,
         % XXX we could add this file to the database, but we want to have
         % more indicators that it really is a message file
-        io.format("skipping %s: missing Message-Id\n", [s(BaseName)], !IO),
+        io.format("skipping %s: missing Message-Id\n", [s(BaseName ^ bn)],
+            !IO),
         Res = ok
     ;
         ResRead = format_error(Error),
-        io.format("skipping %s: %s\n", [s(BaseName), s(Error)], !IO),
+        io.format("skipping %s: %s\n", [s(BaseName ^ bn), s(Error)], !IO),
         Res = ok
     ;
         ResRead = error(Error),

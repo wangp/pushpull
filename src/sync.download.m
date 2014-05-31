@@ -30,6 +30,7 @@
 :- import_module log.
 :- import_module maildir.
 :- import_module message_file.
+:- import_module path.
 :- import_module utime.
 :- import_module verify_file.
 
@@ -228,8 +229,8 @@ save_message_and_pair(Database, MailboxPair, LocalMailboxPath, UnpairedRemote,
         RawMessageLf, Flags, InternalDate, DirCache, Res, !IO) :-
     UnpairedRemote = unpaired_remote_message(PairingId, UID, MessageId),
     % Avoid duplicating an existing local message.
-    match_unpaired_local_message(Database, MailboxPair, LocalMailboxPath,
-        DirCache, MessageId, RawMessageLf, ResMatch, !IO),
+    match_unpaired_local_message(Database, MailboxPair, DirCache, MessageId,
+        RawMessageLf, ResMatch, !IO),
     (
         ResMatch = ok(no),
         save_raw_message(LocalMailboxPath, UID, RawMessageLf, Flags,
@@ -269,62 +270,63 @@ save_message_and_pair(Database, MailboxPair, LocalMailboxPath, UnpairedRemote,
     ).
 
 :- pred match_unpaired_local_message(database::in, mailbox_pair::in,
-    local_mailbox_path::in, dir_cache::in, maybe_message_id::in, string::in,
+    dir_cache::in, maybe_message_id::in, string::in,
     maybe_error(maybe(unpaired_local_message))::out, io::di, io::uo) is det.
 
-match_unpaired_local_message(Database, MailboxPair, LocalMailboxPath, DirCache,
+match_unpaired_local_message(Database, MailboxPair, DirCache,
         MessageId, RawMessageLf, Res, !IO) :-
     search_unpaired_local_messages_by_message_id(Database, MailboxPair,
         MessageId, ResSearch, !IO),
     (
         ResSearch = ok(UnpairedLocals),
-        verify_unpaired_local_messages(LocalMailboxPath, DirCache,
-            UnpairedLocals, RawMessageLf, Res, !IO)
+        verify_unpaired_local_messages(DirCache, UnpairedLocals, RawMessageLf,
+            Res, !IO)
     ;
         ResSearch = error(Error),
         Res = error(Error)
     ).
 
-:- pred verify_unpaired_local_messages(local_mailbox_path::in, dir_cache::in,
+:- pred verify_unpaired_local_messages(dir_cache::in,
     list(unpaired_local_message)::in, string::in,
     maybe_error(maybe(unpaired_local_message))::out, io::di, io::uo) is det.
 
-verify_unpaired_local_messages(LocalMailboxPath, DirCache, UnpairedLocals,
-        RawMessageLf, Res, !IO) :-
+verify_unpaired_local_messages(DirCache, UnpairedLocals, RawMessageLf, Res,
+        !IO) :-
     (
         UnpairedLocals = [],
         Res = ok(no)
     ;
         UnpairedLocals = [UnpairedLocal | RestUnpairedLocals],
-        verify_unpaired_local_message(LocalMailboxPath, DirCache,
-            UnpairedLocal, RawMessageLf, ResVerify, !IO),
+        verify_unpaired_local_message(DirCache, UnpairedLocal, RawMessageLf,
+            ResVerify, !IO),
         (
             ResVerify = ok(yes),
             Res = ok(yes(UnpairedLocal))
         ;
             ResVerify = ok(no),
-            verify_unpaired_local_messages(LocalMailboxPath, DirCache,
-                RestUnpairedLocals, RawMessageLf, Res, !IO)
+            verify_unpaired_local_messages(DirCache, RestUnpairedLocals,
+                RawMessageLf, Res, !IO)
         ;
             ResVerify = error(Error),
             Res = error(Error)
         )
     ).
 
-:- pred verify_unpaired_local_message(local_mailbox_path::in, dir_cache::in,
+:- pred verify_unpaired_local_message(dir_cache::in,
     unpaired_local_message::in, string::in, maybe_error(bool)::out,
     io::di, io::uo) is det.
 
-verify_unpaired_local_message(LocalMailboxPath, DirCache, UnpairedLocal,
-        RawMessageLf, Res, !IO) :-
+verify_unpaired_local_message(DirCache, UnpairedLocal, RawMessageLf, Res, !IO)
+        :-
     UnpairedLocal = unpaired_local_message(_PairingId, Unique),
-    find_file(DirCache, LocalMailboxPath, Unique, ResFind),
+    find_file(DirCache, Unique, ResFind),
     (
-        ResFind = found(Path, _InfoSuffix),
+        ResFind = found(DirName, BaseName, _InfoSuffix),
+        DirName / BaseName = path(Path),
         io.format("Verifying %s\n", [s(Path)], !IO),
         verify_file(Path, RawMessageLf, Res, !IO)
     ;
-        ResFind = found_but_unexpected(Path),
+        ResFind = found_but_unexpected(path(Path)),
         Res = error("found unique name but unexpected: " ++ Path)
     ;
         ResFind = not_found,
@@ -343,10 +345,12 @@ save_raw_message(LocalMailboxPath, uid(UID), RawMessageLf, Flags, InternalDate,
         InfoSuffix = flags_to_info_suffix(Flags),
         % XXX don't think this condition is right
         ( InfoSuffix = info_suffix(set.init, "") ->
-            make_path(LocalMailboxPath, new, Unique, no, DestPath)
+            make_path(LocalMailboxPath, new, Unique, no, DestDir, DestBaseName)
         ;
-            make_path(LocalMailboxPath, cur, Unique, yes(InfoSuffix), DestPath)
+            make_path(LocalMailboxPath, cur, Unique, yes(InfoSuffix),
+                DestDir, DestBaseName)
         ),
+        DestDir / DestBaseName = path(DestPath),
         io.format("Saving message UID %s to %s\n",
             [s(to_string(UID)), s(DestPath)], !IO),
         io.open_output(TmpPath, ResOpen, !IO),

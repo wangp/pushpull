@@ -5,7 +5,6 @@
 
 :- import_module char.
 :- import_module io.
-:- import_module list.
 :- import_module maybe.
 :- import_module set.
 
@@ -13,6 +12,7 @@
 :- import_module imap.
 :- import_module imap.types.
 :- import_module prog_config.
+:- import_module path.
 
 %-----------------------------------------------------------------------------%
 
@@ -30,31 +30,17 @@
     maybe_error({uniquename, string})::out, io::di, io::uo) is det.
 
 :- pred make_path(local_mailbox_path::in, new_or_cur::in, uniquename::in,
-    maybe(info_suffix)::in, string::out) is det.
-
-:- pred update_file_list(local_mailbox_path::in, dir_cache::in,
-    maybe_error(dir_cache)::out, io::di, io::uo) is det.
-
-    % Temporary interface.
-    %
-:- pred list_files(dir_cache::in, local_mailbox_path::in,
-    list(string)::out, list(string)::out) is det.
+    maybe(info_suffix)::in, dirname::out, basename::out) is det.
 
 :- type find_file_result
-    --->    found(
-                path        :: string, % entire path to file
-                info_suf    :: maybe(info_suffix)
-            )
-    ;       found_but_unexpected(string)
+    --->    found(dirname, basename, maybe(info_suffix))
+    ;       found_but_unexpected(path)
     ;       not_found.
 
-    % Search for a file in the given mailbox (including sub-mailboxes) with the
-    % given uniquename.
-    %
-:- pred find_file(dir_cache::in, local_mailbox_path::in, uniquename::in,
-    find_file_result::out) is det.
+:- pred find_file(dir_cache::in, uniquename::in, find_file_result::out) is det.
 
-:- pred parse_basename(string::in, uniquename::out, set(flag)::out) is semidet.
+:- pred parse_basename(basename::in, uniquename::out, set(flag)::out)
+    is semidet.
 
 :- func flags_to_info_suffix(set(flag)) = info_suffix.
 
@@ -69,6 +55,7 @@
 :- import_module bool.
 :- import_module dir.
 :- import_module int.
+:- import_module list.
 :- import_module maybe.
 :- import_module string.
 
@@ -135,8 +122,8 @@ safe_gethostname(HostName, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-make_path(local_mailbox_path(DirName), NewOrCur, uniquename(Unique),
-        MaybeInfoSuffix, Path) :-
+make_path(local_mailbox_path(DirName0), NewOrCur, uniquename(Unique),
+        MaybeInfoSuffix, dirname(DirName), basename(BaseName)) :-
     (
         MaybeInfoSuffix = yes(info_suffix(FlagChars, Rest)),
         Flags = string.from_char_list(to_sorted_list(FlagChars)),
@@ -145,7 +132,7 @@ make_path(local_mailbox_path(DirName), NewOrCur, uniquename(Unique),
         MaybeInfoSuffix = no,
         BaseName = Unique
     ),
-    Path = DirName / new_or_cur(NewOrCur) / BaseName.
+    DirName = DirName0 / new_or_cur(NewOrCur).
 
 :- func new_or_cur(new_or_cur) = string.
 
@@ -154,63 +141,29 @@ new_or_cur(cur) = "cur".
 
 %-----------------------------------------------------------------------------%
 
-update_file_list(local_mailbox_path(DirName), DirCache0, Res, !IO) :-
-    update_file_list(DirName / "new", DirCache0, Res1, !IO),
-    (
-        Res1 = ok(DirCache1),
-        update_file_list(DirName / "cur", DirCache1, Res, !IO)
-    ;
-        Res1 = error(Error),
-        Res = error(Error)
-    ).
-
-%-----------------------------------------------------------------------------%
-
-list_files(DirCache, local_mailbox_path(DirName), NewFiles, CurFiles) :-
-    get_file_list(DirCache, DirName / "new", NewFiles),
-    get_file_list(DirCache, DirName / "cur", CurFiles).
-
-%-----------------------------------------------------------------------------%
-
-find_file(DirCache, local_mailbox_path(DirName), UniqueName, Res) :-
-    find_file_2(DirCache, DirName, "new", UniqueName, Res0),
-    (
-        Res0 = found(_, _),
-        Res = Res0
-    ;
-        Res0 = found_but_unexpected(_),
-        Res = Res0
-    ;
-        Res0 = not_found,
-        find_file_2(DirCache, DirName, "cur", UniqueName, Res)
-    ).
-
-:- pred find_file_2(dir_cache::in, string::in, string::in, uniquename::in,
-    find_file_result::out) is det.
-
-find_file_2(DirCache, DirName, SubDir, UniqueName, Res) :-
+find_file(DirCache, UniqueName, Res) :-
     UniqueName = uniquename(Unique),
-    search_files_with_prefix(DirCache, DirName / SubDir, Unique, Matching),
+    search_files_with_prefix(DirCache, Unique, Matching),
     (
         Matching = [],
         Res = not_found
     ;
-        Matching = [BaseName | _],
-        Path = DirName / SubDir / BaseName,
+        Matching = [file(BaseName, DirName) | _],
+        BaseName = basename(BaseNameString),
         string.length(Unique, Pos0),
-        string.length(BaseName, EndPos),
+        string.length(BaseNameString, EndPos),
         ( Pos0 = EndPos ->
-            Res = found(Path, no)
-        ; parse_info_suffix(BaseName, Pos0, InfoSuffix) ->
-            Res = found(Path, yes(InfoSuffix))
+            Res = found(DirName, BaseName, no)
+        ; parse_info_suffix(BaseNameString, Pos0, InfoSuffix) ->
+            Res = found(DirName, BaseName, yes(InfoSuffix))
         ;
-            Res = found_but_unexpected(Path)
+            Res = found_but_unexpected(DirName / BaseName)
         )
     ).
 
 %-----------------------------------------------------------------------------%
 
-parse_basename(BaseName, uniquename(Unique), Flags) :-
+parse_basename(basename(BaseName), uniquename(Unique), Flags) :-
     ( string.sub_string_search(BaseName, ":", Colon) ->
         string.unsafe_between(BaseName, 0, Colon, Unique),
         parse_info_suffix(BaseName, Colon, InfoSuffix),

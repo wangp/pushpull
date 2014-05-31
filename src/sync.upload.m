@@ -27,6 +27,7 @@
 :- import_module log.
 :- import_module maildir.
 :- import_module message_file.
+:- import_module path.
 
 :- type file_data
     --->    file_data(
@@ -36,7 +37,7 @@
 
 %-----------------------------------------------------------------------------%
 
-upload_unpaired_local_messages(Config, Database, IMAP, MailboxPair, DirCache,
+upload_unpaired_local_messages(_Config, Database, IMAP, MailboxPair, DirCache,
         Res, !IO) :-
     % Currently we download unpaired remote messages first and try to pair them
     % with existing local messages, so the remaining unpaired local messages
@@ -44,32 +45,28 @@ upload_unpaired_local_messages(Config, Database, IMAP, MailboxPair, DirCache,
     search_unpaired_local_messages(Database, MailboxPair, ResSearch, !IO),
     (
         ResSearch = ok(UnpairedLocals),
-        LocalMailboxName = get_local_mailbox_name(MailboxPair),
-        LocalMailboxPath = make_local_mailbox_path(Config, LocalMailboxName),
-        upload_messages(Database, IMAP, MailboxPair, DirCache,
-            LocalMailboxPath, UnpairedLocals, Res, !IO)
+        upload_messages(Database, IMAP, MailboxPair, DirCache, UnpairedLocals,
+            Res, !IO)
     ;
         ResSearch = error(Error),
         Res = error(Error)
     ).
 
 :- pred upload_messages(database::in, imap::in, mailbox_pair::in,
-    dir_cache::in, local_mailbox_path::in, list(unpaired_local_message)::in,
-    maybe_error::out, io::di, io::uo) is det.
+    dir_cache::in, list(unpaired_local_message)::in, maybe_error::out, io::di,
+    io::uo) is det.
 
-upload_messages(Database, IMAP, MailboxPair, DirCache, LocalMailboxPath,
-        UnpairedLocals, Res, !IO) :-
+upload_messages(Database, IMAP, MailboxPair, DirCache, UnpairedLocals, Res,
+        !IO) :-
     (
         UnpairedLocals = [],
         Res = ok
     ;
         UnpairedLocals = [H | T],
-        upload_message(Database, IMAP, MailboxPair, DirCache, LocalMailboxPath,
-            H, Res0, !IO),
+        upload_message(Database, IMAP, MailboxPair, DirCache, H, Res0, !IO),
         (
             Res0 = ok,
-            upload_messages(Database, IMAP, MailboxPair, DirCache,
-                LocalMailboxPath, T, Res, !IO)
+            upload_messages(Database, IMAP, MailboxPair, DirCache, T, Res, !IO)
         ;
             Res0 = error(Error),
             Res = error(Error)
@@ -77,19 +74,18 @@ upload_messages(Database, IMAP, MailboxPair, DirCache, LocalMailboxPath,
     ).
 
 :- pred upload_message(database::in, imap::in, mailbox_pair::in, dir_cache::in,
-    local_mailbox_path::in, unpaired_local_message::in, maybe_error::out,
-    io::di, io::uo) is det.
+    unpaired_local_message::in, maybe_error::out, io::di, io::uo) is det.
 
-upload_message(Database, IMAP, MailboxPair, DirCache, LocalMailboxPath,
-        UnpairedLocal, Res, !IO) :-
+upload_message(Database, IMAP, MailboxPair, DirCache, UnpairedLocal, Res, !IO)
+        :-
     UnpairedLocal = unpaired_local_message(PairingId, Unique),
-    find_file(DirCache, LocalMailboxPath, Unique, ResFind),
+    find_file(DirCache, Unique, ResFind),
     (
-        ResFind = found(Path, _InfoSuffix),
+        ResFind = found(DirName, BaseName, _InfoSuffix),
         lookup_local_message_flags(Database, PairingId, ResFlags, !IO),
         (
             ResFlags = ok(LocalFlagDeltas),
-            get_file_data(Path, ResFileData, !IO),
+            get_file_data(DirName / BaseName, ResFileData, !IO),
             (
                 ResFileData = ok(FileData),
                 get_selected_mailbox_highest_modseqvalue(IMAP,
@@ -139,7 +135,7 @@ upload_message(Database, IMAP, MailboxPair, DirCache, LocalMailboxPath,
             Res = error(Error)
         )
     ;
-        ResFind = found_but_unexpected(Path),
+        ResFind = found_but_unexpected(path(Path)),
         Res = error("found unique name but unexpected: " ++ Path)
     ;
         ResFind = not_found,
@@ -147,10 +143,9 @@ upload_message(Database, IMAP, MailboxPair, DirCache, LocalMailboxPath,
         Res = ok
     ).
 
-:- pred get_file_data(string::in, io.res(file_data)::out, io::di, io::uo)
-    is det.
+:- pred get_file_data(path::in, io.res(file_data)::out, io::di, io::uo) is det.
 
-get_file_data(Path, Res, !IO) :-
+get_file_data(path(Path), Res, !IO) :-
     io.file_modification_time(Path, ResTime, !IO),
     (
         ResTime = ok(ModTime),
