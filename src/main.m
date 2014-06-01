@@ -259,6 +259,7 @@ idle_until_sync(IMAP, Inotify, Res, !IO) :-
         idle_until_done(IMAP, Inotify, StartTime, Res1, !IO),
         (
             Res1 = ok(sync),
+            sleep(1, !IO),
             Res = ok
         ;
             Res1 = ok(restart_idle),
@@ -377,6 +378,15 @@ do_read_idle_response(IMAP, Res, Sync, !IO) :-
 :- func idle_timeout_secs = int.
 
 idle_timeout_secs = 29 * 60.
+
+:- pred sleep(int::in, io::di, io::uo) is det.
+
+:- pragma foreign_proc("C",
+    sleep(N::in, _IO0::di, _IO::uo),
+    [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io],
+"
+    sleep(N);
+").
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et
