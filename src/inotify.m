@@ -3,6 +3,7 @@
 :- module inotify.
 :- interface.
 
+:- import_module bool.
 :- import_module io.
 :- import_module list.
 :- import_module maybe.
@@ -37,6 +38,9 @@
 :- pred remove_watch(inotify(S)::in, watch(S)::in, maybe_error::out,
     io::di, io::uo) is det.
 
+:- pred is_watched(inotify(S)::in, string::in, bool::out, io::di, io::uo)
+    is det.
+
 :- pred get_filedes(inotify(S)::in, int::out) is det.
 
 :- pred read_all(inotify(S)::in, maybe_error::out, io::di, io::uo) is det.
@@ -46,14 +50,14 @@
 
 :- implementation.
 
+:- import_module bimap.
 :- import_module int.
-:- import_module set.
 :- import_module store.
 
 :- type inotify(S)
     --->    inotify(
                 events_fd :: int,
-                watch :: io_mutvar(set(watch(S)))
+                watch :: io_mutvar(bimap(watch(S), string))
             ).
 
 :- type watch(S)
@@ -93,7 +97,7 @@ init(Res, !IO) :-
     ( Fd = -1 ->
         Res = error(Error)
     ;
-        new_mutvar(set.init, WatchesVar, !IO),
+        new_mutvar(bimap.init, WatchesVar, !IO),
         Res = ok(inotify(Fd, WatchesVar) : inotify(dummy))
     ).
 
@@ -116,7 +120,7 @@ init(Res, !IO) :-
 
 close(inotify(Fd, WatchesVar), !IO) :-
     close_2(Fd, !IO),
-    set_mutvar(WatchesVar, set.init, !IO).
+    set_mutvar(WatchesVar, bimap.init, !IO).
 
 :- pred close_2(int::in, io::di, io::uo) is det.
 
@@ -136,7 +140,7 @@ add_watch(inotify(Fd, WatchesVar), PathName, EventList, Res, !IO) :-
     ( WatchDescr >= 0 ->
         Watch = watch(WatchDescr),
         get_mutvar(WatchesVar, Watches0, !IO),
-        set.insert(Watch, Watches0, Watches),
+        bimap.set(Watch, PathName, Watches0, Watches),
         set_mutvar(WatchesVar, Watches, !IO),
         Res = ok(Watch)
     ;
@@ -179,9 +183,7 @@ remove_watch(inotify(Fd, WatchesVar), Watch, Res, !IO) :-
     Watch = watch(WatchDescr),
     inotify_rm_watch(Fd, WatchDescr, RC, Error, !IO),
     ( RC = 0 ->
-        get_mutvar(WatchesVar, Watches0, !IO),
-        set.delete(Watch, Watches0, Watches),
-        set_mutvar(WatchesVar, Watches, !IO),
+        remove_watch_from_map(WatchesVar, Watch, !IO),
         Res = ok
     ;
         Res = error(Error)
@@ -204,48 +206,82 @@ remove_watch(inotify(Fd, WatchesVar), Watch, Res, !IO) :-
     }
 ").
 
+:- pred remove_watch_from_map(io_mutvar(bimap(watch(S), string))::in,
+    watch(S)::in, io::di, io::uo) is det.
+
+remove_watch_from_map(WatchesVar, Watch, !IO) :-
+    get_mutvar(WatchesVar, Watches0, !IO),
+    bimap.delete_key(Watch, Watches0, Watches),
+    set_mutvar(WatchesVar, Watches, !IO).
+
+%-----------------------------------------------------------------------------%
+
+is_watched(inotify(_Fd, WatchesVar), PathName, IsWatched, !IO) :-
+    get_mutvar(WatchesVar, Watches, !IO),
+    ( bimap.reverse_search(Watches, _, PathName) ->
+        IsWatched = yes
+    ;
+        IsWatched = no
+    ).
+
 %-----------------------------------------------------------------------------%
 
 get_filedes(inotify(Fd, _), Fd).
 
 %-----------------------------------------------------------------------------%
 
-read_all(inotify(Fd, _WatchesVar), Res, !IO) :-
-    read_all_2(Fd, RC, Error, !IO),
+read_all(Inotify, Res, !IO) :-
+    Inotify = inotify(Fd, WatchesVar),
+    read_next(Fd, RC, Error, RemovedWatchDescr, !IO),
     ( RC = 0 ->
         Res = ok
+    ; RC = 1 ->
+        read_all(Inotify, Res, !IO)
+    ; RC = 2 ->
+        remove_watch_from_map(WatchesVar, watch(RemovedWatchDescr), !IO),
+        read_all(Inotify, Res, !IO)
     ;
         Res = error(Error)
     ).
 
-:- pred read_all_2(int::in, int::out, string::out, io::di, io::uo) is det.
+:- pred read_next(int::in, int::out, string::out, int::out, io::di, io::uo)
+    is det.
 
 :- pragma foreign_proc("C",
-    read_all_2(Fd::in, RC::out, Error::out, _IO0::di, _IO::uo),
+    read_next(Fd::in, RC::out, Error::out, RemovedWatchDescr::out,
+        _IO0::di, _IO::uo),
     [will_not_call_mercury, promise_pure, not_thread_safe, tabled_for_io,
         may_not_duplicate],
 "
     int queue_length;
-    char buf[sizeof(struct inotify_event) + NAME_MAX + 1];
-    ssize_t sz;
 
-    for (;;) {
-        RC = ioctl(Fd, FIONREAD, &queue_length);
-        if (RC == -1) {
-            RC = -1;
-            Error = MR_make_string(MR_ALLOC_ID, ""%s"", strerror(errno));
-            break;
-        }
-        if (queue_length == 0) {
-            RC = 0;
-            Error = MR_make_string_const("""");
-            break;
-        }
+    Error = MR_make_string_const("""");
+    RemovedWatchDescr = -1;
+
+    RC = ioctl(Fd, FIONREAD, &queue_length);
+    if (RC == -1) {
+        RC = -1;
+        Error = MR_make_string(MR_ALLOC_ID, ""%s"", strerror(errno));
+    }
+    else if (queue_length == 0) {
+        RC = 0;
+    }
+    else {
+        char buf[sizeof(struct inotify_event) + NAME_MAX + 1];
+        ssize_t sz;
+
         sz = read(Fd, buf, sizeof(buf));
         if (sz <= 0) {
             RC = -1;
             Error = MR_make_string(MR_ALLOC_ID, ""%s"", strerror(errno));
-            break;
+        } else {
+            const struct inotify_event *ev = (const struct inotify_event *)buf;
+            if (ev->mask & IN_IGNORED) {
+                RC = 2;
+                RemovedWatchDescr = ev->wd;
+            } else {
+                RC = 1;
+            }
         }
     }
 ").

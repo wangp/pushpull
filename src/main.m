@@ -13,7 +13,6 @@
 :- implementation.
 
 :- import_module bool.
-:- import_module dir.
 :- import_module int.
 :- import_module integer.
 :- import_module list.
@@ -126,8 +125,7 @@ logged_in(Config, Db, IMAP, !IO) :-
                     UIDValidity, ResLookup, !IO),
                 (
                     ResLookup = found(MailboxPair, LastModSeqValzer),
-                    watch_local_mailbox(Config, LocalMailboxName, ResInotify,
-                        !IO),
+                    inotify.init(ResInotify, !IO),
                     (
                         ResInotify = ok(Inotify),
                         LocalMailboxPath = make_local_mailbox_path(Config,
@@ -163,38 +161,6 @@ logged_in(Config, Db, IMAP, !IO) :-
         report_error(Text, !IO)
     ).
 
-:- some [S] pred watch_local_mailbox(prog_config::in, local_mailbox_name::in,
-    maybe_error(inotify(S))::out, io::di, io::uo) is det.
-
-watch_local_mailbox(Config, LocalMailboxName, Res, !IO) :-
-    LocalMailboxPath = make_local_mailbox_path(Config, LocalMailboxName),
-    LocalMailboxPath = local_mailbox_path(DirName),
-    inotify.init(ResInotify, !IO),
-    (
-        ResInotify = ok(Inotify),
-        Events = [modify, close_write, moved_from, delete],
-        add_watch(Inotify, DirName / "new", Events, ResWatchA, !IO),
-        (
-            ResWatchA = ok(_WatchA),
-            add_watch(Inotify, DirName / "cur", Events, ResWatchB, !IO),
-            (
-                ResWatchB = ok(_WatchB),
-                Res = ok(Inotify)
-            ;
-                ResWatchB = error(Error),
-                Res = error(Error),
-                close(Inotify, !IO)
-            )
-        ;
-            ResWatchA = error(Error),
-            Res = error(Error),
-            close(Inotify, !IO)
-        )
-    ;
-        ResInotify = error(Error),
-        Res = error(Error)
-    ).
-
 :- pred sync_and_repeat(prog_config::in, database::in, imap::in,
     inotify(S)::in, mailbox_pair::in, mod_seq_valzer::in,
     dir_cache::in, dir_cache::out, io::di, io::uo) is det.
@@ -221,15 +187,22 @@ sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
                 HighestModSeqValue, ResSync, !DirCache, !IO),
             (
                 ResSync = ok,
-                idle_until_sync(IMAP, Inotify, ResIdle, !IO),
+                update_watches(Inotify, !.DirCache, ResWatch, !IO),
                 (
-                    ResIdle = ok,
-                    update_selected_mailbox_highest_modseqvalue_from_fetches(
-                        IMAP, !IO),
-                    sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair,
-                        mod_seq_valzer(High), !DirCache, !IO)
+                    ResWatch = ok,
+                    idle_until_sync(IMAP, Inotify, ResIdle, !IO),
+                    (
+                        ResIdle = ok,
+                        update_selected_mailbox_highest_modseqvalue_from_fetches(
+                            IMAP, !IO),
+                        sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair,
+                            mod_seq_valzer(High), !DirCache, !IO)
+                    ;
+                        ResIdle = error(Error),
+                        report_error(Error, !IO)
+                    )
                 ;
-                    ResIdle = error(Error),
+                    ResWatch = error(Error),
                     report_error(Error, !IO)
                 )
             ;

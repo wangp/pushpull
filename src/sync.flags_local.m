@@ -31,32 +31,30 @@ propagate_flag_deltas_from_remote(Config, Db, MailboxPair, Res, !DirCache, !IO)
     search_pending_flag_deltas_from_remote(Db, MailboxPair, ResSearch, !IO),
     (
         ResSearch = ok(Pendings),
-        LocalMailboxName = get_local_mailbox_name(MailboxPair),
-        LocalMailboxPath = make_local_mailbox_path(Config, LocalMailboxName),
-        propagate_flag_deltas_from_remote_2(Config, Db, LocalMailboxPath,
-            Pendings, Res, !DirCache, !IO)
+        propagate_flag_deltas_from_remote_2(Config, Db, Pendings, Res,
+            !DirCache, !IO)
     ;
         ResSearch = error(Error),
         Res = error(Error)
     ).
 
 :- pred propagate_flag_deltas_from_remote_2(prog_config::in, database::in,
-    local_mailbox_path::in, list(pending_flag_deltas)::in, maybe_error::out,
+    list(pending_flag_deltas)::in, maybe_error::out,
     dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
-propagate_flag_deltas_from_remote_2(Config, Db, LocalMailboxPath, Pendings,
-        Res, !DirCache, !IO) :-
+propagate_flag_deltas_from_remote_2(Config, Db, Pendings, Res, !DirCache, !IO)
+        :-
     (
         Pendings = [],
         Res = ok
     ;
         Pendings = [Head | Tail],
-        propagate_flag_deltas_from_remote_3(Config, Db, LocalMailboxPath,
-            Head, Res0, !DirCache, !IO),
+        propagate_flag_deltas_from_remote_3(Config, Db, Head, Res0,
+            !DirCache, !IO),
         (
             Res0 = ok,
-            propagate_flag_deltas_from_remote_2(Config, Db, LocalMailboxPath,
-                Tail, Res, !DirCache, !IO)
+            propagate_flag_deltas_from_remote_2(Config, Db, Tail, Res,
+                !DirCache, !IO)
         ;
             Res0 = error(Error),
             Res = error(Error)
@@ -64,11 +62,11 @@ propagate_flag_deltas_from_remote_2(Config, Db, LocalMailboxPath, Pendings,
     ).
 
 :- pred propagate_flag_deltas_from_remote_3(prog_config::in, database::in,
-    local_mailbox_path::in, pending_flag_deltas::in, maybe_error::out,
-    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+    pending_flag_deltas::in, maybe_error::out, dir_cache::in, dir_cache::out,
+    io::di, io::uo) is det.
 
-propagate_flag_deltas_from_remote_3(_Config, Db, LocalMailboxPath,
-        Pending, Res, !DirCache, !IO) :-
+propagate_flag_deltas_from_remote_3(_Config, Db, Pending, Res, !DirCache, !IO)
+        :-
     Pending = pending_flag_deltas(PairingId,
         MaybeUnique, LocalFlags0, LocalExpunged,
         MaybeUID, RemoteFlags0, RemoteExpunged),
@@ -83,8 +81,8 @@ propagate_flag_deltas_from_remote_3(_Config, Db, LocalMailboxPath,
     (
         MaybeUnique = yes(Unique),
         expect(unify(LocalExpunged, exists), $module, $pred),
-        store_local_flags_add_rm(LocalMailboxPath, Unique,
-            AddFlags, RemoveFlags, Res0, !DirCache, !IO),
+        store_local_flags_add_rm(Unique, AddFlags, RemoveFlags, Res0,
+            !DirCache, !IO),
         (
             Res0 = ok,
             record_remote_flag_deltas_applied_to_local(Db, PairingId,
@@ -112,12 +110,10 @@ propagate_flag_deltas_from_remote_3(_Config, Db, LocalMailboxPath,
         )
     ).
 
-:- pred store_local_flags_add_rm(local_mailbox_path::in, uniquename::in,
-    set(flag)::in, set(flag)::in, maybe_error::out,
-    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+:- pred store_local_flags_add_rm(uniquename::in, set(flag)::in, set(flag)::in,
+    maybe_error::out, dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
-store_local_flags_add_rm(MailboxPath, Unique, AddFlags, RemoveFlags, Res,
-        !DirCache, !IO) :-
+store_local_flags_add_rm(Unique, AddFlags, RemoveFlags, Res, !DirCache, !IO) :-
     find_file(!.DirCache, Unique, ResFind),
     (
         ResFind = found(OldDirName, OldBaseName, MaybeInfoSuffix0),
@@ -129,28 +125,31 @@ store_local_flags_add_rm(MailboxPath, Unique, AddFlags, RemoveFlags, Res,
             add_remove_standard_flags(AddFlags, RemoveFlags,
                 InfoSuffix0, InfoSuffix)
         ),
-        make_path(MailboxPath, cur, Unique, yes(InfoSuffix),
-            NewDirName, NewBaseName),
-        (
-            OldDirName = NewDirName,
-            OldBaseName = NewBaseName
-        ->
-            Res = ok
-        ;
-            OldPath = OldDirName / OldBaseName,
-            NewPath = NewDirName / NewBaseName,
-            io.format("Renaming %s to %s\n",
-                [s(OldPath ^ path), s(NewPath ^ path)], !IO),
-            io.rename_file(OldPath ^ path, NewPath ^ path, ResRename, !IO),
+        ( change_to_cur(OldDirName, NewDirName) ->
+            make_message_basename(Unique, yes(InfoSuffix), NewBaseName),
             (
-                ResRename = ok,
-                update_for_rename(OldDirName, OldBaseName,
-                    NewDirName, NewBaseName, !DirCache),
+                OldDirName = NewDirName,
+                OldBaseName = NewBaseName
+            ->
                 Res = ok
             ;
-                ResRename = error(Error),
-                Res = error(io.error_message(Error))
+                OldPath = OldDirName / OldBaseName,
+                NewPath = NewDirName / NewBaseName,
+                io.format("Renaming %s to %s\n",
+                    [s(OldPath ^ path), s(NewPath ^ path)], !IO),
+                io.rename_file(OldPath ^ path, NewPath ^ path, ResRename, !IO),
+                (
+                    ResRename = ok,
+                    update_for_rename(OldDirName, OldBaseName,
+                        NewDirName, NewBaseName, !DirCache),
+                    Res = ok
+                ;
+                    ResRename = error(Error),
+                    Res = error(io.error_message(Error))
+                )
             )
+        ;
+            Res = error("change_to_cur failed")
         )
     ;
         ResFind = not_found,

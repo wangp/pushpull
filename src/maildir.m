@@ -11,7 +11,6 @@
 :- import_module dir_cache.
 :- import_module imap.
 :- import_module imap.types.
-:- import_module prog_config.
 :- import_module path.
 
 %-----------------------------------------------------------------------------%
@@ -26,11 +25,13 @@
 :- type info_suffix
     --->    info_suffix(set(char), string). % after ":2,"; may be empty
 
-:- pred generate_unique_tmp_path(local_mailbox_path::in,
-    maybe_error({uniquename, string})::out, io::di, io::uo) is det.
+:- pred generate_unique_name(dirname::in, maybe_error({uniquename, path})::out,
+    io::di, io::uo) is det.
 
-:- pred make_path(local_mailbox_path::in, new_or_cur::in, uniquename::in,
-    maybe(info_suffix)::in, dirname::out, basename::out) is det.
+:- pred make_message_basename(uniquename::in, maybe(info_suffix)::in,
+    basename::out) is det.
+
+:- pred change_to_cur(dirname::in, dirname::out) is semidet.
 
 :- type find_file_result
     --->    found(dirname, basename, maybe(info_suffix))
@@ -64,25 +65,26 @@
 
 %-----------------------------------------------------------------------------%
 
-generate_unique_tmp_path(local_mailbox_path(DirName), Res, !IO) :-
+generate_unique_name(DirName, Res, !IO) :-
     % We follow the Dovecot file name generation algorithm
     % (also notmuch insert).
     get_pid(Pid, !IO),
     safe_gethostname(HostName, !IO),
-    generate_unique_name_2(DirName / "tmp", Pid, HostName, Res, !IO).
+    generate_unique_name_2(DirName, Pid, HostName, Res, !IO).
 
-:- pred generate_unique_name_2(string::in, int::in, string::in,
-    maybe_error({uniquename, string})::out, io::di, io::uo) is det.
+:- pred generate_unique_name_2(dirname::in, int::in, string::in,
+    maybe_error({uniquename, path})::out, io::di, io::uo) is det.
 
 generate_unique_name_2(DirName, Pid, HostName, Res, !IO) :-
+    DirName = dirname(DirNameString),
     gettimeofday(Sec, Usec, !IO),
     string.format("%d.M%dP%d.%s", [i(Sec), i(Usec), i(Pid), s(HostName)],
         UniqueName),
-    Path = DirName / UniqueName,
+    Path = DirNameString / UniqueName,
     open_excl(Path, Fd, AlreadyExists, !IO),
     ( Fd >= 0 ->
         close(Fd, !IO),
-        Res = ok({uniquename(UniqueName), Path})
+        Res = ok({uniquename(UniqueName), path(Path)})
     ; AlreadyExists = yes ->
         generate_unique_name_2(DirName, Pid, HostName, Res, !IO)
     ;
@@ -122,8 +124,8 @@ safe_gethostname(HostName, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-make_path(local_mailbox_path(DirName0), NewOrCur, uniquename(Unique),
-        MaybeInfoSuffix, dirname(DirName), basename(BaseName)) :-
+make_message_basename(uniquename(Unique), MaybeInfoSuffix, basename(BaseName))
+        :-
     (
         MaybeInfoSuffix = yes(info_suffix(FlagChars, Rest)),
         Flags = string.from_char_list(to_sorted_list(FlagChars)),
@@ -131,13 +133,15 @@ make_path(local_mailbox_path(DirName0), NewOrCur, uniquename(Unique),
     ;
         MaybeInfoSuffix = no,
         BaseName = Unique
+    ).
+
+change_to_cur(dirname(Dir0), dirname(Dir)) :-
+    dir.split_name(Dir0, ButLast, Last),
+    ( Last = "cur"
+    ; Last = "new"
+    ; Last = "tmp"
     ),
-    DirName = DirName0 / new_or_cur(NewOrCur).
-
-:- func new_or_cur(new_or_cur) = string.
-
-new_or_cur(new) = "new".
-new_or_cur(cur) = "cur".
+    Dir = ButLast / "cur".
 
 %-----------------------------------------------------------------------------%
 

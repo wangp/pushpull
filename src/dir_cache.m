@@ -7,6 +7,7 @@
 :- import_module list.
 :- import_module maybe.
 
+:- import_module inotify.
 :- import_module path.
 
 %-----------------------------------------------------------------------------%
@@ -34,6 +35,9 @@
 :- pred begin(dir_cache::in, index::out) is det.
 
 :- pred get(dir_cache::in, index::in, index::out, file::out) is semidet.
+
+:- pred update_watches(inotify(S)::in, dir_cache::in, maybe_error::out,
+    io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -123,8 +127,7 @@ update_dir(DirName, Res, !Queue, !Mtimes, !OldFiles, !NewFiless, !IO) :-
             ModTime0 = ModTime
         ->
             % Entry already up-to-date (not including subdirectories).
-            Res = ok,
-            io.format("%s up-to-date\n", [s(DirNameString)], !IO)
+            Res = ok
         ;
             (
                 dir.split_name(DirNameString, _, Tail),
@@ -140,10 +143,16 @@ update_dir(DirName, Res, !Queue, !Mtimes, !OldFiles, !NewFiless, !IO) :-
                 Res1 = ok(DirFiles - !:Queue),
                 Res = ok,
                 map.set(DirName, ModTime, !Mtimes),
-                remove_dir_files(DirName, !OldFiles),
+                forget_dir_files(DirName, !OldFiles),
                 cons(DirFiles, !NewFiless),
-                io.format("%s contains %d files\n",
-                    [s(DirNameString), i(length(DirFiles))], !IO)
+
+                list.length(DirFiles, NumFiles),
+                ( NumFiles > 0 ->
+                    io.format("%s contains %d files\n",
+                        [s(DirNameString), i(NumFiles)], !IO)
+                ;
+                    true
+                )
             ;
                 Res1 = error(_, Error),
                 Res = error(io.error_message(Error))
@@ -151,8 +160,14 @@ update_dir(DirName, Res, !Queue, !Mtimes, !OldFiles, !NewFiless, !IO) :-
         )
     ;
         ResModTime = error(Error),
-        % XXX remove if just non-existent
-        Res = error(io.error_message(Error))
+        ErrorMsg = io.error_message(Error),
+        % XXX check with stat
+        ( string.sub_string_search(ErrorMsg, "No such file or directory", _) ->
+            map.delete(DirName, !Mtimes),
+            Res = ok
+        ;
+            Res = error(ErrorMsg)
+        )
     ).
 
 :- pred enumerate_files(bool::in,
@@ -210,9 +225,9 @@ dot_file(S) :-
 new_or_cur("new").
 new_or_cur("cur").
 
-:- pred remove_dir_files(dirname::in, list(file)::in, list(file)::out) is det.
+:- pred forget_dir_files(dirname::in, list(file)::in, list(file)::out) is det.
 
-remove_dir_files(DirName, !Files) :-
+forget_dir_files(DirName, !Files) :-
     list.negated_filter(file_has_dirname(DirName), !Files).
 
 :- pred file_has_dirname(dirname::in, file::in) is semidet.
@@ -310,6 +325,45 @@ get(dir_cache(_, _, Array), I, I + 1, File) :-
     ;
         fail
     ).
+
+%-----------------------------------------------------------------------------%
+
+update_watches(Inotify, DirCache, Res, !IO) :-
+    DirCache = dir_cache(_TopDirName, Mtimes, _Files),
+    map.foldl2(add_watch(Inotify), Mtimes, ok, Res, !IO).
+
+:- pred add_watch(inotify(S)::in, dirname::in, time_t::in,
+    maybe_error::in, maybe_error::out, io::di, io::uo) is det.
+
+add_watch(Inotify, dirname(DirName), _Time, Res0, Res, !IO) :-
+    (
+        Res0 = ok,
+        dir.split_name(DirName, _, Tail),
+        new_or_cur(Tail)
+    ->
+        is_watched(Inotify, DirName, IsWatched, !IO),
+        (
+            IsWatched = yes,
+            Res = ok
+        ;
+            IsWatched = no,
+            io.format("Adding watch %s\n", [s(DirName)], !IO),
+            add_watch(Inotify, DirName, watch_events, Res1, !IO),
+            (
+                Res1 = ok(_),
+                Res = ok
+            ;
+                Res1 = error(Error),
+                Res = error(Error)
+            )
+        )
+    ;
+        Res = Res0
+    ).
+
+:- func watch_events = list(inotify_event).
+
+watch_events = [modify, close_write, moved_from, delete].
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

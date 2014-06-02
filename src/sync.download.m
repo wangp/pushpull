@@ -18,6 +18,8 @@
 
 :- import_module assoc_list.
 :- import_module bool.
+:- import_module dir.
+:- import_module int.
 :- import_module integer.
 :- import_module list.
 :- import_module pair.
@@ -25,6 +27,7 @@
 :- import_module solutions.
 :- import_module string.
 
+:- import_module crc16.
 :- import_module flag_delta.
 :- import_module imap.time.
 :- import_module log.
@@ -233,7 +236,7 @@ save_message_and_pair(Database, MailboxPair, LocalMailboxPath, UnpairedRemote,
         RawMessageLf, ResMatch, !IO),
     (
         ResMatch = ok(no),
-        save_raw_message(LocalMailboxPath, UID, RawMessageLf, Flags,
+        save_raw_message(LocalMailboxPath, UID, MessageId, RawMessageLf, Flags,
             InternalDate, ResSave, !IO),
         (
             ResSave = ok(Unique),
@@ -333,24 +336,54 @@ verify_unpaired_local_message(DirCache, UnpairedLocal, RawMessageLf, Res, !IO)
         Res = ok(no)
     ).
 
-:- pred save_raw_message(local_mailbox_path::in, uid::in, string::in,
-    set(flag)::in, date_time::in,  maybe_error(uniquename)::out,
+:- pred save_raw_message(local_mailbox_path::in, uid::in, maybe_message_id::in,
+    string::in, set(flag)::in, date_time::in,  maybe_error(uniquename)::out,
     io::di, io::uo) is det.
 
-save_raw_message(LocalMailboxPath, uid(UID), RawMessageLf, Flags, InternalDate,
-        Res, !IO) :-
-    generate_unique_tmp_path(LocalMailboxPath, ResUnique, !IO),
+save_raw_message(local_mailbox_path(DirName), uid(UID), MessageId,
+        RawMessageLf, Flags, InternalDate, Res, !IO) :-
+    SubDirName = DirName / hex_bits(MessageId),
+    dir.make_directory(SubDirName / "tmp", Res0, !IO),
     (
-        ResUnique = ok({Unique, TmpPath}),
+        Res0 = ok,
+        dir.make_directory(SubDirName / "cur", Res1, !IO),
+        (
+            Res1 = ok,
+            dir.make_directory(SubDirName / "new", Res2, !IO),
+            (
+                Res2 = ok,
+                save_raw_message_2(uid(UID), dirname(SubDirName), RawMessageLf,
+                    Flags, InternalDate, Res, !IO)
+            ;
+                Res2 = error(Error),
+                Res = error(io.error_message(Error))
+            )
+        ;
+            Res1 = error(Error),
+            Res = error(io.error_message(Error))
+        )
+    ;
+        Res0 = error(Error),
+        Res = error(io.error_message(Error))
+    ).
+
+:- pred save_raw_message_2(uid::in, dirname::in, string::in, set(flag)::in,
+    date_time::in,  maybe_error(uniquename)::out, io::di, io::uo) is det.
+
+save_raw_message_2(uid(UID), dirname(SubDirName), RawMessageLf, Flags,
+        InternalDate, Res, !IO) :-
+    TmpDir = SubDirName / "tmp",
+    generate_unique_name(dirname(TmpDir), ResUnique, !IO),
+    (
+        ResUnique = ok({Unique, path(TmpPath)}),
         InfoSuffix = flags_to_info_suffix(Flags),
         % XXX don't think this condition is right
         ( InfoSuffix = info_suffix(set.init, "") ->
-            make_path(LocalMailboxPath, new, Unique, no, DestDir, DestBaseName)
+            make_message_basename(Unique, no, basename(BaseName))
         ;
-            make_path(LocalMailboxPath, cur, Unique, yes(InfoSuffix),
-                DestDir, DestBaseName)
+            make_message_basename(Unique, yes(InfoSuffix), basename(BaseName))
         ),
-        DestDir / DestBaseName = path(DestPath),
+        DestPath = SubDirName / "cur" / BaseName,
         io.format("Saving message UID %s to %s\n",
             [s(to_string(UID)), s(DestPath)], !IO),
         io.open_output(TmpPath, ResOpen, !IO),
@@ -384,6 +417,23 @@ save_raw_message(LocalMailboxPath, uid(UID), RawMessageLf, Flags, InternalDate,
         ResUnique = error(Error),
         Res = error(Error)
     ).
+
+:- func hex_bits(maybe_message_id) = string.
+
+hex_bits(MessageId) = Str :-
+    (
+        MessageId = message_id(Id),
+        string.to_code_unit_list(Id, Bytes),
+        Crc = crc_ccitt(Bytes)
+    ;
+        MessageId = nil,
+        Crc = crc_ccitt([])
+    ),
+    % Use 11-bits only for now.  If we use 12-bits then we run into the inotify
+    % default limit of 8192 watches for a user program, as we need to watch two
+    % directories (cur, new) per maildir.
+    Bits = Crc /\ 0x7ff,
+    string.format("%03x", [i(Bits)], Str).
 
 :- func crlf_to_lf(string) = string.
 
