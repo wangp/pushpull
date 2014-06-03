@@ -21,9 +21,13 @@
 :- type file
     --->    file(basename, dirname).
 
+:- type update_method
+    --->    scan_all
+    ;       scan_from_inotify_events.
+
 :- func init(dirname) = dir_cache.
 
-:- pred update_mailbox_file_list(maybe_error::out,
+:- pred update_dir_cache(inotify(S)::in, update_method::in, maybe_error::out,
     dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
 :- pred update_for_rename(dirname::in, basename::in, dirname::in, basename::in,
@@ -35,9 +39,6 @@
 :- pred begin(dir_cache::in, index::out) is det.
 
 :- pred get(dir_cache::in, index::in, index::out, file::out) is semidet.
-
-:- pred update_watches(inotify(S)::in, dir_cache::in, maybe_error::out,
-    io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -70,15 +71,55 @@
 
 init(Top) = dir_cache(Top, map.init, version_array.empty).
 
-update_mailbox_file_list(Res, DirCache0, DirCache, !IO) :-
+%-----------------------------------------------------------------------------%
+
+update_dir_cache(Inotify, Method, Res, !DirCache, !IO) :-
+    % In theory we could maintain our dir cache on the basis of inotify
+    % events only (after the initial scan) but it seems too hairy.
+    inotify.read_events(Inotify, ResEvents, !IO),
+    (
+        Method = scan_all,
+        !.DirCache = dir_cache(TopDirName, Mtimes0, _Array),
+        Queue0 = set.from_sorted_list(map.sorted_keys(Mtimes0)),
+        set.insert(TopDirName, Queue0, Queue),
+        update_by_scan(Queue, Res1, !DirCache, !IO)
+    ;
+        Method = scan_from_inotify_events,
+        (
+            ResEvents = ok(Events),
+            Queue = events_dir_set(Events),
+            update_by_scan(Queue, Res1, !DirCache, !IO)
+        ;
+            ResEvents = error(Error1),
+            Res1 = error(Error1)
+        )
+    ),
+    (
+        Res1 = ok,
+        add_watches(Inotify, !.DirCache, Res, !IO)
+    ;
+        Res1 = error(Error),
+        Res = error(Error)
+    ).
+
+:- func events_dir_set(list(inotify_event(S))) = set(dirname).
+
+events_dir_set(Events) = set.from_list(list.map(event_dir, Events)).
+
+:- func event_dir(inotify_event(S)) = dirname.
+
+event_dir(inotify_event(_, PathName, _, _, _)) = dirname(PathName).
+
+%-----------------------------------------------------------------------------%
+
+:- pred update_by_scan(set(dirname)::in, maybe_error::out,
+    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+
+update_by_scan(Queue0, Res, DirCache0, DirCache, !IO) :-
     DirCache0 = dir_cache(TopDirName, Mtimes0, Array0),
-
-    Queue0 = set.from_sorted_list(map.sorted_keys(Mtimes0)),
-    set.insert(TopDirName, Queue0, Queue1),
-
     % Might want to defer conversion to list.
     OldFiles0 = version_array.to_list(Array0),
-    update_queue(Res, Queue1, _Queue, Mtimes0, Mtimes,
+    update_queue(Res, Queue0, _Queue, Mtimes0, Mtimes,
         OldFiles0, OldFiles, [], NewFiless, !IO),
     (
         Res = ok,
@@ -91,7 +132,7 @@ update_mailbox_file_list(Res, DirCache0, DirCache, !IO) :-
         Array = version_array.from_list(SortedList),
         DirCache = dir_cache(TopDirName, Mtimes, Array)
     ;
-        DirCache = dir_cache(TopDirName, Mtimes0, Array0)
+        DirCache = DirCache0
     ).
 
 :- pred update_queue(maybe_error::out, set(dirname)::in, set(dirname)::out,
@@ -164,6 +205,7 @@ update_dir(DirName, Res, !Queue, !Mtimes, !OldFiles, !NewFiless, !IO) :-
         % XXX check with stat
         ( string.sub_string_search(ErrorMsg, "No such file or directory", _) ->
             map.delete(DirName, !Mtimes),
+            cons([], !NewFiless),
             Res = ok
         ;
             Res = error(ErrorMsg)
@@ -328,7 +370,10 @@ get(dir_cache(_, _, Array), I, I + 1, File) :-
 
 %-----------------------------------------------------------------------------%
 
-update_watches(Inotify, DirCache, Res, !IO) :-
+:- pred add_watches(inotify(S)::in, dir_cache::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+add_watches(Inotify, DirCache, Res, !IO) :-
     DirCache = dir_cache(_TopDirName, Mtimes, _Files),
     map.foldl2(add_watch(Inotify), Mtimes, ok, Res, !IO).
 
@@ -361,9 +406,9 @@ add_watch(Inotify, dirname(DirName), _Time, Res0, Res, !IO) :-
         Res = Res0
     ).
 
-:- func watch_events = list(inotify_event).
+:- func watch_events = list(event_type).
 
-watch_events = [modify, close_write, moved_from, delete].
+watch_events = [close_write, moved_from, moved_to, delete].
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

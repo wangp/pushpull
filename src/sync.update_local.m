@@ -7,9 +7,9 @@
 
 :- import_module dir_cache.
 
-:- pred update_db_local_mailbox(prog_config::in, database::in,
-    mailbox_pair::in, maybe_error::out, dir_cache::in, dir_cache::out,
-    io::di, io::uo) is det.
+:- pred update_db_local_mailbox(prog_config::in, database::in, inotify(S)::in,
+    mailbox_pair::in, update_method::in, maybe_error::out,
+    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -33,8 +33,9 @@
 
 %-----------------------------------------------------------------------------%
 
-update_db_local_mailbox(_Config, Db, MailboxPair, Res, !DirCache, !IO) :-
-    update_mailbox_file_list(ResCache, !DirCache, !IO),
+update_db_local_mailbox(_Config, Db, Inotify, MailboxPair, UpdateMethod, Res,
+        !DirCache, !IO) :-
+    update_dir_cache(Inotify, UpdateMethod, ResCache, !DirCache, !IO),
     (
         ResCache = ok,
         get_unexpunged_pairings_by_uniquename(Db, MailboxPair,

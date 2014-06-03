@@ -14,7 +14,7 @@
 
 :- type watch(S).
 
-:- type inotify_event
+:- type event_type
     --->    access
     ;       modify
     ;       attrib
@@ -28,11 +28,26 @@
     ;       delete_self
     ;       move_self.
 
+:- type inotify_event(S)
+    --->    inotify_event(
+                watch :: watch(S),
+                path :: string,
+                mask :: mask,
+                cookie :: cookie,
+                maybe_name :: maybe(string)
+            ).
+
+:- type mask.
+
+:- type cookie.
+
+%-----------------------------------------------------------------------------%
+
 :- some [S] pred init(maybe_error(inotify(S))::out, io::di, io::uo) is det.
 
 :- pred close(inotify(S)::in, io::di, io::uo) is det.
 
-:- pred add_watch(inotify(S)::in, string::in, list(inotify_event)::in,
+:- pred add_watch(inotify(S)::in, string::in, list(event_type)::in,
     maybe_error(watch(S))::out, io::di, io::uo) is det.
 
 :- pred remove_watch(inotify(S)::in, watch(S)::in, maybe_error::out,
@@ -43,7 +58,10 @@
 
 :- pred get_filedes(inotify(S)::in, int::out) is det.
 
-:- pred read_all(inotify(S)::in, maybe_error::out, io::di, io::uo) is det.
+:- pred read_events(inotify(S)::in, maybe_error(list(inotify_event(S)))::out,
+    io::di, io::uo) is det.
+
+:- pred contains(mask::in, event_type::in) is semidet.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -57,11 +75,17 @@
 :- type inotify(S)
     --->    inotify(
                 events_fd :: int,
-                watch :: io_mutvar(bimap(watch(S), string))
+                watches :: io_mutvar(watches(S))
             ).
 
 :- type watch(S)
     --->    watch(int). % watch descriptor
+
+:- type watches(S) == bimap(watch(S), string).
+
+:- type mask == int.
+
+:- type cookie == int.
 
 :- type dummy
     --->    dummy.
@@ -74,7 +98,7 @@
     #include <sys/ioctl.h>
 ").
 
-:- pragma foreign_enum("C", inotify_event/0,
+:- pragma foreign_enum("C", event_type/0,
     [
         access          - "IN_ACCESS",
         modify          - "IN_MODIFY",
@@ -135,7 +159,7 @@ close(inotify(Fd, WatchesVar), !IO) :-
 %-----------------------------------------------------------------------------%
 
 add_watch(inotify(Fd, WatchesVar), PathName, EventList, Res, !IO) :-
-    foldl(event_mask, EventList, 0) = Mask,
+    Mask = list.foldl(make_mask, EventList, 0),
     inotify_add_watch(Fd, PathName, Mask, WatchDescr, Error, !IO),
     ( WatchDescr >= 0 ->
         Watch = watch(WatchDescr),
@@ -147,20 +171,11 @@ add_watch(inotify(Fd, WatchesVar), PathName, EventList, Res, !IO) :-
         Res = error(Error)
     ).
 
-:- func event_mask(inotify_event, int) = int.
+:- func make_mask(event_type, mask) = mask.
 
-event_mask(Event, Mask) = Mask \/ bit(Event).
+make_mask(Event, Mask) = Mask \/ bit(Event).
 
-:- func bit(inotify_event) = int.
-
-:- pragma foreign_proc("C",
-    bit(X0::in) = (X::out),
-    [will_not_call_mercury, promise_pure, thread_safe],
-"
-    X = X0;
-").
-
-:- pred inotify_add_watch(int::in, string::in, int::in, int::out, string::out,
+:- pred inotify_add_watch(int::in, string::in, mask::in, int::out, string::out,
     io::di, io::uo) is det.
 
 :- pragma foreign_proc("C",
@@ -230,33 +245,48 @@ get_filedes(inotify(Fd, _), Fd).
 
 %-----------------------------------------------------------------------------%
 
-read_all(Inotify, Res, !IO) :-
-    Inotify = inotify(Fd, WatchesVar),
-    read_next(Fd, RC, Error, RemovedWatchDescr, !IO),
+read_events(inotify(Fd, WatchesVar), Res, !IO) :-
+    get_mutvar(WatchesVar, Watches0, !IO),
+    read_events_2(Fd, Watches0, Res0, [], RevEvents, !IO),
+    list.reverse(RevEvents, Events),
+    list.foldl(remove_ignored, Events, Watches0, Watches),
+    set_mutvar(WatchesVar, Watches, !IO),
+    (
+        Res0 = ok,
+        Res = ok(Events)
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred read_events_2(int::in, watches(S)::in, maybe_error::out,
+    list(inotify_event(S))::in, list(inotify_event(S))::out, io::di, io::uo)
+    is det.
+
+read_events_2(Fd, Watches, Res, !RevEvents, !IO) :-
+    read_some(Fd, Watches, RC, Error, !RevEvents, !IO),
     ( RC = 0 ->
         Res = ok
     ; RC = 1 ->
-        read_all(Inotify, Res, !IO)
-    ; RC = 2 ->
-        remove_watch_from_map(WatchesVar, watch(RemovedWatchDescr), !IO),
-        read_all(Inotify, Res, !IO)
+        read_events_2(Fd, Watches, Res, !RevEvents, !IO)
     ;
         Res = error(Error)
     ).
 
-:- pred read_next(int::in, int::out, string::out, int::out, io::di, io::uo)
+:- pred read_some(int::in, watches(S)::in, int::out, string::out,
+    list(inotify_event(S))::in, list(inotify_event(S))::out, io::di, io::uo)
     is det.
 
 :- pragma foreign_proc("C",
-    read_next(Fd::in, RC::out, Error::out, RemovedWatchDescr::out,
-        _IO0::di, _IO::uo),
-    [will_not_call_mercury, promise_pure, not_thread_safe, tabled_for_io,
+    read_some(Fd::in, Watches::in, RC::out, Error::out,
+        RevEvents0::in, RevEvents::out, _IO0::di, _IO::uo),
+    [may_call_mercury, promise_pure, not_thread_safe, tabled_for_io,
         may_not_duplicate],
 "
     int queue_length;
 
     Error = MR_make_string_const("""");
-    RemovedWatchDescr = -1;
+    RevEvents = RevEvents0;
 
     RC = ioctl(Fd, FIONREAD, &queue_length);
     if (RC == -1) {
@@ -275,15 +305,83 @@ read_all(Inotify, Res, !IO) :-
             RC = -1;
             Error = MR_make_string(MR_ALLOC_ID, ""%s"", strerror(errno));
         } else {
-            const struct inotify_event *ev = (const struct inotify_event *)buf;
-            if (ev->mask & IN_IGNORED) {
-                RC = 2;
-                RemovedWatchDescr = ev->wd;
-            } else {
-                RC = 1;
+            const char *ev_ptr = buf;
+
+            while (ev_ptr < buf + sz) {
+                const struct inotify_event *ev = (const struct inotify_event *)ev_ptr;
+                MR_String name;
+
+                if (ev->len > 0) {
+                    MR_make_aligned_string_copy_msg(name, ev->name, MR_ALLOC_ID);
+                } else {
+                    name = MR_make_string_const("""");
+                }
+
+                cons_event(TypeInfo_for_S, Watches, ev->wd, ev->mask,
+                    ev->cookie, name, RevEvents, &RevEvents);
+
+                ev_ptr += sizeof(struct inotify_event) + ev->len;
             }
+
+            RC = 1;
         }
     }
+").
+
+:- pred cons_event(watches(S)::in, int::in, mask::in, cookie::in,
+    string::in, list(inotify_event(S))::in, list(inotify_event(S))::out) is det.
+
+:- pragma foreign_export("C", cons_event(in, in, in, in, in, in, out),
+    "cons_event").
+
+cons_event(Watches, WatchDescr, Mask, Cookie, Name, RevEvents0, RevEvents) :-
+    Watch = watch(WatchDescr),
+    % Get the path up front, as the watch may be removed by the time the user
+    % reads the event (especially for IN_IGNORED events).
+    ( bimap.forward_search(Watches, Watch, PathName) ->
+        ( Name = "" ->
+            MaybeName = no
+        ;
+            MaybeName = yes(Name)
+        ),
+        Event = inotify_event(Watch, PathName, Mask, Cookie, MaybeName),
+        RevEvents = [Event | RevEvents0]
+    ;
+        % Should not happen?
+        RevEvents = RevEvents0
+    ).
+
+:- pred remove_ignored(inotify_event(S)::in, watches(S)::in, watches(S)::out)
+    is det.
+
+remove_ignored(Event, !Watches) :-
+    ( Event ^ mask /\ ignored \= 0 ->
+        bimap.delete_key(Event ^ watch, !Watches)
+    ;
+        true
+    ).
+
+%-----------------------------------------------------------------------------%
+
+contains(Mask, Event) :-
+    Mask /\ bit(Event) \= 0.
+
+:- func bit(event_type) = int.
+
+:- pragma foreign_proc("C",
+    bit(X0::in) = (X::out),
+    [will_not_call_mercury, promise_pure, thread_safe],
+"
+    X = X0;
+").
+
+:- func ignored = int.
+
+:- pragma foreign_proc("C",
+    ignored = (X::out),
+    [will_not_call_mercury, promise_pure, thread_safe],
+"
+    X = IN_IGNORED;
 ").
 
 %-----------------------------------------------------------------------------%

@@ -133,9 +133,9 @@ logged_in(Config, Db, IMAP, !IO) :-
                         LocalMailboxPath = local_mailbox_path(DirName),
                         DirCache0 = dir_cache.init(dirname(DirName)),
 
-                        sync_and_repeat(Config, Db, IMAP, Inotify,
-                            MailboxPair, LastModSeqValzer,
-                            DirCache0, _DirCache, !IO)
+                        sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair,
+                            LastModSeqValzer, scan_all, DirCache0, _DirCache,
+                            !IO)
                     ;
                         ResInotify = error(Error),
                         report_error(Error, !IO)
@@ -163,10 +163,10 @@ logged_in(Config, Db, IMAP, !IO) :-
 
 :- pred sync_and_repeat(prog_config::in, database::in, imap::in,
     inotify(S)::in, mailbox_pair::in, mod_seq_valzer::in,
-    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+    update_method::in, dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
 sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
-        !DirCache, !IO) :-
+        DirCacheUpdate, !DirCache, !IO) :-
     % This is the highest MODSEQ value that we know of, which could be higher
     % by now.
     get_selected_mailbox_highest_modseqvalue(IMAP, MaybeHighestModSeqValue,
@@ -177,40 +177,25 @@ sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
         io.format("Synchronising from MODSEQ %s (highest MODSEQ >= %s)\n",
             [s(to_string(Low)), s(to_string(High))], !IO),
 
-        % Clear inotify buffer as of now.
-        % Events which come in between now and the end of the sync cycle can
-        % cause a potentially unnecessary sync cycle.
-        read_all(Inotify, ResClearInotify, !IO),
+        sync_mailboxes(Config, Db, IMAP, Inotify, MailboxPair,
+            LastModSeqValzer, HighestModSeqValue, DirCacheUpdate, ResSync,
+            !DirCache, !IO),
         (
-            ResClearInotify = ok,
-            sync_mailboxes(Config, Db, IMAP, MailboxPair, LastModSeqValzer,
-                HighestModSeqValue, ResSync, !DirCache, !IO),
+            ResSync = ok,
+            idle_until_sync(IMAP, Inotify, ResIdle, !IO),
             (
-                ResSync = ok,
-                update_watches(Inotify, !.DirCache, ResWatch, !IO),
-                (
-                    ResWatch = ok,
-                    idle_until_sync(IMAP, Inotify, ResIdle, !IO),
-                    (
-                        ResIdle = ok,
-                        update_selected_mailbox_highest_modseqvalue_from_fetches(
-                            IMAP, !IO),
-                        sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair,
-                            mod_seq_valzer(High), !DirCache, !IO)
-                    ;
-                        ResIdle = error(Error),
-                        report_error(Error, !IO)
-                    )
-                ;
-                    ResWatch = error(Error),
-                    report_error(Error, !IO)
-                )
+                ResIdle = ok,
+                update_selected_mailbox_highest_modseqvalue_from_fetches(
+                    IMAP, !IO),
+                sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair,
+                    mod_seq_valzer(High), scan_from_inotify_events, !DirCache,
+                    !IO)
             ;
-                ResSync = error(Error),
+                ResIdle = error(Error),
                 report_error(Error, !IO)
             )
         ;
-            ResClearInotify = error(Error),
+            ResSync = error(Error),
             report_error(Error, !IO)
         )
     ;
