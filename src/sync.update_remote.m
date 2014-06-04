@@ -12,9 +12,6 @@
     mailbox_pair::in, mod_seq_valzer::in, mod_seq_value::in,
     maybe_error::out, io::di, io::uo) is det.
 
-:- pred detect_remote_message_expunges(database::in, imap::in,
-    mailbox_pair::in, maybe_error::out, io::di, io::uo) is det.
-
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
@@ -44,6 +41,29 @@
 
 %-----------------------------------------------------------------------------%
 
+update_db_remote_mailbox(_Config, Db, IMAP, MailboxPair, LastModSeqValzer,
+        HighestModSeqValue, Res, !IO) :-
+    update_db_remote_mailbox_state(Db, IMAP, MailboxPair, LastModSeqValzer,
+        HighestModSeqValue, Res0, !IO),
+    (
+        Res0 = ok,
+        detect_remote_message_expunges(Db, IMAP, MailboxPair, Res, !IO)
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
+    % Update the database's knowledge of the remote mailbox state,
+    % since the last known mod-sequence-value.
+    %
+:- pred update_db_remote_mailbox_state(database::in, imap::in,
+    mailbox_pair::in, mod_seq_valzer::in, mod_seq_value::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+update_db_remote_mailbox_state(Db, IMAP, MailboxPair, LastModSeqValzer,
+        HighestModSeqValue, Res, !IO) :-
     % To avoid starting over if we are interrupted when processing a large list
     % of messages, we divide flag updates into two ranges, 1:MidUID and
     % (MidUID+1):*
@@ -55,8 +75,6 @@
     % Then we can find MidUID, the highest UID for which
     % pairing.last_modseqvalzer > mailbox.last_modseqvalzer.
     %
-update_db_remote_mailbox(_Config, Db, IMAP, MailboxPair, LastModSeqValzer,
-        HighestModSeqValue, Res, !IO) :-
     % Find MidUID where we were interrupted previously.
     search_max_uid_more_recent_than(Db, MailboxPair, LastModSeqValzer,
         ResMidUID, !IO),
@@ -301,6 +319,9 @@ do_update_db_with_remote_message_info(Db, MailboxPair, HighestModSeqValue,
     ).
 
 %-----------------------------------------------------------------------------%
+
+:- pred detect_remote_message_expunges(database::in, imap::in,
+    mailbox_pair::in, maybe_error::out, io::di, io::uo) is det.
 
 detect_remote_message_expunges(Db, IMAP, MailboxPair, Res, !IO) :-
     % The search return option forces the server to return UIDs using

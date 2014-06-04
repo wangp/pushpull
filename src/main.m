@@ -33,7 +33,7 @@
 :- import_module sync.
 
 :- type idle_next
-    --->    sync
+    --->    sync(shortcut)
     ;       restart_idle.
 
 %-----------------------------------------------------------------------------%
@@ -134,8 +134,8 @@ logged_in(Config, Db, IMAP, !IO) :-
                         DirCache0 = dir_cache.init(dirname(DirName)),
 
                         sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair,
-                            LastModSeqValzer, scan_all, DirCache0, _DirCache,
-                            !IO)
+                            LastModSeqValzer, shortcut(check, check), scan_all,
+                            DirCache0, _DirCache, !IO)
                     ;
                         ResInotify = error(Error),
                         report_error(Error, !IO)
@@ -163,10 +163,11 @@ logged_in(Config, Db, IMAP, !IO) :-
 
 :- pred sync_and_repeat(prog_config::in, database::in, imap::in,
     inotify(S)::in, mailbox_pair::in, mod_seq_valzer::in,
-    update_method::in, dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+    shortcut::in, update_method::in, dir_cache::in, dir_cache::out,
+    io::di, io::uo) is det.
 
 sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
-        DirCacheUpdate, !DirCache, !IO) :-
+        Shortcut0, DirCacheUpdate, !DirCache, !IO) :-
     % This is the highest MODSEQ value that we know of, which could be higher
     % by now.
     get_selected_mailbox_highest_modseqvalue(IMAP, MaybeHighestModSeqValue,
@@ -178,18 +179,18 @@ sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
             [s(to_string(Low)), s(to_string(High))], !IO),
 
         sync_mailboxes(Config, Db, IMAP, Inotify, MailboxPair,
-            LastModSeqValzer, HighestModSeqValue, DirCacheUpdate, ResSync,
-            !DirCache, !IO),
+            LastModSeqValzer, HighestModSeqValue, Shortcut0, DirCacheUpdate,
+            ResSync, !DirCache, !IO),
         (
             ResSync = ok,
             idle_until_sync(IMAP, Inotify, ResIdle, !IO),
             (
-                ResIdle = ok,
+                ResIdle = ok(Shortcut1),
                 update_selected_mailbox_highest_modseqvalue_from_fetches(
                     IMAP, !IO),
                 sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair,
-                    mod_seq_valzer(High), scan_from_inotify_events, !DirCache,
-                    !IO)
+                    mod_seq_valzer(High), Shortcut1, scan_from_inotify_events,
+                    !DirCache, !IO)
             ;
                 ResIdle = error(Error),
                 report_error(Error, !IO)
@@ -202,7 +203,7 @@ sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
         report_error("Cannot support this server.", !IO)
     ).
 
-:- pred idle_until_sync(imap::in, inotify(S)::in, maybe_error::out,
+:- pred idle_until_sync(imap::in, inotify(S)::in, maybe_error(shortcut)::out,
     io::di, io::uo) is det.
 
 idle_until_sync(IMAP, Inotify, Res, !IO) :-
@@ -216,9 +217,9 @@ idle_until_sync(IMAP, Inotify, Res, !IO) :-
         io.nl(!IO),
         idle_until_done(IMAP, Inotify, StartTime, Res1, !IO),
         (
-            Res1 = ok(sync),
+            Res1 = ok(sync(Shortcut)),
             sleep(1, !IO),
-            Res = ok
+            Res = ok(Shortcut)
         ;
             Res1 = ok(restart_idle),
             idle_until_sync(IMAP, Inotify, Res, !IO)
@@ -279,22 +280,25 @@ idle_loop(IMAP, Inotify, StartTime, Res, !IO) :-
         (
             Res0 = ready(_NumReady, FdSet),
             ( fd_isset(FdSet, InotifyFd) ->
-                Sync1 = yes
+                CheckLocal = check
             ;
-                Sync1 = no
+                CheckLocal = skip
             ),
             ( fd_isset(FdSet, IMAP_Fd) ->
-                do_read_idle_response(IMAP, Res2, Sync2, !IO)
+                do_read_idle_response(IMAP, Res2, CheckRemote, !IO)
             ;
                 Res2 = ok,
-                Sync2 = no
+                CheckRemote = skip
             ),
             (
                 Res2 = ok,
-                ( Sync1 `or` Sync2 = yes ->
-                    Res = ok(sync)
-                ;
+                (
+                    CheckLocal = skip,
+                    CheckRemote = skip
+                ->
                     idle_loop(IMAP, Inotify, StartTime, Res, !IO)
+                ;
+                    Res = ok(sync(shortcut(CheckLocal, CheckRemote)))
                 )
             ;
                 Res2 = error(Error),
@@ -312,25 +316,25 @@ idle_loop(IMAP, Inotify, StartTime, Res, !IO) :-
         Res = error(Error)
     ).
 
-:- pred do_read_idle_response(imap::in, maybe_error::out, bool::out,
+:- pred do_read_idle_response(imap::in, maybe_error::out, check::out,
     io::di, io::uo) is det.
 
-do_read_idle_response(IMAP, Res, Sync, !IO) :-
+do_read_idle_response(IMAP, Res, CheckRemote, !IO) :-
     read_single_idle_response(IMAP, ResRead, !IO),
     (
         (
             ResRead = stop_idling(Alerts),
-            Sync = yes
+            CheckRemote = check
         ;
             ResRead = continue_idling(Alerts),
-            Sync = no
+            CheckRemote = skip
         ),
         report_alerts(Alerts, !IO),
         Res = ok
     ;
         ResRead = error(Error),
         Res = error(Error),
-        Sync = no
+        CheckRemote = skip
     ).
 
 :- func idle_timeout_secs = int.
