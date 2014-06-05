@@ -37,7 +37,7 @@ update_db_local_mailbox(_Config, Db, Inotify, MailboxPair, UpdateMethod, Res,
         !DirCache, !IO) :-
     update_dir_cache(Inotify, UpdateMethod, ResCache, !DirCache, !IO),
     (
-        ResCache = ok,
+        ResCache = ok(yes),
         get_unexpunged_pairings_by_uniquename(Db, MailboxPair,
             ResExistingPairings, !IO),
         (
@@ -59,6 +59,9 @@ update_db_local_mailbox(_Config, Db, Inotify, MailboxPair, UpdateMethod, Res,
             ResExistingPairings = error(Error),
             Res = error(Error)
         )
+    ;
+        ResCache = ok(no),
+        Res = ok
     ;
         ResCache = error(Error),
         Res = error(Error)

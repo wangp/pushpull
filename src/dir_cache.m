@@ -3,6 +3,7 @@
 :- module dir_cache.
 :- interface.
 
+:- import_module bool.
 :- import_module io.
 :- import_module list.
 :- import_module maybe.
@@ -27,8 +28,9 @@
 
 :- func init(dirname) = dir_cache.
 
-:- pred update_dir_cache(inotify(S)::in, update_method::in, maybe_error::out,
-    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+:- pred update_dir_cache(inotify(S)::in, update_method::in,
+    maybe_error(bool)::out, dir_cache::in, dir_cache::out, io::di, io::uo)
+    is det.
 
 :- pred update_for_rename(dirname::in, basename::in, dirname::in, basename::in,
     dir_cache::in, dir_cache::out) is det.
@@ -45,7 +47,6 @@
 
 :- implementation.
 
-:- import_module bool.
 :- import_module dir.
 :- import_module int.
 :- import_module map.
@@ -82,33 +83,43 @@ update_dir_cache(Inotify, Method, Res, !DirCache, !IO) :-
         !.DirCache = dir_cache(TopDirName, Mtimes0, _Array),
         Queue0 = set.from_sorted_list(map.sorted_keys(Mtimes0)),
         set.insert(TopDirName, Queue0, Queue),
-        update_by_scan(Queue, Res1, !DirCache, !IO)
+        update_dir_cache_2(Inotify, Queue, Res, !DirCache, !IO)
     ;
         Method = scan_from_inotify_events,
         (
             ResEvents = ok(Events),
-            Queue = events_dir_set(Events),
-            update_by_scan(Queue, Res1, !DirCache, !IO)
+            list.foldl(evaluate_event(!.DirCache), Events, set.init, Queue),
+            ( set.is_empty(Queue) ->
+                Res = ok(no)
+            ;
+                update_dir_cache_2(Inotify, Queue, Res, !DirCache, !IO)
+            )
         ;
             ResEvents = error(Error1),
-            Res1 = error(Error1)
+            Res = error(Error1)
         )
-    ),
-    (
-        Res1 = ok,
-        add_watches(Inotify, !.DirCache, Res, !IO)
-    ;
-        Res1 = error(Error),
-        Res = error(Error)
     ).
 
-:- func events_dir_set(list(inotify_event(S))) = set(dirname).
+:- pred update_dir_cache_2(inotify(S)::in, set(dirname)::in,
+    maybe_error(bool)::out, dir_cache::in, dir_cache::out, io::di, io::uo)
+    is det.
 
-events_dir_set(Events) = set.from_list(list.map(event_dir, Events)).
-
-:- func event_dir(inotify_event(S)) = dirname.
-
-event_dir(inotify_event(_, PathName, _, _, _)) = dirname(PathName).
+update_dir_cache_2(Inotify, Queue, Res, !DirCache, !IO) :-
+    update_by_scan(Queue, Res0, !DirCache, !IO),
+    (
+        Res0 = ok,
+        add_watches(Inotify, !.DirCache, Res1, !IO),
+        (
+            Res1 = ok,
+            Res = ok(yes)
+        ;
+            Res1 = error(Error),
+            Res = error(Error)
+        )
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
 
 %-----------------------------------------------------------------------------%
 
@@ -275,6 +286,71 @@ forget_dir_files(DirName, !Files) :-
 :- pred file_has_dirname(dirname::in, file::in) is semidet.
 
 file_has_dirname(DirName, file(_, DirName)).
+
+%-----------------------------------------------------------------------------%
+
+:- pred evaluate_event(dir_cache::in, inotify_event(S)::in,
+    set(dirname)::in, set(dirname)::out) is det.
+
+evaluate_event(DirCache, Event, !Queue) :-
+    Event = inotify_event(_Watch, DirNameString, Mask, _Cookie, MaybeName),
+    DirName = dirname(DirNameString),
+    % If we already knew about the moved files (because we did it)
+    % then that is no reason to rescan the directory.
+    ( contains(Mask, moved_from) ->
+        (
+            MaybeName = yes(BaseName),
+            not contains(DirCache, DirName, basename(BaseName))
+        ->
+            true
+        ;
+            set.insert(DirName, !Queue)
+        )
+    ; contains(Mask, moved_to) ->
+        (
+            MaybeName = yes(BaseName),
+            contains(DirCache, DirName, basename(BaseName))
+        ->
+            true
+        ;
+            set.insert(DirName, !Queue)
+        )
+    ;
+        set.insert(DirName, !Queue)
+    ).
+
+:- pred contains(dir_cache::in, dirname::in, basename::in) is semidet.
+
+contains(DirCache, DirName, BaseName) :-
+    DirCache = dir_cache(_TopDir, _Mtimes, Array),
+    bsearch(Array, file(BaseName, DirName), _Index).
+
+:- pred bsearch(version_array(file)::in, file::in, int::out) is semidet.
+
+bsearch(Array, Find, Index) :-
+    bsearch_2(Array, Find, 0, max(Array), Index).
+
+:- pred bsearch_2(version_array(file)::in, file::in, int::in, int::in,
+    int::out) is semidet.
+
+bsearch_2(Array, Find, Lo, Hi, Index) :-
+    ( Hi >= Lo ->
+        Mid = (Lo + Hi) // 2,
+        version_array.lookup(Array, Mid) = Elem,
+        compare(Rel, Find, Elem),
+        (
+            Rel = (=),
+            Index = Mid
+        ;
+            Rel = (<),
+            bsearch_2(Array, Find, Lo, Mid - 1, Index)
+        ;
+            Rel = (>),
+            bsearch_2(Array, Find, Mid + 1, Hi, Index)
+        )
+    ;
+        fail
+    ).
 
 %-----------------------------------------------------------------------------%
 
