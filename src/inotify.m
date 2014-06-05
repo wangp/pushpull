@@ -58,6 +58,9 @@
 
 :- pred get_filedes(inotify(S)::in, int::out) is det.
 
+:- pred get_queue_length(inotify(S)::in, maybe_error(int)::out,
+    io::di, io::uo) is det.
+
 :- pred read_events(inotify(S)::in, maybe_error(list(inotify_event(S)))::out,
     io::di, io::uo) is det.
 
@@ -242,6 +245,36 @@ is_watched(inotify(_Fd, WatchesVar), PathName, IsWatched, !IO) :-
 %-----------------------------------------------------------------------------%
 
 get_filedes(inotify(Fd, _), Fd).
+
+%-----------------------------------------------------------------------------%
+
+get_queue_length(inotify(Fd, _), Res, !IO) :-
+    get_queue_length_2(Fd, RC, Error, Length, !IO),
+    ( RC = 0 ->
+        Res = ok(Length)
+    ;
+        Res = error(Error)
+    ).
+
+:- pred get_queue_length_2(int::in, int::out, string::out, int::out,
+    io::di, io::uo) is det.
+
+:- pragma foreign_proc("C",
+    get_queue_length_2(Fd::in, RC::out, Error::out, Length::out,
+        _IO0::di, _IO::uo),
+    [may_call_mercury, promise_pure, not_thread_safe, tabled_for_io,
+        may_not_duplicate],
+"
+    int queue_length;
+    RC = ioctl(Fd, FIONREAD, &queue_length);
+    if (RC == -1) {
+        Error = MR_make_string(MR_ALLOC_ID, ""%s"", strerror(errno));
+        Length = -1;
+    } else {
+        RC = 0;
+        Length = queue_length;
+    }
+").
 
 %-----------------------------------------------------------------------------%
 

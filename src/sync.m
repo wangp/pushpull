@@ -33,6 +33,8 @@
 
 :- implementation.
 
+:- import_module int.
+
 :- include_module sync.download.
 :- include_module sync.flags_local.
 :- include_module sync.flags_remote.
@@ -53,7 +55,7 @@
 
 sync_mailboxes(Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
         HighestModSeqValue, Shortcut, DirCacheUpdate, !:Res, !DirCache, !IO) :-
-    Shortcut = shortcut(CheckLocal, CheckRemote),
+    Shortcut = shortcut(CheckLocal0, CheckRemote),
     % It might be better to get set of valid UIDs first, then use that
     % as part of update_db_remote_mailbox and for detecting expunges.
     (
@@ -64,6 +66,7 @@ sync_mailboxes(Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
         CheckRemote = skip,
         !:Res = ok
     ),
+    force_check_local(Inotify, CheckLocal0, CheckLocal, !Res, !IO),
     (
         !.Res = ok,
         CheckLocal = check
@@ -113,6 +116,34 @@ sync_mailboxes(Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
         delete_expunged_pairings(Db, !:Res, !IO)
     ;
         !.Res = error(_)
+    ).
+
+:- pred force_check_local(inotify(S)::in, check::in, check::out,
+    maybe_error::in, maybe_error::out, io::di, io::uo) is det.
+
+force_check_local(Inotify, CheckLocal0, CheckLocal, Res0, Res, !IO) :-
+    (
+        Res0 = ok,
+        CheckLocal0 = skip,
+        get_queue_length(Inotify, ResQueue, !IO),
+        (
+            ResQueue = ok(Length),
+            Res = ok,
+            CheckLocal = ( Length > 0 -> check ; skip )
+        ;
+            ResQueue = error(Error),
+            Res = error(Error),
+            CheckLocal = skip
+        )
+    ;
+        Res0 = ok,
+        Res = ok,
+        CheckLocal0 = check,
+        CheckLocal = check
+    ;
+        Res0 = error(Error),
+        Res = error(Error),
+        CheckLocal = CheckLocal0
     ).
 
 %-----------------------------------------------------------------------------%
