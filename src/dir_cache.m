@@ -32,6 +32,9 @@
     maybe_error(bool)::out, dir_cache::in, dir_cache::out, io::di, io::uo)
     is det.
 
+:- pred update_for_new_file(dirname::in, basename::in,
+    dir_cache::in, dir_cache::out) is det.
+
 :- pred update_for_rename(dirname::in, basename::in, dirname::in, basename::in,
     dir_cache::in, dir_cache::out) is det.
 
@@ -350,6 +353,27 @@ bsearch_2(Array, Find, Lo, Hi, Index) :-
         )
     ;
         fail
+    ).
+
+%-----------------------------------------------------------------------------%
+
+update_for_new_file(NewDirName, NewBaseName, DirCache0, DirCache) :-
+    DirCache0 = dir_cache(TopDirName, Mtimes, Files0),
+    update_for_new_file_2(file(NewBaseName, NewDirName), Files0, Files),
+    DirCache = dir_cache(TopDirName, Mtimes, Files).
+
+:- pred update_for_new_file_2(file::in,
+    version_array(file)::in, version_array(file)::out) is det.
+
+update_for_new_file_2(NewFile, Array0, Array) :-
+    ( bsearch(Array0, NewFile, _Index) ->
+        unexpected($module, $pred, "file already exists")
+    ;
+        % XXX inefficient
+        List0 = version_array.to_list(Array0),
+        List1 = [NewFile | List0],
+        list.sort(List1, SortedList),
+        Array = version_array.from_list(SortedList)
     ).
 
 %-----------------------------------------------------------------------------%

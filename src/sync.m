@@ -99,15 +99,14 @@ sync_mailboxes(Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
     (
         !.Res = ok,
         download_unpaired_remote_messages(Config, Db, IMAP, MailboxPair,
-            !.DirCache, !:Res, !IO)
+            !:Res, !DirCache, !IO)
     ;
         !.Res = error(_)
     ),
-    % DirCache does not include newly added messages.
     (
         !.Res = ok,
-        upload_unpaired_local_messages(Config, Db, IMAP,
-            MailboxPair, !.DirCache, !:Res, !IO)
+        upload_unpaired_local_messages(Config, Db, IMAP, MailboxPair,
+            !.DirCache, !:Res, !IO)
     ;
         !.Res = error(_)
     ),
