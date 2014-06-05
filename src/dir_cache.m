@@ -24,7 +24,7 @@
 
 :- type update_method
     --->    scan_all
-    ;       scan_from_inotify_events.
+    ;       scan_from_inotify_events(bool).
 
 :- func init(dirname) = dir_cache.
 
@@ -85,12 +85,12 @@ update_dir_cache(Inotify, Method, Res, !DirCache, !IO) :-
         set.insert(TopDirName, Queue0, Queue),
         update_dir_cache_2(Inotify, Queue, Res, !DirCache, !IO)
     ;
-        Method = scan_from_inotify_events,
+        Method = scan_from_inotify_events(Force),
         (
             ResEvents = ok(Events),
             list.foldl(evaluate_event(!.DirCache), Events, set.init, Queue),
             ( set.is_empty(Queue) ->
-                Res = ok(no)
+                Res = ok(Force)
             ;
                 update_dir_cache_2(Inotify, Queue, Res, !DirCache, !IO)
             )

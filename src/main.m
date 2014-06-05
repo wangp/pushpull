@@ -167,7 +167,7 @@ logged_in(Config, Db, IMAP, !IO) :-
     io::di, io::uo) is det.
 
 sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
-        Shortcut0, DirCacheUpdate, !DirCache, !IO) :-
+        Shortcut0, DirCacheUpdate0, !DirCache, !IO) :-
     % This is the highest MODSEQ value that we know of, which could be higher
     % by now.
     get_selected_mailbox_highest_modseqvalue(IMAP, MaybeHighestModSeqValue,
@@ -179,17 +179,34 @@ sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
             [s(to_string(Low)), s(to_string(High))], !IO),
 
         sync_mailboxes(Config, Db, IMAP, Inotify, MailboxPair,
-            LastModSeqValzer, HighestModSeqValue, Shortcut0, DirCacheUpdate,
+            LastModSeqValzer, HighestModSeqValue, Shortcut0, DirCacheUpdate0,
             ResSync, !DirCache, !IO),
         (
             ResSync = ok,
-            idle_until_sync(IMAP, Inotify, ResIdle, !IO),
+            % Clear inotify events prior to idling.  There may be events in the
+            % queue, particularly those induced by renamings performed during
+            % the sync cycle, which would cause us to wake immediately.
+            update_dir_cache(Inotify, scan_from_inotify_events(no), ResCache,
+                !DirCache, !IO),
+            (
+                ResCache = ok(yes),
+                ResIdle = ok(shortcut(check, skip)),
+                DirCacheUpdate1 = scan_from_inotify_events(yes)
+            ;
+                ResCache = ok(no),
+                idle_until_sync(IMAP, Inotify, ResIdle, !IO),
+                DirCacheUpdate1 = scan_from_inotify_events(no)
+            ;
+                ResCache = error(Error0),
+                ResIdle = error(Error0),
+                DirCacheUpdate1 = scan_from_inotify_events(no)
+            ),
             (
                 ResIdle = ok(Shortcut1),
-                update_selected_mailbox_highest_modseqvalue_from_fetches(
-                    IMAP, !IO),
+                update_selected_mailbox_highest_modseqvalue_from_fetches(IMAP,
+                    !IO),
                 sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair,
-                    mod_seq_valzer(High), Shortcut1, scan_from_inotify_events,
+                    mod_seq_valzer(High), Shortcut1, DirCacheUpdate1,
                     !DirCache, !IO)
             ;
                 ResIdle = error(Error),
