@@ -4,7 +4,7 @@ DIFF = diff -u
 
 files = $(wildcard *.m ../src/*.m)
 
-TESTS = test_crc16
+TESTS = test_crc8 test_crc16
 
 .PHONY: default
 default: $(addsuffix .runtest,$(TESTS))
