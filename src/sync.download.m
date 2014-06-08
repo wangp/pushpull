@@ -149,13 +149,11 @@ handle_downloaded_message_2(Database, MailboxPair, LocalMailboxPath,
         FetchResults, UnpairedRemote, Res, !DirCache, !IO) :-
     UnpairedRemote = unpaired_remote_message(_PairingId, UID,
         ExpectedMessageId),
+    % If changes are being made on the remote mailbox concurrently the server
+    % (at least Dovecot) may send unsolicited FETCH responses which are not
+    % directly in response to our FETCH request, and therefore not matching the
+    % items that we asked for.
     ( find_uid_fetch_result(FetchResults, UID, Atts) ->
-        % XXX If changes are being made on the remote mailbox concurrently the
-        % server (at least Dovecot) may send unsolicited FETCH responses which
-        % are not directly in response to our FETCH request, and therefore not
-        % matching the items that we asked for.  We probably need to filter
-        % those responses out, or add them to the responses that we did ask
-        % for.
         (
             get_rfc822_att(Atts, RawMessageCrLf),
             get_flags(Atts, Flags),

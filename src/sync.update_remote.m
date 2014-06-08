@@ -170,12 +170,6 @@ update_uid_range(Db, IMAP, MailboxPair, SeqMin, SeqMax, SinceModSeqValzer,
         ResFetch = ok_with_data(FetchResults),
         io.write_string(Text, !IO),
         io.nl(!IO),
-        % XXX If changes are being made on the remote mailbox concurrently the
-        % server (at least Dovecot) may send unsolicited FETCH responses which
-        % are not directly in response to our FETCH request, and therefore not
-        % matching the items that we asked for.  We probably need to filter
-        % those responses out, or add them to the responses that we did ask
-        % for.
         (
             list.foldl(make_remote_message_info, FetchResults,
                 map.init, RemoteMessageInfos)
@@ -200,24 +194,32 @@ update_uid_range(Db, IMAP, MailboxPair, SeqMin, SeqMax, SinceModSeqValzer,
     is semidet.
 
 make_remote_message_info(_MsgSeqNr - Atts, !Map) :-
-    solutions((pred(U::out) is nondet :- member(uid(U), Atts)),
-        [UID]),
+    % If changes are being made on the remote mailbox concurrently the server
+    % (at least Dovecot) may send unsolicited FETCH responses which are not
+    % directly in response to our FETCH request, and therefore not matching the
+    % items that we asked for.  Ignore those, though we could make use to
+    % augment preceding FETCH responses.
+    (
+        solutions((pred(U::out) is nondet :- member(uid(U), Atts)), [UID])
+    ->
+        solutions(
+            (pred(MaybeMessageId0::out) is nondet :-
+                member(Att, Atts),
+                is_message_id_att(Att, MaybeMessageId0)
+            ),
+            [MaybeMessageId]),
 
-    solutions(
-        (pred(MaybeMessageId0::out) is nondet :-
-            member(Att, Atts),
-            is_message_id_att(Att, MaybeMessageId0)
-        ),
-        [MaybeMessageId]),
+        solutions((pred(F::out) is nondet :- member(flags(F), Atts)),
+            [Flags0]),
+        list.filter_map(flag_except_recent, Flags0, Flags1),
+        set.list_to_set(Flags1, Flags),
 
-    solutions((pred(F::out) is nondet :- member(flags(F), Atts)),
-        [Flags0]),
-    list.filter_map(flag_except_recent, Flags0, Flags1),
-    set.list_to_set(Flags1, Flags),
-
-    % I guess the server should not send multiple results for the same UID.
-    Info = remote_message_info(MaybeMessageId, Flags),
-    map.insert(UID, Info, !Map).
+        % I guess the server should not send multiple results for the same UID.
+        Info = remote_message_info(MaybeMessageId, Flags),
+        map.insert(UID, Info, !Map)
+    ;
+        true
+    ).
 
 :- pred is_message_id_att(msg_att::in, maybe_message_id::out) is semidet.
 
