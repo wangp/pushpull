@@ -27,7 +27,7 @@
 :- import_module solutions.
 :- import_module string.
 
-:- import_module crc16.
+:- import_module crc8.
 :- import_module flag_delta.
 :- import_module imap.time.
 :- import_module log.
@@ -425,19 +425,19 @@ save_raw_message_2(uid(UID), dirname(SubDirName), RawMessageLf, Flags,
 :- func hex_bits(maybe_message_id) = string.
 
 hex_bits(MessageId) = Str :-
+    % Divide messages into 256 sub-maildirs.  If we use too many sub-maildirs
+    % we run into the inotify default limit of 8192 watches per user.  We need
+    % to watch two directories (cur, new) per maildir.  Scanning and setting up
+    % many small directories is also slow.
     (
         MessageId = message_id(Id),
         string.to_code_unit_list(Id, Bytes),
-        Crc = crc_ccitt(Bytes)
+        Crc = crc_8(Bytes)
     ;
         MessageId = nil,
-        Crc = crc_ccitt([])
+        Crc = crc_8([])
     ),
-    % Use 11-bits only for now.  If we use 12-bits then we run into the inotify
-    % default limit of 8192 watches for a user program, as we need to watch two
-    % directories (cur, new) per maildir.
-    Bits = Crc /\ 0x7ff,
-    string.format("%03x", [i(Bits)], Str).
+    string.format("%02x", [i(Crc)], Str).
 
 :- func crlf_to_lf(string) = string.
 
