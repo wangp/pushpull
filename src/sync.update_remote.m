@@ -237,8 +237,10 @@ is_message_id_att(Att, MaybeMessageId) :-
             ReadMessageId = yes(MessageId),
             MaybeMessageId = message_id(MessageId)
         ;
-            ( ReadMessageId = no
-            ; ReadMessageId = format_error(_)
+            ReadMessageId = no,
+            MaybeMessageId = nil
+        ;
+            ( ReadMessageId = format_error(_)
             ; ReadMessageId = error(_)
             ),
             unexpected($module, $pred, "failed to parse Message-Id header")

@@ -178,10 +178,10 @@ handle_downloaded_message_2(Database, MailboxPair, LocalMailboxPath,
                 )
             ;
                 ResMessageId = format_error(Error),
-                Res = error("format error in RFC822 response: " ++ Error)
+                Res = error(Error)
             ;
                 ResMessageId = error(Error),
-                Res = error(io.error_message(Error))
+                Res = error(Error)
             )
         ;
             Res = error("problem with UID FETCH response")

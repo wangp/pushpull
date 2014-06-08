@@ -184,7 +184,7 @@ update_db_local_message_file_3(Db, MailboxPair, DirName, BaseName, Unique,
         Res = ok
     ;
         ResRead = error(Error),
-        Res = error(io.error_message(Error))
+        Res = error(Error)
     ).
 
 %-----------------------------------------------------------------------------%

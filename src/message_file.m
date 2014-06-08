@@ -9,7 +9,7 @@
     --->    yes(string)
     ;       no
     ;       format_error(string)
-    ;       error(io.error).
+    ;       error(string).
 
 :- pred read_message_id_from_file(string::in, read_message_id_result::out,
     io::di, io::uo) is det.
@@ -37,51 +37,58 @@
 
 :- type message_id == string.
 
+:- type intermediate_result
+    --->    ok
+    ;       format_error(string)
+    ;       error(string).
+
 %-----------------------------------------------------------------------------%
 
 read_message_id_from_file(FileName, Res, !IO) :-
     io.open_input(FileName, ResOpen, !IO),
     (
         ResOpen = ok(Stream),
-        read_header_lines(Stream, [], ResRead, !IO),
+        read_header_lines(Stream, Res0, [], RevLines, !IO),
         io.close_input(Stream, !IO),
         (
-            ResRead = ok(Lines),
+            Res0 = ok,
+            list.reverse(RevLines, Lines),
             extract_message_id(Lines, no, Res)
         ;
-            ResRead = eof,
-            Res = format_error("unexpected eof")
+            Res0 = format_error(Error),
+            Res = format_error(Error)
         ;
-            ResRead = error(Error),
+            Res0 = error(Error),
             Res = error(Error)
         )
     ;
         ResOpen = error(Error),
-        Res = error(Error)
+        Res = error(io.error_message(Error))
     ).
 
-:- pred read_header_lines(io.input_stream::in, list(string)::in,
-    io.result(list(string))::out, io::di, io::uo) is det.
+:- pred read_header_lines(io.input_stream::in, intermediate_result::out,
+    list(string)::in, list(string)::out, io::di, io::uo) is det.
 
-read_header_lines(Stream, RevLines0, Res, !IO) :-
+read_header_lines(Stream, Res, !RevLines, !IO) :-
     io.read_line_as_string(Stream, RLAS, !IO),
     (
         RLAS = ok(Line0),
         ( chop_crlf_or_lf(Line0, Line) ->
             ( Line = "" ->
-                Res = ok(reverse(RevLines0))
+                Res = ok
             ;
-                read_header_lines(Stream, [Line | RevLines0], Res, !IO)
+                cons(Line, !RevLines),
+                read_header_lines(Stream, Res, !RevLines, !IO)
             )
         ;
-            Res = error(io.make_io_error("incomplete line"))
+            Res = format_error("incomplete line")
         )
     ;
         RLAS = eof,
-        Res = ok(reverse(RevLines0))
+        Res = ok
     ;
         RLAS = error(Error),
-        Res = error(Error)
+        Res = error(io.error_message(Error))
     ).
 
 :- pred chop_crlf_or_lf(string::in, string::out) is semidet.
@@ -97,25 +104,53 @@ chop_crlf_or_lf(Line0, Line) :-
 
 %-----------------------------------------------------------------------------%
 
-read_message_id_from_message_lf(Input, Res) :-
-    ( string.sub_string_search(Input, "\n\n", HeaderEndPos) ->
-        string.unsafe_between(Input, 0, HeaderEndPos, Header)
-    ;
-        % No blank line when there is no body.
-        Header = Input
-    ),
-    Lines = string.split_at_string("\n", Header),
-    extract_message_id(Lines, no, Res).
-
 read_message_id_from_message_crlf(Input, Res) :-
-    ( string.sub_string_search(Input, "\r\n\r\n", HeaderEndPos) ->
-        string.unsafe_between(Input, 0, HeaderEndPos, Header)
+    read_message_id_from_message(Input, "\r\n", Res).
+
+read_message_id_from_message_lf(Input, Res) :-
+    read_message_id_from_message(Input, "\n", Res).
+
+:- pred read_message_id_from_message(string::in, string::in,
+    read_message_id_result::out) is det.
+
+read_message_id_from_message(Input, Delim, Res) :-
+    read_header_lines_from_string(Input, Delim, 0, length(Input), Lines, Res0),
+    (
+        Res0 = ok,
+        extract_message_id(Lines, no, Res)
     ;
-        % No blank line when there is no body.
-        Header = Input
-    ),
-    Lines = string.split_at_string("\r\n", Header),
-    extract_message_id(Lines, no, Res).
+        Res0 = format_error(Error),
+        Res = format_error(Error)
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred read_header_lines_from_string(string::in, string::in, int::in, int::in,
+    list(string)::out, intermediate_result::out) is det.
+
+read_header_lines_from_string(Input, Delim, Pos0, EndPos, Lines, Res) :-
+    ( Pos0 < EndPos ->
+        ( string.sub_string_search_start(Input, Delim, Pos0, Pos1) ->
+            ( Pos1 = Pos0 ->
+                % Blank line separates header and body.
+                Lines = [],
+                Res = ok
+            ;
+                string.unsafe_between(Input, Pos0, Pos1, Line),
+                Pos2 = Pos1 + length(Delim),
+                read_header_lines_from_string(Input, Delim, Pos2, EndPos,
+                    Lines0, Res),
+                Lines = [Line | Lines0]
+            )
+        ;
+            Lines = [],
+            Res = format_error("incomplete line")
+        )
+    ;
+        Lines = [],
+        Res = ok
+    ).
 
 %-----------------------------------------------------------------------------%
 
