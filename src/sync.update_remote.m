@@ -26,6 +26,7 @@
 :- import_module set.
 :- import_module solutions.
 :- import_module string.
+:- import_module unit.
 
 :- import_module database.
 :- import_module flag_delta.
@@ -174,8 +175,24 @@ update_uid_range(Db, IMAP, MailboxPair, SeqMin, SeqMax, SinceModSeqValzer,
             list.foldl(make_remote_message_info, FetchResults,
                 map.init, RemoteMessageInfos)
         ->
-            update_db_with_remote_message_infos(Db, MailboxPair,
-                HighestModSeqValue, RemoteMessageInfos, Res, !IO)
+            % Transaction around this for faster.
+            transaction(
+                update_db_with_remote_message_infos(Db, MailboxPair,
+                    HighestModSeqValue, RemoteMessageInfos),
+                    Db, Res0, !IO),
+            (
+                Res0 = ok(commit(_ : unit)),
+                Res = ok
+            ;
+                Res0 = ok(rollback(Error)),
+                Res = error(Error)
+            ;
+                Res0 = ok(rollback_exception(Excp)),
+                Res = error(string(Excp))
+            ;
+                Res0 = error(Error),
+                Res = error(Error)
+            )
         ;
             Res = error("failed in make_remote_message_info")
         )
@@ -256,8 +273,8 @@ flag_except_recent(flag(Flag), Flag).
 flag_except_recent(recent, _) :- fail.
 
 :- pred update_db_with_remote_message_infos(database::in, mailbox_pair::in,
-    mod_seq_value::in, map(uid, remote_message_info)::in, maybe_error::out,
-    io::di, io::uo) is det.
+    mod_seq_value::in, map(uid, remote_message_info)::in,
+    transaction_result(unit, string)::out, io::di, io::uo) is det.
 
 update_db_with_remote_message_infos(Db, MailboxPair, HighestModSeqValue,
         RemoteMessageInfos, Res, !IO) :-
@@ -265,7 +282,14 @@ update_db_with_remote_message_infos(Db, MailboxPair, HighestModSeqValue,
     map.foldl2(
         update_db_with_remote_message_info(Db, MailboxPair,
             HighestModSeqValue),
-        RemoteMessageInfos, ok, Res, !IO).
+        RemoteMessageInfos, ok, Res0, !IO),
+    (
+        Res0 = ok,
+        Res = commit(unit)
+    ;
+        Res0 = error(Error),
+        Res = rollback(Error)
+    ).
 
 :- pred update_db_with_remote_message_info(database::in, mailbox_pair::in,
     mod_seq_value::in, uid::in, remote_message_info::in,

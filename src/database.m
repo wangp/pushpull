@@ -9,6 +9,7 @@
 :- import_module map.
 :- import_module maybe.
 :- import_module set.
+:- import_module univ.
 
 :- import_module flag_delta.
 :- import_module imap.
@@ -24,6 +25,17 @@
     is det.
 
 :- pred close_database(database::in, io::di, io::uo) is det.
+
+%-----------------------------------------------------------------------------%
+
+:- type transaction_result(T, U)
+    --->    commit(T)
+    ;       rollback(U)
+    ;       rollback_exception(univ).
+
+:- pred transaction(pred(transaction_result(T, U), io, io), database,
+    maybe_error(transaction_result(T, U)), io, io).
+:- mode transaction(pred(out, di, uo) is det, in, out, di, uo) is det.
 
 %-----------------------------------------------------------------------------%
 
@@ -455,6 +467,48 @@ create_tables =
 
 close_database(Db, !IO) :-
     close(Db, !IO).
+
+%-----------------------------------------------------------------------------%
+
+transaction(Pred, Db, Res, !IO) :-
+    begin_transaction(Db, Res0, !IO),
+    (
+        Res0 = ok,
+        promise_equivalent_solutions [Out, !:IO]
+        ( try [io(!IO)]
+            Pred(OutPrime, !IO)
+        then
+            Out = OutPrime
+        catch_any Excp ->
+            Out = rollback_exception(univ(Excp))
+        ),
+        (
+            Out = commit(_),
+            end_transaction(Db, Res1, !IO),
+            (
+                Res1 = ok,
+                Res = ok(Out)
+            ;
+                Res1 = error(Error),
+                Res = error(Error)
+            )
+        ;
+            ( Out = rollback(_)
+            ; Out = rollback_exception(_)
+            ),
+            rollback_transaction(Db, Res2, !IO),
+            (
+                Res2 = ok,
+                Res = ok(Out)
+            ;
+                Res2 = error(Error),
+                Res = error(Error)
+            )
+        )
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
 
 %-----------------------------------------------------------------------------%
 
