@@ -17,7 +17,7 @@
     %
 :- type dir_cache.
 
-:- type index.
+:- type stream.
 
 :- type file
     --->    file(basename, dirname).
@@ -33,23 +33,24 @@
     is det.
 
 :- pred update_for_new_file(dirname::in, basename::in,
-    dir_cache::in, dir_cache::out) is det.
+    dir_cache::in, dir_cache::out) is semidet.
 
 :- pred update_for_rename(dirname::in, basename::in, dirname::in, basename::in,
-    dir_cache::in, dir_cache::out) is det.
+    dir_cache::in, dir_cache::out) is semidet.
 
 :- pred search_files_with_prefix(dir_cache::in, string::in, list(file)::out)
     is det.
 
-:- pred begin(dir_cache::in, index::out) is det.
+:- pred stream(dir_cache::in, stream::out) is det.
 
-:- pred get(dir_cache::in, index::in, index::out, file::out) is semidet.
+:- pred another(file::out, stream::in, stream::out) is semidet.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
 :- implementation.
 
+:- import_module assoc_list.
 :- import_module dir.
 :- import_module int.
 :- import_module map.
@@ -58,22 +59,31 @@
 :- import_module set.
 :- import_module string.
 :- import_module time.
-:- import_module version_array.
+:- import_module unit.
+
+:- import_module my_rbtree.
 
 :- type dir_cache
     --->    dir_cache(
                 toplevel    :: dirname,
-                mtimes      :: mtimes,
-                files       :: version_array(file) % sorted
+                dirinfos    :: dirinfos
             ).
 
-:- type mtimes == map(dirname, time_t).
+:- type dirinfos == map(dirname, dirinfo).
 
-:- type index == int.
+:- type dirinfo
+    --->    dirinfo(
+                mtime       :: maybe(time_t),
+                basenames   :: basename_tree
+            ).
+
+:- type basename_tree == rbtree(basename, unit).
+
+:- type stream == assoc_list(dirname, basename_tree).
 
 %-----------------------------------------------------------------------------%
 
-init(Top) = dir_cache(Top, map.init, version_array.empty).
+init(Top) = dir_cache(Top, map.init).
 
 %-----------------------------------------------------------------------------%
 
@@ -83,8 +93,8 @@ update_dir_cache(Inotify, Method, Res, !DirCache, !IO) :-
     inotify.read_events(Inotify, ResEvents, !IO),
     (
         Method = scan_all,
-        !.DirCache = dir_cache(TopDirName, Mtimes0, _Array),
-        Queue0 = set.from_sorted_list(map.sorted_keys(Mtimes0)),
+        !.DirCache = dir_cache(TopDirName, Dirs0),
+        Queue0 = set.from_sorted_list(map.sorted_keys(Dirs0)),
         set.insert(TopDirName, Queue0, Queue),
         update_dir_cache_2(Inotify, Queue, Res, !DirCache, !IO)
     ;
@@ -130,35 +140,23 @@ update_dir_cache_2(Inotify, Queue, Res, !DirCache, !IO) :-
     dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
 update_by_scan(Queue0, Res, DirCache0, DirCache, !IO) :-
-    DirCache0 = dir_cache(TopDirName, Mtimes0, Array0),
-    % Might want to defer conversion to list.
-    OldFiles0 = version_array.to_list(Array0),
-    update_queue(Res, Queue0, _Queue, Mtimes0, Mtimes,
-        OldFiles0, OldFiles, [], NewFiless, !IO),
-    (
-        Res = ok,
-        % NewFiless must be non-empty if OldFiles0 != OldFiles,
-        % even if the number of new files would be zero.
-        NewFiless = [_ | _]
-    ->
-        list.condense([OldFiles | NewFiless], FilesList),
-        list.sort(FilesList, SortedList),
-        Array = version_array.from_list(SortedList),
-        DirCache = dir_cache(TopDirName, Mtimes, Array)
+    DirCache0 = dir_cache(TopDirName, Dirs0),
+    update_queue(Res, Queue0, _Queue, Dirs0, Dirs, !IO),
+    ( Res = ok ->
+        DirCache = dir_cache(TopDirName, Dirs)
     ;
         DirCache = DirCache0
     ).
 
 :- pred update_queue(maybe_error::out, set(dirname)::in, set(dirname)::out,
-    mtimes::in, mtimes::out, list(file)::in, list(file)::out,
-    list(list(file))::in, list(list(file))::out, io::di, io::uo) is det.
+    dirinfos::in, dirinfos::out, io::di, io::uo) is det.
 
-update_queue(Res, !Queue, !Mtimes, !OldFiles, !NewFiless, !IO) :-
+update_queue(Res, !Queue, !Dirs, !IO) :-
     ( set.remove_least(DirName, !Queue) ->
-        update_dir(DirName, Res0, !Queue, !Mtimes, !OldFiles, !NewFiless, !IO),
+        update_dir(DirName, Res0, !Queue, !Dirs, !IO),
         (
             Res0 = ok,
-            update_queue(Res, !Queue, !Mtimes, !OldFiles, !NewFiless, !IO)
+            update_queue(Res, !Queue, !Dirs, !IO)
         ;
             Res0 = error(Error),
             Res = error(Error)
@@ -168,17 +166,16 @@ update_queue(Res, !Queue, !Mtimes, !OldFiles, !NewFiless, !IO) :-
     ).
 
 :- pred update_dir(dirname::in, maybe_error::out,
-    set(dirname)::in, set(dirname)::out,
-    mtimes::in, mtimes::out, list(file)::in, list(file)::out,
-    list(list(file))::in, list(list(file))::out, io::di, io::uo) is det.
+    set(dirname)::in, set(dirname)::out, dirinfos::in, dirinfos::out,
+    io::di, io::uo) is det.
 
-update_dir(DirName, Res, !Queue, !Mtimes, !OldFiles, !NewFiless, !IO) :-
+update_dir(DirName, Res, !Queue, !Dirs, !IO) :-
     DirName = dirname(DirNameString),
     io.file_modification_time(DirNameString, ResModTime, !IO),
     (
         ResModTime = ok(ModTime),
         (
-            map.search(!.Mtimes, DirName, ModTime0),
+            map.search(!.Dirs, DirName, dirinfo(yes(ModTime0), _)),
             ModTime0 = ModTime
         ->
             % Entry already up-to-date (not including subdirectories).
@@ -193,15 +190,13 @@ update_dir(DirName, Res, !Queue, !Mtimes, !OldFiles, !NewFiless, !IO) :-
                 IsNewOrCur = no
             ),
             dir.foldl2(enumerate_files(IsNewOrCur), DirNameString,
-                [] - !.Queue, Res1, !IO),
+                init - !.Queue, Res1, !IO),
             (
                 Res1 = ok(DirFiles - !:Queue),
                 Res = ok,
-                map.set(DirName, ModTime, !Mtimes),
-                forget_dir_files(DirName, !OldFiles),
-                cons(DirFiles, !NewFiless),
+                map.set(DirName, dirinfo(yes(ModTime), DirFiles), !Dirs),
 
-                list.length(DirFiles, NumFiles),
+                NumFiles = count(DirFiles),
                 ( NumFiles > 0 ->
                     io.format("%s contains %d files\n",
                         [s(DirNameString), i(NumFiles)], !IO)
@@ -218,8 +213,7 @@ update_dir(DirName, Res, !Queue, !Mtimes, !OldFiles, !NewFiless, !IO) :-
         ErrorMsg = io.error_message(Error),
         % XXX check with stat
         ( string.sub_string_search(ErrorMsg, "No such file or directory", _) ->
-            map.delete(DirName, !Mtimes),
-            cons([], !NewFiless),
+            delete(DirName, !Dirs),
             Res = ok
         ;
             Res = error(ErrorMsg)
@@ -228,19 +222,18 @@ update_dir(DirName, Res, !Queue, !Mtimes, !OldFiles, !NewFiless, !IO) :-
 
 :- pred enumerate_files(bool::in,
     string::in, string::in, io.file_type::in, bool::out,
-    pair(list(file), set(dirname))::in, pair(list(file), set(dirname))::out,
-    io::di, io::uo) is det.
+    pair(basename_tree, set(dirname))::in,
+    pair(basename_tree, set(dirname))::out, io::di, io::uo) is det.
 
 enumerate_files(IsNewOrCur, DirName, BaseName, FileType, Continue,
-        !.Files - !.Queue, !:Files - !:Queue, !IO) :-
+        !.BaseNames - !.Queue, !:BaseNames - !:Queue, !IO) :-
     (
         FileType = regular_file,
         (
             IsNewOrCur = yes,
             not dot_file(BaseName)
         ->
-            File = file(basename(BaseName), dirname(DirName)),
-            cons(File, !Files)
+            det_insert(basename(BaseName), unit, !BaseNames)
         ;
             true
         )
@@ -281,14 +274,14 @@ dot_file(S) :-
 new_or_cur("new").
 new_or_cur("cur").
 
-:- pred forget_dir_files(dirname::in, list(file)::in, list(file)::out) is det.
+:- pred det_insert(K::in, V::in, rbtree(K, V)::in, rbtree(K, V)::out) is det.
 
-forget_dir_files(DirName, !Files) :-
-    list.negated_filter(file_has_dirname(DirName), !Files).
-
-:- pred file_has_dirname(dirname::in, file::in) is semidet.
-
-file_has_dirname(DirName, file(_, DirName)).
+det_insert(K, V, !Tree) :-
+    ( insert(K, V, !Tree) ->
+        true
+    ;
+        unexpected($module, $pred, "duplicate key")
+    ).
 
 %-----------------------------------------------------------------------------%
 
@@ -325,147 +318,125 @@ evaluate_event(DirCache, Event, !Queue) :-
 :- pred contains(dir_cache::in, dirname::in, basename::in) is semidet.
 
 contains(DirCache, DirName, BaseName) :-
-    DirCache = dir_cache(_TopDir, _Mtimes, Array),
-    bsearch(Array, file(BaseName, DirName), _Index).
-
-:- pred bsearch(version_array(file)::in, file::in, int::out) is semidet.
-
-bsearch(Array, Find, Index) :-
-    bsearch_2(Array, Find, 0, max(Array), Index).
-
-:- pred bsearch_2(version_array(file)::in, file::in, int::in, int::in,
-    int::out) is semidet.
-
-bsearch_2(Array, Find, Lo, Hi, Index) :-
-    ( Hi >= Lo ->
-        Mid = (Lo + Hi) // 2,
-        version_array.lookup(Array, Mid) = Elem,
-        compare(Rel, Find, Elem),
-        (
-            Rel = (=),
-            Index = Mid
-        ;
-            Rel = (<),
-            bsearch_2(Array, Find, Lo, Mid - 1, Index)
-        ;
-            Rel = (>),
-            bsearch_2(Array, Find, Mid + 1, Hi, Index)
-        )
-    ;
-        fail
-    ).
+    DirCache = dir_cache(_TopDir, Dirs),
+    map.search(Dirs, DirName, dirinfo(_ModTime, BaseNames)),
+    search(BaseNames, BaseName, _).
 
 %-----------------------------------------------------------------------------%
 
-update_for_new_file(NewDirName, NewBaseName, DirCache0, DirCache) :-
-    DirCache0 = dir_cache(TopDirName, Mtimes, Files0),
-    update_for_new_file_2(file(NewBaseName, NewDirName), Files0, Files),
-    DirCache = dir_cache(TopDirName, Mtimes, Files).
-
-:- pred update_for_new_file_2(file::in,
-    version_array(file)::in, version_array(file)::out) is det.
-
-update_for_new_file_2(NewFile, Array0, Array) :-
-    ( bsearch(Array0, NewFile, _Index) ->
-        unexpected($module, $pred, "file already exists")
-    ;
-        % XXX inefficient
-        List0 = version_array.to_list(Array0),
-        List1 = [NewFile | List0],
-        list.sort(List1, SortedList),
-        Array = version_array.from_list(SortedList)
-    ).
-
-%-----------------------------------------------------------------------------%
+update_for_new_file(DirName, NewBaseName, DirCache0, DirCache) :-
+    DirCache0 = dir_cache(TopDirName, Dirs0),
+    insert_cached(DirName, NewBaseName, Dirs0, Dirs),
+    DirCache = dir_cache(TopDirName, Dirs).
 
 update_for_rename(OldDirName, OldBaseName, NewDirName, NewBaseName,
         DirCache0, DirCache) :-
-    DirCache0 = dir_cache(TopDirName, Mtimes, Files0),
-    update_for_rename_2(OldDirName, OldBaseName, NewDirName, NewBaseName,
-        Files0, Files),
-    DirCache = dir_cache(TopDirName, Mtimes, Files).
-
-:- pred update_for_rename_2(dirname::in, basename::in,
-    dirname::in, basename::in,
-    version_array(file)::in, version_array(file)::out) is det.
-
-update_for_rename_2(OldDirName, OldBaseName, NewDirName, NewBaseName,
-        Files0, Files) :-
-    OldBaseName = basename(OldBaseNameString),
-    ( bsearch_prefix(Files0, OldBaseNameString, Index) ->
-        File0 = version_array.lookup(Files0, Index),
-        ( File0 = file(OldBaseName, OldDirName) ->
-            Files = Files0 ^ elem(Index) := file(NewBaseName, NewDirName)
-        ;
-            unexpected($module, $pred, "unexpected old file")
-        )
+    DirCache0 = dir_cache(TopDirName, Dirs0),
+    ( OldDirName = NewDirName ->
+        rename_cached(OldDirName, OldBaseName, NewBaseName, Dirs0, Dirs)
     ;
-        unexpected($module, $pred, "old file not found in cache")
+        remove_cached(OldDirName, OldBaseName, Dirs0, Dirs1),
+        insert_cached(NewDirName, NewBaseName, Dirs1, Dirs)
+    ),
+    DirCache = dir_cache(TopDirName, Dirs).
+
+:- pred insert_cached(dirname::in, basename::in, dirinfos::in, dirinfos::out)
+    is semidet.
+
+insert_cached(DirName, BaseName, Dirs0, Dirs) :-
+    ( map.search(Dirs0, DirName, dirinfo(ModTime, BaseNames0)) ->
+        insert(BaseName, unit, BaseNames0, BaseNames),
+        map.det_update(DirName, dirinfo(ModTime, BaseNames), Dirs0, Dirs)
+    ;
+        % An previously unseen directory.
+        BaseNames = singleton(BaseName, unit),
+        map.det_insert(DirName, dirinfo(no, BaseNames), Dirs0, Dirs)
     ).
+
+:- pred remove_cached(dirname::in, basename::in, dirinfos::in, dirinfos::out)
+    is semidet.
+
+remove_cached(DirName, BaseName, Dirs0, Dirs) :-
+    map.search(Dirs0, DirName, dirinfo(ModTime, BaseNames0)),
+    remove(BaseName, _, BaseNames0, BaseNames),
+    map.det_update(DirName, dirinfo(ModTime, BaseNames), Dirs0, Dirs).
+
+:- pred rename_cached(dirname::in, basename::in, basename::in,
+    dirinfos::in, dirinfos::out) is semidet.
+
+rename_cached(DirName, OldBaseName, NewBaseName, Dirs0, Dirs) :-
+    map.search(Dirs0, DirName, dirinfo(ModTime, BaseNames0)),
+    remove(OldBaseName, _, BaseNames0, BaseNames1),
+    insert(NewBaseName, unit, BaseNames1, BaseNames),
+    map.det_update(DirName, dirinfo(ModTime, BaseNames), Dirs0, Dirs).
 
 %-----------------------------------------------------------------------------%
 
 search_files_with_prefix(DirCache, Prefix, Matching) :-
-    DirCache = dir_cache(_TopDir, _Mtimes, Array),
-    ( bsearch_prefix(Array, Prefix, Index) ->
-        take_match_prefix(Array, Prefix, Index, +1, [], MatchingR),
-        take_match_prefix(Array, Prefix, Index-1, -1, [], MatchingL),
-        Matching = MatchingL ++ reverse(MatchingR)
+    DirCache = dir_cache(_TopDir, Dirs0),
+    map.foldl(search_prefix(Prefix), Dirs0, [], Matching).
+
+:- pred search_prefix(string::in, dirname::in, dirinfo::in,
+    list(file)::in, list(file)::out) is det.
+
+search_prefix(Prefix, DirName, dirinfo(_ModTime, BaseNames), !Matching) :-
+    search_prefix_2(Prefix, DirName, BaseNames, !Matching).
+
+:- pred search_prefix_2(string::in, dirname::in, basename_tree::in,
+    list(file)::in, list(file)::out) is det.
+
+search_prefix_2(Prefix, DirName, Tree, !Matching) :-
+    (
+        Tree = empty
     ;
-        Matching = []
-    ).
-
-:- pred bsearch_prefix(version_array(file)::in, string::in, int::out)
-    is semidet.
-
-bsearch_prefix(Array, Prefix, Index) :-
-    bsearch_prefix_2(Array, Prefix, 0, max(Array), Index).
-
-:- pred bsearch_prefix_2(version_array(file)::in, string::in, int::in, int::in,
-    int::out) is semidet.
-
-bsearch_prefix_2(Array, Prefix, Lo, Hi, Index) :-
-    ( Hi >= Lo ->
-        Mid = (Lo + Hi) // 2,
-        version_array.lookup(Array, Mid) = file(basename(BaseName), _),
-        ( string.prefix(BaseName, Prefix) ->
-            Index = Mid
-        ; Prefix @< BaseName ->
-            bsearch_prefix_2(Array, Prefix, Lo, Mid - 1, Index)
+        (
+            Tree = red(K, _, L, R)
         ;
-            bsearch_prefix_2(Array, Prefix, Mid + 1, Hi, Index)
-        )
-    ;
-        fail
-    ).
-
-:- pred take_match_prefix(version_array(file)::in, string::in,
-    int::in, int::in, list(file)::in, list(file)::out) is det.
-
-take_match_prefix(Array, Prefix, Index, Delta, !Matching) :-
-    ( 0 =< Index, Index =< max(Array) ->
-        File = version_array.lookup(Array, Index),
-        File = file(basename(BaseName), _DirName),
-        ( string.prefix(BaseName, Prefix) ->
-            cons(File, !Matching),
-            take_match_prefix(Array, Prefix, Index + Delta, Delta, !Matching)
+            Tree = black(K, _, L, R)
+        ),
+        K = basename(KString),
+        ( string.prefix(KString, Prefix) ->
+            search_prefix_2(Prefix, DirName, R, !Matching),
+            cons(file(K, DirName), !Matching),
+            search_prefix_2(Prefix, DirName, L, !Matching)
+        ; Prefix @< KString ->
+            search_prefix_2(Prefix, DirName, L, !Matching)
         ;
-            true
+            search_prefix_2(Prefix, DirName, R, !Matching)
         )
-    ;
-        true
     ).
 
 %-----------------------------------------------------------------------------%
 
-begin(_, 0).
+stream(dir_cache(_, Dirs), Stream) :-
+    map.to_assoc_list(Dirs, AssocList),
+    assoc_list.map_values_only(basenames, AssocList, Stream).
 
-get(dir_cache(_, _, Array), I, I + 1, File) :-
-    Max = max(Array),
-    ( I =< Max ->
-        File = lookup(Array, I)
+:- pred basenames(dirinfo::in, basename_tree::out) is det.
+
+basenames(dirinfo(_, X), X).
+
+another(File, Stream0, Stream) :-
+    Stream0 = [DirName - Tree0 | Stream1],
+    (
+        Tree0 = empty,
+        another(File, Stream1, Stream)
     ;
-        fail
+        ( Tree0 = red(BaseName, _, L, R)
+        ; Tree0 = black(BaseName, _, L, R)
+        ),
+        % We don't guarantee the order of items returned by this predicate.
+        File = file(BaseName, DirName),
+        ( is_empty(L) ->
+            Stream2 = Stream1
+        ;
+            cons(DirName - L, Stream1, Stream2)
+        ),
+        ( is_empty(R) ->
+            Stream = Stream2
+        ;
+            cons(DirName - R, Stream2, Stream)
+        )
     ).
 
 %-----------------------------------------------------------------------------%
@@ -474,13 +445,13 @@ get(dir_cache(_, _, Array), I, I + 1, File) :-
     io::di, io::uo) is det.
 
 add_watches(Inotify, DirCache, Res, !IO) :-
-    DirCache = dir_cache(_TopDirName, Mtimes, _Files),
-    map.foldl2(add_watch(Inotify), Mtimes, ok, Res, !IO).
+    DirCache = dir_cache(_TopDirName, Dirs),
+    map.foldl2(add_watch(Inotify), Dirs, ok, Res, !IO).
 
-:- pred add_watch(inotify(S)::in, dirname::in, time_t::in,
+:- pred add_watch(inotify(S)::in, dirname::in, T::in,
     maybe_error::in, maybe_error::out, io::di, io::uo) is det.
 
-add_watch(Inotify, dirname(DirName), _Time, Res0, Res, !IO) :-
+add_watch(Inotify, dirname(DirName), _, Res0, Res, !IO) :-
     (
         Res0 = ok,
         dir.split_name(DirName, _, Tail),

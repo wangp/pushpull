@@ -43,10 +43,9 @@ update_db_local_mailbox(_Config, Db, Inotify, MailboxPair, UpdateMethod, Res,
         (
             ResExistingPairings = ok(ExistingPairings),
             make_pairing_id_set(ExistingPairings, UnseenPairingIds0),
-            begin(!.DirCache, Index0),
+            stream(!.DirCache, Stream0),
             update_db_local_message_files(Db, MailboxPair, ExistingPairings,
-                !.DirCache, Index0, _Index, ResUpdate, UnseenPairingIds0,
-                UnseenPairingIds, !IO),
+                Stream0, ResUpdate, UnseenPairingIds0, UnseenPairingIds, !IO),
             (
                 ResUpdate = ok,
                 mark_expunged_local_messages(Db, MailboxPair, UnseenPairingIds,
@@ -80,19 +79,19 @@ make_pairing_id_set(pairing_flag_deltas(PairingId, _), !Set) :-
     insert(PairingId, !Set).
 
 :- pred update_db_local_message_files(database::in, mailbox_pair::in,
-    map(uniquename, pairing_flag_deltas)::in, dir_cache::in,
-    dir_cache.index::in, dir_cache.index::out, maybe_error::out,
-    pairing_id_set::in, pairing_id_set::out, io::di, io::uo) is det.
+    map(uniquename, pairing_flag_deltas)::in, dir_cache.stream::in,
+    maybe_error::out, pairing_id_set::in, pairing_id_set::out, io::di, io::uo)
+    is det.
 
 update_db_local_message_files(Db, MailboxPair, ExistingPairings,
-        DirCache, !Index, Res, !UnseenPairingIds, !IO) :-
-    ( get(DirCache, !Index, File) ->
+        Stream0, Res, !UnseenPairingIds, !IO) :-
+    ( another(File, Stream0, Stream1) ->
         update_db_local_message_file(Db, MailboxPair, ExistingPairings, File,
             Res0, !UnseenPairingIds, !IO),
         (
             Res0 = ok,
             update_db_local_message_files(Db, MailboxPair, ExistingPairings,
-                DirCache, !Index, Res, !UnseenPairingIds, !IO)
+                Stream1, Res, !UnseenPairingIds, !IO)
         ;
             Res0 = error(Error),
             Res = error(Error)

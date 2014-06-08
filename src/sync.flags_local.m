@@ -140,9 +140,14 @@ store_local_flags_add_rm(Unique, AddFlags, RemoveFlags, Res, !DirCache, !IO) :-
                 io.rename_file(OldPath ^ path, NewPath ^ path, ResRename, !IO),
                 (
                     ResRename = ok,
-                    update_for_rename(OldDirName, OldBaseName,
-                        NewDirName, NewBaseName, !DirCache),
-                    Res = ok
+                    (
+                        update_for_rename(OldDirName, OldBaseName,
+                            NewDirName, NewBaseName, !DirCache)
+                    ->
+                        Res = ok
+                    ;
+                        Res = error("update_for_rename failed")
+                    )
                 ;
                     ResRename = error(Error),
                     Res = error(io.error_message(Error))

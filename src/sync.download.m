@@ -242,9 +242,14 @@ save_message_and_pair(Database, MailboxPair, LocalMailboxPath, UnpairedRemote,
             InternalDate, ResSave, !IO),
         (
             ResSave = ok(Unique, DirName, BaseName),
-            update_for_new_file(DirName, BaseName, !DirCache),
-            set_pairing_local_message(Database, PairingId, Unique,
-                init_flags(Flags), Res, !IO)
+            (
+                update_for_new_file(DirName, BaseName, !DirCache)
+            ->
+                set_pairing_local_message(Database, PairingId, Unique,
+                    init_flags(Flags), Res, !IO)
+            ;
+                Res = error("update_for_new_file failed")
+            )
         ;
             ResSave = error(Error),
             Res = error(Error)

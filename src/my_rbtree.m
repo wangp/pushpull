@@ -243,12 +243,15 @@
 :- import_module pair.
 :- import_module require.
 
-%-----------------------------------------------------------------------------%
+:- interface.
 
+    % Exported for dir_cache.
 :- type rbtree(K,V)
     --->    empty
     ;       red(K, V, rbtree(K,V), rbtree(K,V))
     ;       black(K, V, rbtree(K, V), rbtree(K, V)).
+
+:- implementation.
 
 %-----------------------------------------------------------------------------%
 
