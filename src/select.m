@@ -11,6 +11,7 @@
 :- type select_result
     --->    ready(int, fd_set)
     ;       timeout
+    ;       interrupt
     ;       error(string).
 
 :- pred select_read(list(int)::in, int::in, select_result::out, io::di, io::uo)
@@ -28,6 +29,7 @@
 :- pragma foreign_type("C", fd_set, "fd_set").
 
 :- pragma foreign_decl("C", local, "
+    #include <signal.h>
     #include <sys/select.h>
 ").
 
@@ -69,12 +71,14 @@ select_read(Fds, TimeoutSeconds, Res, !IO) :-
         list.foldl(fd_set, Fds, FdSet0, FdSet1),
         list.foldl(max, Fds, 0, MaxFd),
         select_read_2(MaxFd, FdSet1, TimeoutSeconds, RC, FdSet, !IO),
-        ( RC = 0 ->
-            Res = timeout
-        ; RC < 0 ->
-            Res = error("select failed"):select_result
-        ;
+        ( RC > 0 ->
             Res = ready(RC, FdSet)
+        ; RC = 0 ->
+            Res = timeout
+        ; RC = -2 ->
+            Res = interrupt
+        ;
+            Res = error("select failed")
         )
     ).
 
@@ -87,12 +91,18 @@ select_read(Fds, TimeoutSeconds, Res, !IO) :-
     [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
         may_not_duplicate],
 "
-    struct timeval timeout;
+    struct timespec timeout;
+    sigset_t emptyset;
 
-    timeout.tv_sec = TimeoutSeconds;
-    timeout.tv_usec = 0;
     Set = Set0;
-    RC = select(MaxFd + 1, &Set, NULL, NULL, &timeout);
+    timeout.tv_sec = TimeoutSeconds;
+    timeout.tv_nsec = 0;
+    /* Unblock signals so we can be interrupted. */
+    sigemptyset(&emptyset);
+    RC = pselect(MaxFd + 1, &Set, NULL, NULL, &timeout, &emptyset);
+    if (RC < 0) {
+        RC = (errno == EINTR) ? -2 : -1;
+    }
 ").
 
 %-----------------------------------------------------------------------------%

@@ -193,9 +193,11 @@ do_posix_spawn(pid_t *pid_ptr, const char *Prog, char *argv[],
     /*
     ** Block SIGWINCH in the child so that resizing the terminal
     ** window does not kill the child.
+    ** Block SIGINT as well.
     */
     sigemptyset(&sigmask);
     sigaddset(&sigmask, SIGWINCH);
+    sigaddset(&sigmask, SIGINT);
     posix_spawnattr_init(&attr);
     posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGMASK);
     posix_spawnattr_setsigmask(&attr, &sigmask);

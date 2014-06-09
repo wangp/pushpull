@@ -10,6 +10,7 @@ MCFLAGS += --optimise-constructor-last-call
 # Module-specific options.
 MCFLAGS-sync.flags_local += --exec-trace-tail-rec
 MCFLAGS-signal += --no-ansi-c
+MCFLAGS-select += --no-ansi-c
 MCFLAGS-subprocess += --no-ansi-c
 CFLAGS-imap.time += -D_BSD_SOURCE
 CFLAGS-string_util += -D_GNU_SOURCE

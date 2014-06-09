@@ -32,13 +32,23 @@
 :- import_module signal.
 :- import_module sync.
 
-:- type idle_next
-    --->    sync(shortcut)
+:- type idle_next_outer
+    --->    quit
+    ;       sync(shortcut).
+
+:- type idle_next_inner
+    --->    quit
+    ;       sync(shortcut)
     ;       restart_idle.
 
 %-----------------------------------------------------------------------------%
 
 main(!IO) :-
+    ( debugging_grade ->
+        true
+    ;
+        ignore_sigint(no, !IO)
+    ),
     ignore_sigpipe(yes, !IO),
     io.command_line_arguments(Args, !IO),
     (
@@ -60,6 +70,13 @@ main(!IO) :-
     ;
         report_error("unexpected arguments", !IO)
     ).
+
+:- pred debugging_grade is semidet.
+
+debugging_grade :-
+    string.sub_string_search($grade, ".debug", _).
+
+%-----------------------------------------------------------------------------%
 
 :- pred main_2(prog_config::in, database::in, io::di, io::uo) is det.
 
@@ -88,6 +105,7 @@ main_2(Config, Db, !IO) :-
             ),
             report_error(LoginMessage, !IO)
         ),
+        io.write_string("Logging out.\n", !IO),
         logout(IMAP, ResLogout, !IO),
         io.write(ResLogout, !IO),
         io.nl(!IO)
@@ -183,34 +201,42 @@ sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
             ResSync, !DirCache, !IO),
         (
             ResSync = ok,
-            % Clear inotify events prior to idling.  There may be events in the
-            % queue, particularly those induced by renamings performed during
-            % the sync cycle, which would cause us to wake immediately.
-            update_dir_cache(Inotify, scan_from_inotify_events(no), ResCache,
-                !DirCache, !IO),
-            (
-                ResCache = ok(yes),
-                ResIdle = ok(shortcut(check, skip)),
-                DirCacheUpdate1 = scan_from_inotify_events(yes)
+            get_sigint_count(SigInt, !IO),
+            ( SigInt > 0 ->
+                true
             ;
-                ResCache = ok(no),
-                idle_until_sync(IMAP, Inotify, ResIdle, !IO),
-                DirCacheUpdate1 = scan_from_inotify_events(no)
-            ;
-                ResCache = error(Error0),
-                ResIdle = error(Error0),
-                DirCacheUpdate1 = scan_from_inotify_events(no)
-            ),
-            (
-                ResIdle = ok(Shortcut1),
-                update_selected_mailbox_highest_modseqvalue_from_fetches(IMAP,
-                    !IO),
-                sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair,
-                    mod_seq_valzer(High), Shortcut1, DirCacheUpdate1,
-                    !DirCache, !IO)
-            ;
-                ResIdle = error(Error),
-                report_error(Error, !IO)
+                % Clear inotify events prior to idling.  There may be events in
+                % the queue, particularly those induced by renamings performed
+                % during the sync cycle, which would cause us to wake
+                % immediately.
+                update_dir_cache(Inotify, scan_from_inotify_events(no),
+                    ResCache, !DirCache, !IO),
+                (
+                    ResCache = ok(yes),
+                    ResIdle = ok(sync(shortcut(check, skip))),
+                    DirCacheUpdate1 = scan_from_inotify_events(yes)
+                ;
+                    ResCache = ok(no),
+                    idle_until_sync(IMAP, Inotify, ResIdle, !IO),
+                    DirCacheUpdate1 = scan_from_inotify_events(no)
+                ;
+                    ResCache = error(Error0),
+                    ResIdle = error(Error0),
+                    DirCacheUpdate1 = scan_from_inotify_events(no)
+                ),
+                (
+                    ResIdle = ok(sync(Shortcut1)),
+                    update_selected_mailbox_highest_modseqvalue_from_fetches(
+                        IMAP, !IO),
+                    sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair,
+                        mod_seq_valzer(High), Shortcut1, DirCacheUpdate1,
+                        !DirCache, !IO)
+                ;
+                    ResIdle = ok(quit)
+                ;
+                    ResIdle = error(Error),
+                    report_error(Error, !IO)
+                )
             )
         ;
             ResSync = error(Error),
@@ -220,8 +246,8 @@ sync_and_repeat(Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
         report_error("Cannot support this server.", !IO)
     ).
 
-:- pred idle_until_sync(imap::in, inotify(S)::in, maybe_error(shortcut)::out,
-    io::di, io::uo) is det.
+:- pred idle_until_sync(imap::in, inotify(S)::in,
+    maybe_error(idle_next_outer)::out, io::di, io::uo) is det.
 
 idle_until_sync(IMAP, Inotify, Res, !IO) :-
     % Send IDLE command.
@@ -236,10 +262,13 @@ idle_until_sync(IMAP, Inotify, Res, !IO) :-
         (
             Res1 = ok(sync(Shortcut)),
             sleep(1, !IO),
-            Res = ok(Shortcut)
+            Res = ok(sync(Shortcut))
         ;
             Res1 = ok(restart_idle),
             idle_until_sync(IMAP, Inotify, Res, !IO)
+        ;
+            Res1 = ok(quit),
+            Res = ok(quit)
         ;
             Res1 = error(Error),
             Res = error(Error)
@@ -257,7 +286,7 @@ idle_until_sync(IMAP, Inotify, Res, !IO) :-
     ).
 
 :- pred idle_until_done(imap::in, inotify(S)::in, int::in,
-    maybe_error(idle_next)::out, io::di, io::uo) is det.
+    maybe_error(idle_next_inner)::out, io::di, io::uo) is det.
 
 idle_until_done(IMAP, Inotify, StartTime, Res, !IO) :-
     idle_loop(IMAP, Inotify, StartTime, Res0, !IO),
@@ -284,7 +313,7 @@ idle_until_done(IMAP, Inotify, StartTime, Res, !IO) :-
     ).
 
 :- pred idle_loop(imap::in, inotify(S)::in, int::in,
-    maybe_error(idle_next)::out, io::di, io::uo) is det.
+    maybe_error(idle_next_inner)::out, io::di, io::uo) is det.
 
 idle_loop(IMAP, Inotify, StartTime, Res, !IO) :-
     gettimeofday(Now, _, !IO),
@@ -324,6 +353,10 @@ idle_loop(IMAP, Inotify, StartTime, Res, !IO) :-
         ;
             Res0 = timeout,
             Res = ok(restart_idle)
+        ;
+            Res0 = interrupt,
+            io.write_string("Interrupted.\n", !IO),
+            Res = ok(quit)
         ;
             Res0 = error(Error),
             Res = error(Error)
