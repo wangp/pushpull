@@ -5,9 +5,9 @@
 
 :- import_module dir_cache.
 
-:- pred propagate_flag_deltas_from_remote(prog_config::in, database::in,
-    mailbox_pair::in, maybe_error::out, dir_cache::in, dir_cache::out,
-    io::di, io::uo) is det.
+:- pred propagate_flag_deltas_from_remote(log::in, prog_config::in,
+    database::in, mailbox_pair::in, maybe_error::out,
+    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -26,34 +26,34 @@
 
 %-----------------------------------------------------------------------------%
 
-propagate_flag_deltas_from_remote(Config, Db, MailboxPair, Res, !DirCache, !IO)
-        :-
+propagate_flag_deltas_from_remote(Log, Config, Db, MailboxPair, Res, !DirCache,
+        !IO) :-
     search_pending_flag_deltas_from_remote(Db, MailboxPair, ResSearch, !IO),
     (
         ResSearch = ok(Pendings),
-        propagate_flag_deltas_from_remote_2(Config, Db, Pendings, Res,
+        propagate_flag_deltas_from_remote_2(Log, Config, Db, Pendings, Res,
             !DirCache, !IO)
     ;
         ResSearch = error(Error),
         Res = error(Error)
     ).
 
-:- pred propagate_flag_deltas_from_remote_2(prog_config::in, database::in,
-    list(pending_flag_deltas)::in, maybe_error::out,
+:- pred propagate_flag_deltas_from_remote_2(log::in, prog_config::in,
+    database::in, list(pending_flag_deltas)::in, maybe_error::out,
     dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
-propagate_flag_deltas_from_remote_2(Config, Db, Pendings, Res, !DirCache, !IO)
-        :-
+propagate_flag_deltas_from_remote_2(Log, Config, Db, Pendings, Res, !DirCache,
+        !IO) :-
     (
         Pendings = [],
         Res = ok
     ;
         Pendings = [Head | Tail],
-        propagate_flag_deltas_from_remote_3(Config, Db, Head, Res0,
+        propagate_flag_deltas_from_remote_3(Log, Config, Db, Head, Res0,
             !DirCache, !IO),
         (
             Res0 = ok,
-            propagate_flag_deltas_from_remote_2(Config, Db, Tail, Res,
+            propagate_flag_deltas_from_remote_2(Log, Config, Db, Tail, Res,
                 !DirCache, !IO)
         ;
             Res0 = error(Error),
@@ -61,12 +61,12 @@ propagate_flag_deltas_from_remote_2(Config, Db, Pendings, Res, !DirCache, !IO)
         )
     ).
 
-:- pred propagate_flag_deltas_from_remote_3(prog_config::in, database::in,
-    pending_flag_deltas::in, maybe_error::out, dir_cache::in, dir_cache::out,
-    io::di, io::uo) is det.
+:- pred propagate_flag_deltas_from_remote_3(log::in, prog_config::in,
+    database::in, pending_flag_deltas::in, maybe_error::out,
+    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
-propagate_flag_deltas_from_remote_3(_Config, Db, Pending, Res, !DirCache, !IO)
-        :-
+propagate_flag_deltas_from_remote_3(Log, _Config, Db, Pending, Res, !DirCache,
+        !IO) :-
     Pending = pending_flag_deltas(PairingId,
         MaybeUnique, LocalFlags0, LocalExpunged,
         MaybeUID, RemoteFlags0, RemoteExpunged),
@@ -81,7 +81,7 @@ propagate_flag_deltas_from_remote_3(_Config, Db, Pending, Res, !DirCache, !IO)
     (
         MaybeUnique = yes(Unique),
         expect(unify(LocalExpunged, exists), $module, $pred),
-        store_local_flags_add_rm(Unique, AddFlags, RemoveFlags, Res0,
+        store_local_flags_add_rm(Log, Unique, AddFlags, RemoveFlags, Res0,
             !DirCache, !IO),
         (
             Res0 = ok,
@@ -102,7 +102,7 @@ propagate_flag_deltas_from_remote_3(_Config, Db, Pending, Res, !DirCache, !IO)
             LocalExpunged = expunged,
             contains(RemoveFlags, system(deleted))
         ->
-            io.format("Resurrecting message %s\n", [s(to_string(UID))], !IO),
+            log_notice(Log, "Resurrecting message " ++ to_string(UID), !IO),
             reset_pairing_local_message(Db, PairingId, Res, !IO)
         ;
             record_remote_flag_deltas_inapplicable_to_local(Db, PairingId,
@@ -110,10 +110,12 @@ propagate_flag_deltas_from_remote_3(_Config, Db, Pending, Res, !DirCache, !IO)
         )
     ).
 
-:- pred store_local_flags_add_rm(uniquename::in, set(flag)::in, set(flag)::in,
-    maybe_error::out, dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+:- pred store_local_flags_add_rm(log::in, uniquename::in, set(flag)::in,
+    set(flag)::in, maybe_error::out, dir_cache::in, dir_cache::out,
+    io::di, io::uo) is det.
 
-store_local_flags_add_rm(Unique, AddFlags, RemoveFlags, Res, !DirCache, !IO) :-
+store_local_flags_add_rm(Log, Unique, AddFlags, RemoveFlags, Res, !DirCache,
+        !IO) :-
     find_file(!.DirCache, Unique, ResFind),
     (
         ResFind = found(OldDirName, OldBaseName, MaybeInfoSuffix0),
@@ -135,8 +137,15 @@ store_local_flags_add_rm(Unique, AddFlags, RemoveFlags, Res, !DirCache, !IO) :-
             ;
                 OldPath = OldDirName / OldBaseName,
                 NewPath = NewDirName / NewBaseName,
-                io.format("Renaming %s to %s\n",
-                    [s(OldPath ^ path), s(NewPath ^ path)], !IO),
+                ( OldDirName = NewDirName ->
+                    log_notice(Log,
+                        format("Renaming %s to %s\n",
+                            [s(OldPath ^ path), s(NewBaseName ^ bn)]), !IO)
+                ;
+                    log_notice(Log,
+                        format("Renaming %s to %s\n",
+                            [s(OldPath ^ path), s(NewPath ^ path)]), !IO)
+                ),
                 io.rename_file(OldPath ^ path, NewPath ^ path, ResRename, !IO),
                 (
                     ResRename = ok,

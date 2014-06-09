@@ -11,6 +11,7 @@
 :- import_module imap.
 :- import_module imap.types.
 :- import_module inotify.
+:- import_module log.
 :- import_module prog_config.
 
 :- type shortcut
@@ -23,10 +24,10 @@
     --->    check
     ;       skip.
 
-:- pred sync_mailboxes(prog_config::in, database::in, imap::in, inotify(S)::in,
-    mailbox_pair::in, mod_seq_valzer::in, mod_seq_value::in, shortcut::in,
-    update_method::in, maybe_error::out, dir_cache::in, dir_cache::out,
-    io::di, io::uo) is det.
+:- pred sync_mailboxes(log::in, prog_config::in, database::in, imap::in,
+    inotify(S)::in, mailbox_pair::in, mod_seq_valzer::in, mod_seq_value::in,
+    shortcut::in, update_method::in, maybe_error::out, dir_cache::in,
+    dir_cache::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -53,14 +54,14 @@
 
 %-----------------------------------------------------------------------------%
 
-sync_mailboxes(Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
+sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
         HighestModSeqValue, Shortcut, DirCacheUpdate, !:Res, !DirCache, !IO) :-
     Shortcut = shortcut(CheckLocal0, CheckRemote),
     % It might be better to get set of valid UIDs first, then use that
     % as part of update_db_remote_mailbox and for detecting expunges.
     (
         CheckRemote = check,
-        update_db_remote_mailbox(Config, Db, IMAP, MailboxPair,
+        update_db_remote_mailbox(Log, Config, Db, IMAP, MailboxPair,
             LastModSeqValzer, HighestModSeqValue, !:Res, !IO)
     ;
         CheckRemote = skip,
@@ -71,7 +72,7 @@ sync_mailboxes(Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
         !.Res = ok,
         CheckLocal = check
     ->
-        update_db_local_mailbox(Config, Db, Inotify, MailboxPair,
+        update_db_local_mailbox(Log, Config, Db, Inotify, MailboxPair,
             DirCacheUpdate, !:Res, !DirCache, !IO)
     ;
         true
@@ -82,7 +83,7 @@ sync_mailboxes(Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
     ->
         % Propagate flags first to allow pairings with previously-expunged
         % messages to be be reset, and thus downloaded in the following steps.
-        propagate_flag_deltas_from_remote(Config, Db, MailboxPair,
+        propagate_flag_deltas_from_remote(Log, Config, Db, MailboxPair,
             !:Res, !DirCache, !IO)
     ;
         true
@@ -91,21 +92,21 @@ sync_mailboxes(Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
         !.Res = ok,
         CheckLocal = check
     ->
-        propagate_flag_deltas_from_local(Config, Db, IMAP, MailboxPair,
+        propagate_flag_deltas_from_local(Log, Config, Db, IMAP, MailboxPair,
             !:Res, !IO)
     ;
         true
     ),
     (
         !.Res = ok,
-        download_unpaired_remote_messages(Config, Db, IMAP, MailboxPair,
+        download_unpaired_remote_messages(Log, Config, Db, IMAP, MailboxPair,
             !:Res, !DirCache, !IO)
     ;
         !.Res = error(_)
     ),
     (
         !.Res = ok,
-        upload_unpaired_local_messages(Config, Db, IMAP, MailboxPair,
+        upload_unpaired_local_messages(Log, Config, Db, IMAP, MailboxPair,
             !.DirCache, !:Res, !IO)
     ;
         !.Res = error(_)

@@ -4,34 +4,127 @@
 :- interface.
 
 :- import_module io.
-:- import_module list.
+:- import_module maybe.
 
-:- import_module imap.
+:- type log.
 
-:- pred report_error(string::in, io::di, io::uo) is det.
+:- type level
+    --->    error
+    ;       warning
+    ;       notice
+    ;       info
+    ;       debug.
 
-:- pred report_alerts(list(alert)::in, io::di, io::uo) is det.
+:- pred open_log(maybe(string)::in, level::in, maybe_error(log)::out,
+    io::di, io::uo) is det.
+
+:- pred close_log(log::in, io::di, io::uo) is det.
+
+:- pred log(log::in, level::in, string::in, io::di, io::uo) is det.
+
+:- pred log_error(log::in, string::in, io::di, io::uo) is det.
+:- pred log_warning(log::in, string::in, io::di, io::uo) is det.
+:- pred log_notice(log::in, string::in, io::di, io::uo) is det.
+:- pred log_info(log::in, string::in, io::di, io::uo) is det.
+:- pred log_debug(log::in, string::in, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
 :- implementation.
 
-report_error(Error, !IO) :-
-    io.stderr_stream(Stream, !IO),
-    io.write_string(Stream, Error, !IO),
-    io.nl(Stream, !IO),
-    io.set_exit_status(1, !IO).
+:- import_module int.
+:- import_module string.
 
-report_alerts(Alerts, !IO) :-
-    list.foldl(report_alert, Alerts, !IO).
+:- type log
+    --->    log(
+                stderr  :: io.output_stream,
+                file    :: maybe(io.output_stream),
+                maxlvl  :: level
+            ).
 
-:- pred report_alert(alert::in, io::di, io::uo) is det.
+open_log(MaybeFileName, MaxLevel, Res, !IO) :-
+    io.stderr_stream(Stderr, !IO),
+    (
+        MaybeFileName = yes(FileName),
+        io.open_append(FileName, ResOpen, !IO),
+        (
+            ResOpen = ok(FileStream),
+            Res = ok(log(Stderr, yes(FileStream), MaxLevel))
+        ;
+            ResOpen = error(Error),
+            Res = error(io.error_message(Error))
+        )
+    ;
+        MaybeFileName = no,
+        Res = ok(log(Stderr, no, MaxLevel))
+    ).
 
-report_alert(alert(Alert), !IO) :-
-    io.write_string("ALERT: ", !IO),
-    io.write_string(Alert, !IO),
-    io.nl(!IO).
+close_log(log(_Stderr, MaybeFileStream, _MinLevel), !IO) :-
+    (
+        MaybeFileStream = yes(FileStream),
+        io.close_output(FileStream, !IO)
+    ;
+        MaybeFileStream = no
+    ).
+
+log(log(Stderr, MaybeFileStream, MaxLevel), Level, Message, !IO) :-
+    ( to_int(Level) =< to_int(MaxLevel) ->
+        do_log(Stderr, Level, Message, !IO),
+        (
+            MaybeFileStream = yes(FileStream),
+            do_log(FileStream, Level, Message, !IO),
+            io.flush_output(FileStream, !IO)
+        ;
+            MaybeFileStream = no
+        )
+    ;
+        true
+    ).
+
+:- pred do_log(io.output_stream::in, level::in, string::in, io::di, io::uo)
+    is det.
+
+do_log(Stream, Level, Message, !IO) :-
+    % XXX may want to avoid throwing exceptions
+    io.write_string(Stream, to_string(Level), !IO),
+    io.write_string(Stream, Message, !IO),
+    ( string.suffix(Message, "\n") ->
+        true
+    ;
+        io.nl(Stream, !IO)
+    ).
+
+log_error(Log, Message, !IO) :-
+    log(Log, error, Message, !IO).
+
+log_warning(Log, Message, !IO) :-
+    log(Log, warning, Message, !IO).
+
+log_notice(Log, Message, !IO) :-
+    log(Log, notice, Message, !IO).
+
+log_info(Log, Message, !IO) :-
+    log(Log, info, Message, !IO).
+
+log_debug(Log, Message, !IO) :-
+    log(Log, debug, Message, !IO).
+
+:- func to_int(level) = int.
+
+to_int(error) = 0.
+to_int(warning) = 1.
+to_int(notice) = 2.
+to_int(info) = 3.
+to_int(debug) = 4.
+
+:- func to_string(level) = string.
+
+to_string(error) = "Error: ".
+to_string(warning) = "Warning: ".
+to_string(notice) = "".
+to_string(info) = "".
+to_string(debug) = "".
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

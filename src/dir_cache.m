@@ -9,6 +9,7 @@
 :- import_module maybe.
 
 :- import_module inotify.
+:- import_module log.
 :- import_module path.
 
 %-----------------------------------------------------------------------------%
@@ -28,7 +29,7 @@
 
 :- func init(dirname) = dir_cache.
 
-:- pred update_dir_cache(inotify(S)::in, update_method::in,
+:- pred update_dir_cache(log::in, inotify(S)::in, update_method::in,
     maybe_error(bool)::out, dir_cache::in, dir_cache::out, io::di, io::uo)
     is det.
 
@@ -87,7 +88,7 @@ init(Top) = dir_cache(Top, map.init).
 
 %-----------------------------------------------------------------------------%
 
-update_dir_cache(Inotify, Method, Res, !DirCache, !IO) :-
+update_dir_cache(Log, Inotify, Method, Res, !DirCache, !IO) :-
     % In theory we could maintain our dir cache on the basis of inotify
     % events only (after the initial scan) but it seems too hairy.
     inotify.read_events(Inotify, ResEvents, !IO),
@@ -96,7 +97,7 @@ update_dir_cache(Inotify, Method, Res, !DirCache, !IO) :-
         !.DirCache = dir_cache(TopDirName, Dirs0),
         Queue0 = set.from_sorted_list(map.sorted_keys(Dirs0)),
         set.insert(TopDirName, Queue0, Queue),
-        update_dir_cache_2(Inotify, Queue, Res, !DirCache, !IO)
+        update_dir_cache_2(Log, Inotify, Queue, Res, !DirCache, !IO)
     ;
         Method = scan_from_inotify_events(Force),
         (
@@ -105,7 +106,7 @@ update_dir_cache(Inotify, Method, Res, !DirCache, !IO) :-
             ( set.is_empty(Queue) ->
                 Res = ok(Force)
             ;
-                update_dir_cache_2(Inotify, Queue, Res, !DirCache, !IO)
+                update_dir_cache_2(Log, Inotify, Queue, Res, !DirCache, !IO)
             )
         ;
             ResEvents = error(Error1),
@@ -113,15 +114,15 @@ update_dir_cache(Inotify, Method, Res, !DirCache, !IO) :-
         )
     ).
 
-:- pred update_dir_cache_2(inotify(S)::in, set(dirname)::in,
+:- pred update_dir_cache_2(log::in, inotify(S)::in, set(dirname)::in,
     maybe_error(bool)::out, dir_cache::in, dir_cache::out, io::di, io::uo)
     is det.
 
-update_dir_cache_2(Inotify, Queue, Res, !DirCache, !IO) :-
-    update_by_scan(Queue, Res0, !DirCache, !IO),
+update_dir_cache_2(Log, Inotify, Queue, Res, !DirCache, !IO) :-
+    update_by_scan(Log, Queue, Res0, !DirCache, !IO),
     (
         Res0 = ok,
-        add_watches(Inotify, !.DirCache, Res1, !IO),
+        add_watches(Log, Inotify, !.DirCache, Res1, !IO),
         (
             Res1 = ok,
             Res = ok(yes)
@@ -136,27 +137,27 @@ update_dir_cache_2(Inotify, Queue, Res, !DirCache, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-:- pred update_by_scan(set(dirname)::in, maybe_error::out,
+:- pred update_by_scan(log::in, set(dirname)::in, maybe_error::out,
     dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
-update_by_scan(Queue0, Res, DirCache0, DirCache, !IO) :-
+update_by_scan(Log, Queue0, Res, DirCache0, DirCache, !IO) :-
     DirCache0 = dir_cache(TopDirName, Dirs0),
-    update_queue(Res, Queue0, _Queue, Dirs0, Dirs, !IO),
+    update_queue(Log, Res, Queue0, _Queue, Dirs0, Dirs, !IO),
     ( Res = ok ->
         DirCache = dir_cache(TopDirName, Dirs)
     ;
         DirCache = DirCache0
     ).
 
-:- pred update_queue(maybe_error::out, set(dirname)::in, set(dirname)::out,
-    dirinfos::in, dirinfos::out, io::di, io::uo) is det.
+:- pred update_queue(log::in, maybe_error::out, set(dirname)::in,
+    set(dirname)::out, dirinfos::in, dirinfos::out, io::di, io::uo) is det.
 
-update_queue(Res, !Queue, !Dirs, !IO) :-
+update_queue(Log, Res, !Queue, !Dirs, !IO) :-
     ( set.remove_least(DirName, !Queue) ->
-        update_dir(DirName, Res0, !Queue, !Dirs, !IO),
+        update_dir(Log, DirName, Res0, !Queue, !Dirs, !IO),
         (
             Res0 = ok,
-            update_queue(Res, !Queue, !Dirs, !IO)
+            update_queue(Log, Res, !Queue, !Dirs, !IO)
         ;
             Res0 = error(Error),
             Res = error(Error)
@@ -165,11 +166,11 @@ update_queue(Res, !Queue, !Dirs, !IO) :-
         Res = ok
     ).
 
-:- pred update_dir(dirname::in, maybe_error::out,
+:- pred update_dir(log::in, dirname::in, maybe_error::out,
     set(dirname)::in, set(dirname)::out, dirinfos::in, dirinfos::out,
     io::di, io::uo) is det.
 
-update_dir(DirName, Res, !Queue, !Dirs, !IO) :-
+update_dir(Log, DirName, Res, !Queue, !Dirs, !IO) :-
     DirName = dirname(DirNameString),
     io.file_modification_time(DirNameString, ResModTime, !IO),
     (
@@ -198,8 +199,9 @@ update_dir(DirName, Res, !Queue, !Dirs, !IO) :-
 
                 NumFiles = count(DirFiles),
                 ( NumFiles > 0 ->
-                    io.format("%s contains %d files\n",
-                        [s(DirNameString), i(NumFiles)], !IO)
+                    log_debug(Log,
+                        format("%s contains %d files\n",
+                            [s(DirNameString), i(NumFiles)]), !IO)
                 ;
                     true
                 )
@@ -441,17 +443,17 @@ another(File, Stream0, Stream) :-
 
 %-----------------------------------------------------------------------------%
 
-:- pred add_watches(inotify(S)::in, dir_cache::in, maybe_error::out,
+:- pred add_watches(log::in, inotify(S)::in, dir_cache::in, maybe_error::out,
     io::di, io::uo) is det.
 
-add_watches(Inotify, DirCache, Res, !IO) :-
+add_watches(Log, Inotify, DirCache, Res, !IO) :-
     DirCache = dir_cache(_TopDirName, Dirs),
-    map.foldl2(add_watch(Inotify), Dirs, ok, Res, !IO).
+    map.foldl2(add_watch(Log, Inotify), Dirs, ok, Res, !IO).
 
-:- pred add_watch(inotify(S)::in, dirname::in, T::in,
+:- pred add_watch(log::in, inotify(S)::in, dirname::in, T::in,
     maybe_error::in, maybe_error::out, io::di, io::uo) is det.
 
-add_watch(Inotify, dirname(DirName), _, Res0, Res, !IO) :-
+add_watch(Log, Inotify, dirname(DirName), _, Res0, Res, !IO) :-
     (
         Res0 = ok,
         dir.split_name(DirName, _, Tail),
@@ -463,7 +465,7 @@ add_watch(Inotify, dirname(DirName), _, Res0, Res, !IO) :-
             Res = ok
         ;
             IsWatched = no,
-            io.format("Adding watch %s\n", [s(DirName)], !IO),
+            log_debug(Log, format("Adding watch %s\n", [s(DirName)]), !IO),
             add_watch(Inotify, DirName, watch_events, Res1, !IO),
             (
                 Res1 = ok(_),
