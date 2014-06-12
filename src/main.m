@@ -45,50 +45,56 @@
 %-----------------------------------------------------------------------------%
 
 main(!IO) :-
-    open_log(no, info, ResLog, !IO),
-    (
-        ResLog = ok(Log),
-        main_1(Log, !IO),
-        close_log(Log, !IO)
+    io.command_line_arguments(Args, !IO),
+    ( Args = [ConfigFileName] ->
+        load_prog_config(ConfigFileName, LoadRes, !IO),
+        (
+            LoadRes = ok(Config),
+            main_1(Config, !IO)
+        ;
+            LoadRes = errors(Errors),
+            print_error("Errors in configuration file:", !IO),
+            list.foldl(print_error, Errors, !IO),
+            io.set_exit_status(1, !IO)
+        )
     ;
-        ResLog = error(Error),
-        io.stderr_stream(Stream, !IO),
-        io.write_string(Stream, Error, !IO),
-        io.nl(Stream, !IO),
+        print_error("Expected configuration file.", !IO),
         io.set_exit_status(1, !IO)
     ).
 
-:- pred main_1(log::in, io::di, io::uo) is det.
+:- pred main_1(prog_config::in, io::di, io::uo) is det.
 
-main_1(Log, !IO) :-
+main_1(Config, !IO) :-
+    open_log(no, info, ResLog, !IO),
+    (
+        ResLog = ok(Log),
+        main_2(Log, Config, !IO),
+        close_log(Log, !IO)
+    ;
+        ResLog = error(Error),
+        io.write_string(Error, !IO),
+        io.set_exit_status(1, !IO)
+    ).
+
+:- pred main_2(log::in, prog_config::in, io::di, io::uo) is det.
+
+main_2(Log, Config, !IO) :-
     ( debugging_grade ->
         true
     ;
         ignore_sigint(no, !IO)
     ),
     ignore_sigpipe(yes, !IO),
-    io.command_line_arguments(Args, !IO),
+    DbFileName = Config ^ db_filename,
+    log_info(Log, "Opening database " ++ DbFileName, !IO),
+    open_database(DbFileName, ResOpenDb, !IO),
     (
-        Args = [DbFileName, MaildirRoot, LocalMailboxName, HostPort, UserName,
-            Password, RemoteMailbox]
-    ->
-        SyncOnIdleTimeout = yes,
-        Config = prog_config(DbFileName, maildir_root(MaildirRoot),
-            local_mailbox_name(LocalMailboxName), HostPort, username(UserName),
-            password(Password), mailbox(RemoteMailbox), max_idle_timeout_secs,
-            SyncOnIdleTimeout),
-        log_info(Log, "Opening database " ++ DbFileName, !IO),
-        open_database(DbFileName, ResOpenDb, !IO),
-        (
-            ResOpenDb = ok(Db),
-            main_2(Log, Config, Db, !IO),
-            close_database(Db, !IO)
-        ;
-            ResOpenDb = error(Error),
-            report_error(Log, Error, !IO)
-        )
+        ResOpenDb = ok(Db),
+        log_in(Log, Config, Db, !IO),
+        close_database(Db, !IO)
     ;
-        report_error(Log, "unexpected arguments", !IO)
+        ResOpenDb = error(Error),
+        report_error(Log, Error, !IO)
     ).
 
 :- pred debugging_grade is semidet.
@@ -96,11 +102,18 @@ main_1(Log, !IO) :-
 debugging_grade :-
     string.sub_string_search($grade, ".debug", _).
 
+:- pred print_error(string::in, io::di, io::uo) is det.
+
+print_error(Error, !IO) :-
+    io.stderr_stream(Stream, !IO),
+    io.write_string(Stream, Error, !IO),
+    io.nl(Stream, !IO).
+
 %-----------------------------------------------------------------------------%
 
-:- pred main_2(log::in, prog_config::in, database::in, io::di, io::uo) is det.
+:- pred log_in(log::in, prog_config::in, database::in, io::di, io::uo) is det.
 
-main_2(Log, Config, Db, !IO) :-
+log_in(Log, Config, Db, !IO) :-
     HostPort = Config ^ hostport,
     UserName = Config ^ username,
     Password = Config ^ password,
