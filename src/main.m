@@ -72,9 +72,11 @@ main_1(Log, !IO) :-
         Args = [DbFileName, MaildirRoot, LocalMailboxName, HostPort, UserName,
             Password, RemoteMailbox]
     ->
+        SyncOnIdleTimeout = yes,
         Config = prog_config(DbFileName, maildir_root(MaildirRoot),
             local_mailbox_name(LocalMailboxName), HostPort, username(UserName),
-            password(Password), mailbox(RemoteMailbox)),
+            password(Password), mailbox(RemoteMailbox), max_idle_timeout_secs,
+            SyncOnIdleTimeout),
         log_info(Log, "Opening database " ++ DbFileName, !IO),
         open_database(DbFileName, ResOpenDb, !IO),
         (
@@ -234,7 +236,7 @@ sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
                     DirCacheUpdate1 = scan_from_inotify_events(yes)
                 ;
                     ResCache = ok(no),
-                    idle_until_sync(Log, IMAP, Inotify, ResIdle, !IO),
+                    idle_until_sync(Log, Config, IMAP, Inotify, ResIdle, !IO),
                     DirCacheUpdate1 = scan_from_inotify_events(no)
                 ;
                     ResCache = error(Error0),
@@ -263,10 +265,10 @@ sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
         report_error(Log, "Cannot support this server.", !IO)
     ).
 
-:- pred idle_until_sync(log::in, imap::in, inotify(S)::in,
+:- pred idle_until_sync(log::in, prog_config::in, imap::in, inotify(S)::in,
     maybe_error(idle_next_outer)::out, io::di, io::uo) is det.
 
-idle_until_sync(Log, IMAP, Inotify, Res, !IO) :-
+idle_until_sync(Log, Config, IMAP, Inotify, Res, !IO) :-
     % Send IDLE command.
     log_info(Log, "Idling", !IO),
     gettimeofday(StartTime, _StartUsec, !IO),
@@ -275,14 +277,14 @@ idle_until_sync(Log, IMAP, Inotify, Res, !IO) :-
     (
         Res0 = continue,
         log_debug(Log, IdleText, !IO),
-        idle_until_done(Log, IMAP, Inotify, StartTime, Res1, !IO),
+        idle_until_done(Log, Config, IMAP, Inotify, StartTime, Res1, !IO),
         (
             Res1 = ok(sync(Shortcut)),
             sleep(1, !IO),
             Res = ok(sync(Shortcut))
         ;
             Res1 = ok(restart_idle),
-            idle_until_sync(Log, IMAP, Inotify, Res, !IO)
+            idle_until_sync(Log, Config, IMAP, Inotify, Res, !IO)
         ;
             Res1 = ok(quit),
             Res = ok(quit)
@@ -302,11 +304,11 @@ idle_until_sync(Log, IMAP, Inotify, Res, !IO) :-
         Res = error("unexpected response to IDLE: " ++ IdleText)
     ).
 
-:- pred idle_until_done(log::in, imap::in, inotify(S)::in, int::in,
-    maybe_error(idle_next_inner)::out, io::di, io::uo) is det.
+:- pred idle_until_done(log::in, prog_config::in, imap::in, inotify(S)::in,
+    int::in, maybe_error(idle_next_inner)::out, io::di, io::uo) is det.
 
-idle_until_done(Log, IMAP, Inotify, StartTime, Res, !IO) :-
-    idle_loop(Log, IMAP, Inotify, StartTime, Res0, !IO),
+idle_until_done(Log, Config, IMAP, Inotify, StartTime, Res, !IO) :-
+    idle_loop(Log, Config, IMAP, Inotify, StartTime, Res0, !IO),
     (
         Res0 = ok(Next),
         % Send IDLE DONE.
@@ -329,12 +331,13 @@ idle_until_done(Log, IMAP, Inotify, StartTime, Res, !IO) :-
         Res = error(Error)
     ).
 
-:- pred idle_loop(log::in, imap::in, inotify(S)::in, int::in,
+:- pred idle_loop(log::in, prog_config::in, imap::in, inotify(S)::in, int::in,
     maybe_error(idle_next_inner)::out, io::di, io::uo) is det.
 
-idle_loop(Log, IMAP, Inotify, StartTime, Res, !IO) :-
+idle_loop(Log, Config, IMAP, Inotify, StartTime, Res, !IO) :-
     gettimeofday(Now, _, !IO),
-    TimeoutSecs = StartTime - Now + idle_timeout_secs,
+    IdleTimeoutSecs = Config ^ idle_timeout_secs,
+    TimeoutSecs = StartTime - Now + IdleTimeoutSecs,
     get_filedes(Inotify, InotifyFd),
     get_read_filedes(IMAP, ResIMAP_Fd, !IO),
     (
@@ -359,7 +362,7 @@ idle_loop(Log, IMAP, Inotify, StartTime, Res, !IO) :-
                     CheckLocal = skip,
                     CheckRemote = skip
                 ->
-                    idle_loop(Log, IMAP, Inotify, StartTime, Res, !IO)
+                    idle_loop(Log, Config, IMAP, Inotify, StartTime, Res, !IO)
                 ;
                     Res = ok(sync(shortcut(CheckLocal, CheckRemote)))
                 )
@@ -369,7 +372,14 @@ idle_loop(Log, IMAP, Inotify, StartTime, Res, !IO) :-
             )
         ;
             Res0 = timeout,
-            Res = ok(restart_idle)
+            SyncOnIdleTimeout = Config ^ sync_on_idle_timeout,
+            (
+                SyncOnIdleTimeout = yes,
+                Res = ok(sync(shortcut(skip, check)))
+            ;
+                SyncOnIdleTimeout = no,
+                Res = ok(restart_idle)
+            )
         ;
             Res0 = interrupt,
             log_notice(Log, "Interrupted.\n", !IO),
@@ -403,10 +413,6 @@ do_read_idle_response(Log, IMAP, Res, CheckRemote, !IO) :-
         Res = error(Error),
         CheckRemote = skip
     ).
-
-:- func idle_timeout_secs = int.
-
-idle_timeout_secs = 29 * 60.
 
 :- pred sleep(int::in, io::di, io::uo) is det.
 
