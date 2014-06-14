@@ -26,6 +26,7 @@
                 username :: username,
                 password :: password,
                 mailbox :: mailbox,
+                idle :: bool,
                 idle_timeout_secs :: int,
                 sync_on_idle_timeout :: bool
             ).
@@ -171,6 +172,17 @@ make_prog_config(Config, ProgConfig, !Errors, !IO) :-
         cons("missing imap.password", !Errors)
     ),
 
+    ( nonempty(Config, "imap", "idle", Idle0) ->
+        ( bool(Idle0, Idle1) ->
+            Idle = Idle1
+        ;
+            Idle = no,
+            cons("imap.idle invalid: " ++ Idle0, !Errors)
+        )
+    ;
+        Idle = no
+    ),
+
     ( nonempty(Config, "imap", "idle_timeout_minutes", Mins0) ->
         ( positive_int(Mins0, Mins) ->
             IdleTimeoutSecs = min(Mins * 60, max_idle_timeout_secs)
@@ -210,7 +222,7 @@ make_prog_config(Config, ProgConfig, !Errors, !IO) :-
     ProgConfig = prog_config(MaybeLogFileName, LogLevel, DbFileName,
         MaildirRoot, Fsync, LocalMailboxName,
         Host, UserName, Password, RemoteMailboxName,
-        IdleTimeoutSecs, SyncOnIdleTimeout).
+        Idle, IdleTimeoutSecs, SyncOnIdleTimeout).
 
 :- pred nonempty(config::in, config.section::in, string::in,
     string::out) is semidet.

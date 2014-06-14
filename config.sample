@@ -11,6 +11,7 @@ fsync = yes
 host = imap.example.com:993
 username = user
 password = password
+idle = no
 idle_timeout_minutes = 29
 sync_on_idle_timeout = no
 

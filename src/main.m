@@ -238,6 +238,8 @@ sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
             get_sigint_count(SigInt, !IO),
             ( SigInt > 0 ->
                 true
+            ; Config ^ idle = no ->
+                true
             ;
                 % Clear inotify events prior to idling.  There may be events in
                 % the queue, particularly those induced by renamings performed
