@@ -11,6 +11,7 @@
 :- import_module dir_cache.
 :- import_module imap.
 :- import_module imap.types.
+:- import_module lowio.
 :- import_module path.
 
 %-----------------------------------------------------------------------------%
@@ -25,8 +26,8 @@
 :- type info_suffix
     --->    info_suffix(set(char), string). % after ":2,"; may be empty
 
-:- pred generate_unique_name(dirname::in, maybe_error({uniquename, path})::out,
-    io::di, io::uo) is det.
+:- pred generate_unique_name(dirname::in,
+    maybe_error({uniquename, path, filedes})::out, io::di, io::uo) is det.
 
 :- pred make_message_basename(uniquename::in, maybe(info_suffix)::in,
     basename::out) is det.
@@ -53,7 +54,6 @@
 
 :- implementation.
 
-:- import_module bool.
 :- import_module dir.
 :- import_module int.
 :- import_module list.
@@ -73,7 +73,7 @@ generate_unique_name(DirName, Res, !IO) :-
     generate_unique_name_2(DirName, Pid, HostName, Res, !IO).
 
 :- pred generate_unique_name_2(dirname::in, int::in, string::in,
-    maybe_error({uniquename, path})::out, io::di, io::uo) is det.
+    maybe_error({uniquename, path, filedes})::out, io::di, io::uo) is det.
 
 generate_unique_name_2(DirName, Pid, HostName, Res, !IO) :-
     DirName = dirname(DirNameString),
@@ -81,14 +81,16 @@ generate_unique_name_2(DirName, Pid, HostName, Res, !IO) :-
     string.format("%d.M%dP%d.%s", [i(Sec), i(Usec), i(Pid), s(HostName)],
         UniqueName),
     Path = DirNameString / UniqueName,
-    open_excl(Path, Fd, AlreadyExists, !IO),
-    ( Fd >= 0 ->
-        close(Fd, !IO),
-        Res = ok({uniquename(UniqueName), path(Path)})
-    ; AlreadyExists = yes ->
+    open_output_excl(Path, ResOpen, !IO),
+    (
+        ResOpen = ok(Fd),
+        Res = ok({uniquename(UniqueName), path(Path), Fd})
+    ;
+        ResOpen = already_exists,
         generate_unique_name_2(DirName, Pid, HostName, Res, !IO)
     ;
-        Res = error("error opening " ++ Path)
+        ResOpen = error(Error),
+        Res = error("error opening " ++ Path ++ ": " ++ Error)
     ).
 
 :- pred safe_gethostname(string::out, io::di, io::uo) is det.
@@ -97,30 +99,6 @@ safe_gethostname(HostName, !IO) :-
     get_hostname(HostName0, !IO),
     string.replace_all(HostName0, "/", "_", HostName1),
     string.replace_all(HostName1, ":", "_", HostName).
-
-:- pred open_excl(string::in, int::out, bool::out, io::di, io::uo) is det.
-
-:- pragma foreign_proc("C",
-    open_excl(Path::in, Fd::out, AlreadyExists::out, _IO0::di, _IO::uo),
-    [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
-        may_not_duplicate],
-"
-	Fd = open(Path, O_WRONLY | O_CREAT | O_TRUNC | O_EXCL, 0600);
-    if ((Fd == -1) && (errno == EEXIST)) {
-        AlreadyExists = MR_YES;
-    } else {
-        AlreadyExists = MR_NO;
-    }
-").
-
-:- pred close(int::in, io::di, io::uo) is det.
-
-:- pragma foreign_proc("C",
-    close(Fd::in, _IO0::di, _IO::uo),
-    [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io],
-"
-    close(Fd);
-").
 
 %-----------------------------------------------------------------------------%
 

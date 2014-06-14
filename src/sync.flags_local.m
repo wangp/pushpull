@@ -21,6 +21,7 @@
 :- import_module string.
 
 :- import_module flag_delta.
+:- import_module lowio.
 :- import_module maildir.
 :- import_module path.
 
@@ -65,7 +66,7 @@ propagate_flag_deltas_from_remote_2(Log, Config, Db, Pendings, Res, !DirCache,
     database::in, pending_flag_deltas::in, maybe_error::out,
     dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
-propagate_flag_deltas_from_remote_3(Log, _Config, Db, Pending, Res, !DirCache,
+propagate_flag_deltas_from_remote_3(Log, Config, Db, Pending, Res, !DirCache,
         !IO) :-
     Pending = pending_flag_deltas(PairingId,
         MaybeUnique, LocalFlags0, LocalExpunged,
@@ -81,8 +82,8 @@ propagate_flag_deltas_from_remote_3(Log, _Config, Db, Pending, Res, !DirCache,
     (
         MaybeUnique = yes(Unique),
         expect(unify(LocalExpunged, exists), $module, $pred),
-        store_local_flags_add_rm(Log, Unique, AddFlags, RemoveFlags, Res0,
-            !DirCache, !IO),
+        store_local_flags_add_rm(Log, Config, Unique, AddFlags, RemoveFlags,
+            Res0, !DirCache, !IO),
         (
             Res0 = ok,
             record_remote_flag_deltas_applied_to_local(Db, PairingId,
@@ -110,12 +111,12 @@ propagate_flag_deltas_from_remote_3(Log, _Config, Db, Pending, Res, !DirCache,
         )
     ).
 
-:- pred store_local_flags_add_rm(log::in, uniquename::in, set(flag)::in,
-    set(flag)::in, maybe_error::out, dir_cache::in, dir_cache::out,
-    io::di, io::uo) is det.
+:- pred store_local_flags_add_rm(log::in, prog_config::in, uniquename::in,
+    set(flag)::in, set(flag)::in, maybe_error::out,
+    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
-store_local_flags_add_rm(Log, Unique, AddFlags, RemoveFlags, Res, !DirCache,
-        !IO) :-
+store_local_flags_add_rm(Log, Config, Unique, AddFlags, RemoveFlags, Res,
+        !DirCache, !IO) :-
     find_file(!.DirCache, Unique, ResFind),
     (
         ResFind = found(OldDirName, OldBaseName, MaybeInfoSuffix0),
@@ -149,13 +150,20 @@ store_local_flags_add_rm(Log, Unique, AddFlags, RemoveFlags, Res, !DirCache,
                 io.rename_file(OldPath ^ path, NewPath ^ path, ResRename, !IO),
                 (
                     ResRename = ok,
+                    maybe_fsync_dir(Config, NewDirName, ResFsync, !IO),
                     (
-                        update_for_rename(OldDirName, OldBaseName,
-                            NewDirName, NewBaseName, !DirCache)
-                    ->
-                        Res = ok
+                        ResFsync = ok,
+                        (
+                            update_for_rename(OldDirName, OldBaseName,
+                                NewDirName, NewBaseName, !DirCache)
+                        ->
+                            Res = ok
+                        ;
+                            Res = error("update_for_rename failed")
+                        )
                     ;
-                        Res = error("update_for_rename failed")
+                        ResFsync = error(Error),
+                        Res = error(Error)
                     )
                 ;
                     ResRename = error(Error),
@@ -172,6 +180,19 @@ store_local_flags_add_rm(Log, Unique, AddFlags, RemoveFlags, Res, !DirCache,
     ;
         ResFind = found_but_unexpected(path(Path)),
         Res = error("found unique name but unexpected: " ++ Path)
+    ).
+
+:- pred maybe_fsync_dir(prog_config::in, dirname::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+maybe_fsync_dir(Config, dirname(DirName), Res, !IO) :-
+    Fsync = Config ^ fsync,
+    (
+        Fsync = do_fsync,
+        lowio.fsync_dir(DirName, Res, !IO)
+    ;
+        Fsync = do_not_fsync,
+        Res = ok
     ).
 
 %-----------------------------------------------------------------------------%

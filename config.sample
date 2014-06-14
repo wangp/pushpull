@@ -1,6 +1,7 @@
 [local]
 state = /home/user/Maildir/.plugsink/state.db
 maildir = /home/user/Maildir
+fsync = yes
 
 [imap]
 host = imap.example.com:993

@@ -32,6 +32,7 @@
 :- import_module imap.time.
 :- import_module log.
 :- import_module log_help.
+:- import_module lowio.
 :- import_module maildir.
 :- import_module message_file.
 :- import_module path.
@@ -112,8 +113,8 @@ download_message_batch(Log, Config, Database, IMAP, MailboxPair,
         ResFetch = ok_with_data(FetchResults),
         LocalMailboxName = get_local_mailbox_name(MailboxPair),
         LocalMailboxPath = make_local_mailbox_path(Config, LocalMailboxName),
-        list.foldl3(handle_downloaded_message(Log, Database, MailboxPair,
-            LocalMailboxPath, FetchResults), UnpairedRemotes,
+        list.foldl3(handle_downloaded_message(Log, Config, Database,
+            MailboxPair, LocalMailboxPath, FetchResults), UnpairedRemotes,
             ok, Res, !DirCache, !IO)
     ;
         ( ResFetch = no
@@ -125,16 +126,17 @@ download_message_batch(Log, Config, Database, IMAP, MailboxPair,
         Res = error("unexpected response to UID FETCH: " ++ Text)
     ).
 
-:- pred handle_downloaded_message(log::in, database::in, mailbox_pair::in,
-    local_mailbox_path::in, assoc_list(message_seq_nr, msg_atts)::in,
-    unpaired_remote_message::in, maybe_error::in, maybe_error::out,
-    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+:- pred handle_downloaded_message(log::in, prog_config::in, database::in,
+    mailbox_pair::in, local_mailbox_path::in,
+    assoc_list(message_seq_nr, msg_atts)::in, unpaired_remote_message::in,
+    maybe_error::in, maybe_error::out, dir_cache::in, dir_cache::out,
+    io::di, io::uo) is det.
 
-handle_downloaded_message(Log, Database, MailboxPair, LocalMailboxPath,
+handle_downloaded_message(Log, Config, Database, MailboxPair, LocalMailboxPath,
         FetchResults, UnpairedRemote, Res0, Res, !DirCache, !IO) :-
     (
         Res0 = ok,
-        handle_downloaded_message_2(Log, Database, MailboxPair,
+        handle_downloaded_message_2(Log, Config, Database, MailboxPair,
             LocalMailboxPath, FetchResults, UnpairedRemote, Res, !DirCache,
             !IO)
     ;
@@ -142,13 +144,13 @@ handle_downloaded_message(Log, Database, MailboxPair, LocalMailboxPath,
         Res = Res0
     ).
 
-:- pred handle_downloaded_message_2(log::in, database::in, mailbox_pair::in,
-    local_mailbox_path::in, assoc_list(message_seq_nr, msg_atts)::in,
-    unpaired_remote_message::in, maybe_error::out,
-    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+:- pred handle_downloaded_message_2(log::in, prog_config::in, database::in,
+    mailbox_pair::in, local_mailbox_path::in,
+    assoc_list(message_seq_nr, msg_atts)::in, unpaired_remote_message::in,
+    maybe_error::out, dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
-handle_downloaded_message_2(Log, Database, MailboxPair, LocalMailboxPath,
-        FetchResults, UnpairedRemote, Res, !DirCache, !IO) :-
+handle_downloaded_message_2(Log, Config, Database, MailboxPair,
+        LocalMailboxPath, FetchResults, UnpairedRemote, Res, !DirCache, !IO) :-
     UnpairedRemote = unpaired_remote_message(_PairingId, UID,
         ExpectedMessageId),
     % If changes are being made on the remote mailbox concurrently the server
@@ -172,7 +174,7 @@ handle_downloaded_message_2(Log, Database, MailboxPair, LocalMailboxPath,
                 ),
                 ( ExpectedMessageId = HaveMessageId ->
                     RawMessageLf = crlf_to_lf(RawMessageCrLf),
-                    save_message_and_pair(Log, Database, MailboxPair,
+                    save_message_and_pair(Log, Config, Database, MailboxPair,
                         LocalMailboxPath, UnpairedRemote, RawMessageLf, Flags,
                         InternalDate, Res, !DirCache, !IO)
                 ;
@@ -227,12 +229,12 @@ get_internaldate(Atts, DateTime) :-
     solutions(pred(X::out) is nondet :- member(internaldate(X), Atts),
         [DateTime]).
 
-:- pred save_message_and_pair(log::in, database::in, mailbox_pair::in,
-    local_mailbox_path::in, unpaired_remote_message::in, string::in,
-    set(flag)::in, date_time::in, maybe_error::out,
+:- pred save_message_and_pair(log::in, prog_config::in, database::in,
+    mailbox_pair::in, local_mailbox_path::in, unpaired_remote_message::in,
+    string::in, set(flag)::in, date_time::in, maybe_error::out,
     dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
-save_message_and_pair(Log, Database, MailboxPair, LocalMailboxPath,
+save_message_and_pair(Log, Config, Database, MailboxPair, LocalMailboxPath,
         UnpairedRemote, RawMessageLf, Flags, InternalDate, Res, !DirCache, !IO) :-
     UnpairedRemote = unpaired_remote_message(PairingId, UID, MessageId),
     % Avoid duplicating an existing local message.
@@ -240,8 +242,8 @@ save_message_and_pair(Log, Database, MailboxPair, LocalMailboxPath,
         MessageId, RawMessageLf, ResMatch, !IO),
     (
         ResMatch = ok(no),
-        save_raw_message(Log, LocalMailboxPath, UID, MessageId, RawMessageLf,
-            Flags, InternalDate, ResSave, !IO),
+        save_raw_message(Log, Config, LocalMailboxPath, UID, MessageId,
+            RawMessageLf, Flags, InternalDate, ResSave, !IO),
         (
             ResSave = ok(Unique, DirName, BaseName),
             (
@@ -346,11 +348,11 @@ verify_unpaired_local_message(Log, DirCache, UnpairedLocal, RawMessageLf, Res,
         Res = ok(no)
     ).
 
-:- pred save_raw_message(log::in, local_mailbox_path::in, uid::in,
-    maybe_message_id::in, string::in, set(flag)::in, date_time::in,
+:- pred save_raw_message(log::in, prog_config::in, local_mailbox_path::in,
+    uid::in, maybe_message_id::in, string::in, set(flag)::in, date_time::in,
     save_result::out, io::di, io::uo) is det.
 
-save_raw_message(Log, local_mailbox_path(DirName), uid(UID), MessageId,
+save_raw_message(Log, Config, local_mailbox_path(DirName), uid(UID), MessageId,
         RawMessageLf, Flags, InternalDate, Res, !IO) :-
     SubDirName = DirName / hex_bits(MessageId),
     dir.make_directory(SubDirName / "tmp", Res0, !IO),
@@ -362,7 +364,7 @@ save_raw_message(Log, local_mailbox_path(DirName), uid(UID), MessageId,
             dir.make_directory(SubDirName / "new", Res2, !IO),
             (
                 Res2 = ok,
-                save_raw_message_2(Log, uid(UID), dirname(SubDirName),
+                save_raw_message_2(Log, Config, uid(UID), dirname(SubDirName),
                     RawMessageLf, Flags, InternalDate, Res, !IO)
             ;
                 Res2 = error(Error),
@@ -377,15 +379,17 @@ save_raw_message(Log, local_mailbox_path(DirName), uid(UID), MessageId,
         Res = error(io.error_message(Error))
     ).
 
-:- pred save_raw_message_2(log::in, uid::in, dirname::in, string::in,
-    set(flag)::in, date_time::in, save_result::out, io::di, io::uo) is det.
+:- pred save_raw_message_2(log::in, prog_config::in, uid::in, dirname::in,
+    string::in, set(flag)::in, date_time::in, save_result::out, io::di, io::uo)
+    is det.
 
-save_raw_message_2(Log, uid(UID), dirname(SubDirName), RawMessageLf, Flags,
-        InternalDate, Res, !IO) :-
+save_raw_message_2(Log, Config, uid(UID), dirname(SubDirName), RawMessageLf,
+        Flags, InternalDate, Res, !IO) :-
     TmpDir = SubDirName / "tmp",
+    DestDir = SubDirName / "cur",
     generate_unique_name(dirname(TmpDir), ResUnique, !IO),
     (
-        ResUnique = ok({Unique, path(TmpPath)}),
+        ResUnique = ok({Unique, path(TmpPath), Fd}),
         InfoSuffix = flags_to_info_suffix(Flags),
         % XXX don't think this condition is right
         ( InfoSuffix = info_suffix(set.init, "") ->
@@ -393,41 +397,107 @@ save_raw_message_2(Log, uid(UID), dirname(SubDirName), RawMessageLf, Flags,
         ;
             make_message_basename(Unique, yes(InfoSuffix), basename(BaseName))
         ),
-        DestDir = SubDirName / "cur",
         DestPath = DestDir / BaseName,
         log_notice(Log,
             format("Saving message UID %s to %s\n",
                 [s(to_string(UID)), s(DestPath)]), !IO),
-        io.open_output(TmpPath, ResOpen, !IO),
+        do_save_raw_message(Config, path(TmpPath), dirname(DestDir),
+            path(DestPath), Fd, RawMessageLf, InternalDate, ResSave, !IO),
         (
-            ResOpen = ok(Stream),
-            % XXX catch exceptions during write and fsync
-            io.write_string(Stream, RawMessageLf, !IO),
-            io.close_output(Stream, !IO),
-            set_file_atime_mtime(TmpPath, mktime(InternalDate), ResTime, !IO),
-            (
-                ResTime = ok,
-                io.rename_file(TmpPath, DestPath, ResRename, !IO),
-                (
-                    ResRename = ok,
-                    Res = ok(Unique, dirname(DestDir), basename(BaseName))
-                ;
-                    ResRename = error(Error),
-                    io.remove_file(TmpPath, _, !IO),
-                    Res = error(io.error_message(Error))
-                )
-            ;
-                ResTime = error(Error),
-                Res = error(io.error_message(Error))
-            )
+            ResSave = ok,
+            Res = ok(Unique, dirname(DestDir), basename(BaseName))
         ;
-            ResOpen = error(Error),
-            io.remove_file(TmpPath, _, !IO),
-            Res = error(io.error_message(Error))
+            ResSave = error(Error),
+            Res = error(Error)
         )
     ;
         ResUnique = error(Error),
         Res = error(Error)
+    ).
+
+:- pred do_save_raw_message(prog_config::in, path::in, dirname::in, path::in,
+    filedes::in, string::in, date_time::in, maybe_error::out, io::di, io::uo)
+    is det.
+
+do_save_raw_message(Config, path(TmpPath), DestDir, path(DestPath),
+        Fd, RawMessageLf, InternalDate, Res, !IO) :-
+    lowio.write_string(Fd, RawMessageLf, ResWrite, !IO),
+    (
+        ResWrite = ok,
+        maybe_fsync(Config, Fd, ResFsync, !IO),
+        (
+            ResFsync = ok,
+            lowio.close(Fd, ResClose, !IO),
+            (
+                ResClose = ok,
+                set_file_atime_mtime(TmpPath, mktime(InternalDate),
+                    ResTime, !IO),
+                (
+                    ResTime = ok,
+                    io.rename_file(TmpPath, DestPath, ResRename, !IO),
+                    (
+                        ResRename = ok,
+                        maybe_fsync_dir(Config, DestDir, ResFsyncDir, !IO),
+                        (
+                            ResFsyncDir = ok,
+                            Res = ok
+                        ;
+                            ResFsyncDir = error(Error),
+                            Res = error(Error)
+                        )
+                    ;
+                        ResRename = error(Error),
+                        Res = error(io.error_message(Error))
+                    )
+                ;
+                    ResTime = error(Error),
+                    Res = error(io.error_message(Error))
+                )
+            ;
+                ResClose = error(Error),
+                Res = error(Error)
+            )
+        ;
+            ResFsync = error(Error),
+            Res = error(Error),
+            lowio.close(Fd, _ResClose, !IO)
+        )
+    ;
+        ResWrite = error(Error),
+        Res = error(Error),
+        lowio.close(Fd, _ResClose, !IO)
+    ),
+    (
+        Res = ok
+    ;
+        Res = error(_),
+        io.remove_file(TmpPath, _, !IO)
+    ).
+
+:- pred maybe_fsync(prog_config::in, filedes::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+maybe_fsync(Config, Fd, Res, !IO) :-
+    Fsync = Config ^ fsync,
+    (
+        Fsync = do_fsync,
+        lowio.fsync(Fd, Res, !IO)
+    ;
+        Fsync = do_not_fsync,
+        Res = ok
+    ).
+
+:- pred maybe_fsync_dir(prog_config::in, dirname::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+maybe_fsync_dir(Config, dirname(DirName), Res, !IO) :-
+    Fsync = Config ^ fsync,
+    (
+        Fsync = do_fsync,
+        lowio.fsync_dir(DirName, Res, !IO)
+    ;
+        Fsync = do_not_fsync,
+        Res = ok
     ).
 
 :- func hex_bits(maybe_message_id) = string.

@@ -15,7 +15,8 @@
 :- type prog_config
     --->    prog_config(
                 db_filename :: string,
-                maildir_root:: maildir_root,
+                maildir_root :: maildir_root,
+                fsync :: fsync,
                 local_mailbox_name :: local_mailbox_name,
                 hostport    :: string,
                 username    :: username,
@@ -27,6 +28,10 @@
 
 :- type maildir_root
     --->    maildir_root(string).
+
+:- type fsync
+    --->    do_fsync
+    ;       do_not_fsync.
 
 :- type local_mailbox_name
     --->    local_mailbox_name(string).
@@ -107,6 +112,23 @@ make_prog_config(Config, ProgConfig, !Errors, !IO) :-
         cons("missing maildir.path", !Errors)
     ),
 
+    ( nonempty(Config, "local", "fsync", Fsync0) ->
+        ( bool(Fsync0, FsyncBool) ->
+            (
+                FsyncBool = yes,
+                Fsync = do_fsync
+            ;
+                FsyncBool = no,
+                Fsync = do_not_fsync
+            )
+        ;
+            Fsync = do_fsync,
+            cons("invalid local.fsync: " ++ Fsync0, !Errors)
+        )
+    ;
+        Fsync = do_fsync
+    ),
+
     ( nonempty(Config, "imap", "host", Host0) ->
         Host = Host0
     ;
@@ -164,7 +186,7 @@ make_prog_config(Config, ProgConfig, !Errors, !IO) :-
         cons("missing pairing.remote", !Errors)
     ),
 
-    ProgConfig = prog_config(DbFileName, MaildirRoot, LocalMailboxName,
+    ProgConfig = prog_config(DbFileName, MaildirRoot, Fsync, LocalMailboxName,
         Host, UserName, Password, RemoteMailboxName,
         IdleTimeoutSecs, SyncOnIdleTimeout).
 
