@@ -21,6 +21,7 @@
                 db_filename :: string,
                 maildir_root :: maildir_root,
                 fsync :: fsync,
+                buckets :: buckets,
                 local_mailbox_name :: local_mailbox_name,
                 hostport :: string,
                 username :: username,
@@ -37,6 +38,10 @@
 :- type fsync
     --->    do_fsync
     ;       do_not_fsync.
+
+:- type buckets
+    --->    use_buckets
+    ;       no_buckets.
 
 :- type local_mailbox_name
     --->    local_mailbox_name(string).
@@ -151,6 +156,23 @@ make_prog_config(Config, ProgConfig, !Errors, !IO) :-
         Fsync = do_fsync
     ),
 
+    ( nonempty(Config, "local", "buckets", Buckets0) ->
+        ( bool(Buckets0, BucketsBool) ->
+            (
+                BucketsBool = yes,
+                Buckets = use_buckets
+            ;
+                BucketsBool = no,
+                Buckets = no_buckets
+            )
+        ;
+            Buckets = no_buckets,
+            cons("invalid local.buckets: " ++ Buckets0, !Errors)
+        )
+    ;
+        Buckets = no_buckets
+    ),
+
     ( nonempty(Config, "imap", "host", Host0) ->
         Host = Host0
     ;
@@ -220,7 +242,7 @@ make_prog_config(Config, ProgConfig, !Errors, !IO) :-
     ),
 
     ProgConfig = prog_config(MaybeLogFileName, LogLevel, DbFileName,
-        MaildirRoot, Fsync, LocalMailboxName,
+        MaildirRoot, Fsync, Buckets, LocalMailboxName,
         Host, UserName, Password, RemoteMailboxName,
         Idle, IdleTimeoutSecs, SyncOnIdleTimeout).
 

@@ -354,7 +354,14 @@ verify_unpaired_local_message(Log, DirCache, UnpairedLocal, RawMessageLf, Res,
 
 save_raw_message(Log, Config, local_mailbox_path(DirName), uid(UID), MessageId,
         RawMessageLf, Flags, InternalDate, Res, !IO) :-
-    SubDirName = DirName / hex_bits(MessageId),
+    Buckets = Config ^ buckets,
+    (
+        Buckets = use_buckets,
+        SubDirName = DirName / hex_bits(MessageId)
+    ;
+        Buckets = no_buckets,
+        SubDirName = DirName
+    ),
     dir.make_directory(SubDirName / "tmp", Res0, !IO),
     (
         Res0 = ok,

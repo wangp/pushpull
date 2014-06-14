@@ -6,6 +6,7 @@ level = info
 state = /home/user/Maildir/.plugsink/state.db
 maildir = /home/user/Maildir
 fsync = yes
+buckets = no
 
 [imap]
 host = imap.example.com:993
