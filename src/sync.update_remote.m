@@ -154,6 +154,10 @@ max(mod_seq_valzer(X), mod_seq_valzer(Y)) = mod_seq_valzer(Max) :-
 
 update_uid_range(Log, Db, IMAP, MailboxPair, SeqMin, SeqMax, SinceModSeqValzer,
         HighestModSeqValue, Res, !IO) :-
+    log_debug(Log,
+        format("Update UID range %s:%s",
+            [s(to_string(SeqMin)), s(to_string(SeqMax))]), !IO),
+
     SequenceSet = last(range(SeqMin, SeqMax)),
     % We only need the Message-ID from the envelope and really only for new
     % messages.
@@ -206,6 +210,11 @@ update_uid_range(Log, Db, IMAP, MailboxPair, SeqMin, SeqMax, SinceModSeqValzer,
         ),
         Res = error("unexpected response to UID FETCH: " ++ Text)
     ).
+
+:- func to_string(seq_number(uid)) = string.
+
+to_string(number(uid(N))) = to_string(N).
+to_string(star) = "*".
 
 :- pred make_remote_message_info(pair(message_seq_nr, msg_atts)::in,
     map(uid, remote_message_info)::in, map(uid, remote_message_info)::out)
@@ -279,11 +288,12 @@ flag_except_recent(recent, _) :- fail.
 
 update_db_with_remote_message_infos(Log, Db, MailboxPair, HighestModSeqValue,
         RemoteMessageInfos, Res, !IO) :-
+    map.count(RemoteMessageInfos, Total),
     % We require lower UIDs to be updated before higher UIDs in the database.
-    map.foldl2(
+    map.foldl3(
         update_db_with_remote_message_info(Log, Db, MailboxPair,
-            HighestModSeqValue),
-        RemoteMessageInfos, ok, Res0, !IO),
+            HighestModSeqValue, Total),
+        RemoteMessageInfos, 1, _Count, ok, Res0, !IO),
     (
         Res0 = ok,
         Res = commit(unit)
@@ -293,16 +303,18 @@ update_db_with_remote_message_infos(Log, Db, MailboxPair, HighestModSeqValue,
     ).
 
 :- pred update_db_with_remote_message_info(log::in, database::in,
-    mailbox_pair::in, mod_seq_value::in, uid::in, remote_message_info::in,
+    mailbox_pair::in, mod_seq_value::in, int::in,
+    uid::in, remote_message_info::in, int::in, int::out,
     maybe_error::in, maybe_error::out, io::di, io::uo) is det.
 
 update_db_with_remote_message_info(Log, Db, MailboxPair, HighestModSeqValue,
-        UID, RemoteMessageInfo, MaybeError0, MaybeError, !IO) :-
+        Total, UID, RemoteMessageInfo, Count, Count + 1,
+        MaybeError0, MaybeError, !IO) :-
     (
         MaybeError0 = ok,
         UID = uid(UIDInteger),
-        log_info(Log, format("Updating UID %s\n", [s(to_string(UIDInteger))]),
-            !IO),
+        log_debug(Log, format("Updating UID %s (%d of %d)\n",
+            [s(to_string(UIDInteger)), i(Count), i(Total)]), !IO),
         do_update_db_with_remote_message_info(Db, MailboxPair,
             HighestModSeqValue, UID, RemoteMessageInfo, MaybeError, !IO)
     ;

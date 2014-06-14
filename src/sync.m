@@ -61,6 +61,7 @@ sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
     % as part of update_db_remote_mailbox and for detecting expunges.
     (
         CheckRemote = check,
+        log_debug(Log, "Update remote mailbox state", !IO),
         update_db_remote_mailbox(Log, Config, Db, IMAP, MailboxPair,
             LastModSeqValzer, HighestModSeqValue, !:Res, !IO)
     ;
@@ -72,6 +73,7 @@ sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
         !.Res = ok,
         CheckLocal = check
     ->
+        log_debug(Log, "Update local mailbox state", !IO),
         update_db_local_mailbox(Log, Config, Db, Inotify, MailboxPair,
             DirCacheUpdate, !:Res, !DirCache, !IO)
     ;
@@ -83,6 +85,7 @@ sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
     ->
         % Propagate flags first to allow pairings with previously-expunged
         % messages to be be reset, and thus downloaded in the following steps.
+        log_debug(Log, "Propagate flag deltas from remote mailbox", !IO),
         propagate_flag_deltas_from_remote(Log, Config, Db, MailboxPair,
             !:Res, !DirCache, !IO)
     ;
@@ -92,6 +95,7 @@ sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
         !.Res = ok,
         CheckLocal = check
     ->
+        log_debug(Log, "Propagate flag deltas from local mailbox", !IO),
         propagate_flag_deltas_from_local(Log, Config, Db, IMAP, MailboxPair,
             !:Res, !IO)
     ;
@@ -99,6 +103,7 @@ sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
     ),
     (
         !.Res = ok,
+        log_debug(Log, "Download remote messages", !IO),
         download_unpaired_remote_messages(Log, Config, Db, IMAP, MailboxPair,
             !:Res, !DirCache, !IO)
     ;
@@ -106,6 +111,7 @@ sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
     ),
     (
         !.Res = ok,
+        log_debug(Log, "Upload local messages", !IO),
         upload_unpaired_local_messages(Log, Config, Db, IMAP, MailboxPair,
             !.DirCache, !:Res, !IO)
     ;
@@ -113,6 +119,7 @@ sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
     ),
     (
         !.Res = ok,
+        log_debug(Log, "Delete expunged pairings", !IO),
         delete_expunged_pairings(Db, !:Res, !IO)
     ;
         !.Res = error(_)

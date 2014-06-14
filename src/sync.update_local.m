@@ -41,17 +41,21 @@ update_db_local_mailbox(Log, Config, Db, Inotify, MailboxPair, UpdateMethod,
         !DirCache, !IO),
     (
         ResCache = ok(yes),
+        log_debug(Log, "Get paired local messages", !IO),
         get_unexpunged_pairings_by_uniquename(Db, MailboxPair,
             ResExistingPairings, !IO),
         (
             ResExistingPairings = ok(ExistingPairings),
+            log_debug(Log, "Make pairing id set", !IO),
             make_pairing_id_set(ExistingPairings, UnseenPairingIds0),
+            log_debug(Log, "Update local message file state", !IO),
             stream(!.DirCache, Stream0),
             update_db_local_message_files(Log, Db, MailboxPair,
                 ExistingPairings, Stream0, ResUpdate, UnseenPairingIds0,
                 UnseenPairingIds, !IO),
             (
                 ResUpdate = ok,
+                log_debug(Log, "Detect expunged local messages", !IO),
                 mark_expunged_local_messages(Log, Db, MailboxPair,
                     UnseenPairingIds, Res, !IO)
             ;
@@ -136,9 +140,9 @@ update_db_local_message_file_2(Log, Db, MailboxPair, ExistingPairings,
         (
             IsChanged = yes,
             Unique = uniquename(UniqueString),
-            log_info(Log,
-                format("Updating local message flags %s: %s\n",
-                    [s(UniqueString), s(string(LocalFlagDeltas))]), !IO),
+            log_debug(Log,
+                format("Updating local message flags %s\n",
+                    [s(UniqueString)]), !IO),
             update_local_message_flags(Db, PairingId, LocalFlagDeltas,
                 require_attn(LocalFlagDeltas), Res, !IO)
         ;

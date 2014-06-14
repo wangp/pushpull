@@ -47,30 +47,31 @@ upload_unpaired_local_messages(Log, _Config, Database, IMAP, MailboxPair,
     search_unpaired_local_messages(Database, MailboxPair, ResSearch, !IO),
     (
         ResSearch = ok(UnpairedLocals),
+        list.length(UnpairedLocals, Total),
         upload_messages(Log, Database, IMAP, MailboxPair, DirCache,
-            UnpairedLocals, Res, !IO)
+            UnpairedLocals, 1, Total, Res, !IO)
     ;
         ResSearch = error(Error),
         Res = error(Error)
     ).
 
 :- pred upload_messages(log::in, database::in, imap::in, mailbox_pair::in,
-    dir_cache::in, list(unpaired_local_message)::in, maybe_error::out, io::di,
-    io::uo) is det.
+    dir_cache::in, list(unpaired_local_message)::in, int::in, int::in,
+    maybe_error::out, io::di, io::uo) is det.
 
 upload_messages(Log, Database, IMAP, MailboxPair, DirCache, UnpairedLocals,
-        Res, !IO) :-
+        Count0, Total, Res, !IO) :-
     (
         UnpairedLocals = [],
         Res = ok
     ;
         UnpairedLocals = [H | T],
-        upload_message(Log, Database, IMAP, MailboxPair, DirCache, H, Res0,
-            !IO),
+        upload_message(Log, Database, IMAP, MailboxPair, DirCache, H,
+            Count0, Total, Res0, !IO),
         (
             Res0 = ok,
-            upload_messages(Log, Database, IMAP, MailboxPair, DirCache, T, Res,
-                !IO)
+            upload_messages(Log, Database, IMAP, MailboxPair, DirCache, T,
+                Count0 + 1, Total, Res, !IO)
         ;
             Res0 = error(Error),
             Res = error(Error)
@@ -78,17 +79,19 @@ upload_messages(Log, Database, IMAP, MailboxPair, DirCache, UnpairedLocals,
     ).
 
 :- pred upload_message(log::in, database::in, imap::in, mailbox_pair::in,
-    dir_cache::in, unpaired_local_message::in, maybe_error::out,
-    io::di, io::uo) is det.
+    dir_cache::in, unpaired_local_message::in, int::in, int::in,
+    maybe_error::out, io::di, io::uo) is det.
 
-upload_message(Log, Database, IMAP, MailboxPair, DirCache, UnpairedLocal, Res,
-        !IO) :-
+upload_message(Log, Database, IMAP, MailboxPair, DirCache, UnpairedLocal,
+        Count, Total, Res, !IO) :-
     UnpairedLocal = unpaired_local_message(PairingId, Unique),
     find_file(DirCache, Unique, ResFind),
     (
         ResFind = found(DirName, BaseName, _InfoSuffix),
         Path = DirName / BaseName,
-        log_notice(Log, format("Uploading %s\n", [s(Path ^ path)]), !IO),
+        log_notice(Log,
+            format("Uploading (%d of %d) %s\n",
+                [i(Count), i(Total), s(Path ^ path)]), !IO),
         lookup_local_message_flags(Database, PairingId, ResFlags, !IO),
         (
             ResFlags = ok(LocalFlagDeltas),

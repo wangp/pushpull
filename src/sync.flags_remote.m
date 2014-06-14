@@ -14,6 +14,7 @@
 
 :- implementation.
 
+:- import_module integer.
 :- import_module list.
 :- import_module set.
 :- import_module string.
@@ -116,6 +117,10 @@ store_remote_flags_change(Log, IMAP, UID, Operation, ChangeFlags, Res, !IO) :-
     ( set.empty(ChangeFlags) ->
         Res = ok
     ;
+        UID = uid(UIDInteger),
+        log_info(Log,
+            format("Change remote flags UID %s", [s(to_string(UIDInteger))]),
+            !IO),
         uid_store(IMAP, singleton_sequence_set(UID), Operation, silent,
             to_sorted_list(ChangeFlags), result(ResAdd, Text, Alerts), !IO),
         report_alerts(Log, Alerts, !IO),

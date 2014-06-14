@@ -82,6 +82,14 @@
 
 :- type stream == assoc_list(dirname, basename_tree).
 
+:- type enum_info
+    --->    enum_info(
+                enum_basenames  :: basename_tree,
+                enum_count      :: int,
+                enum_queue      :: set(dirname),
+                enum_progress   :: maybe(int)
+            ).
+
 %-----------------------------------------------------------------------------%
 
 init(Top) = dir_cache(Top, map.init).
@@ -188,8 +196,10 @@ update_dir(Log, DirName, Res, !Queue, !Dirs, !IO) :-
             ModTime0 = ModTime
         ->
             % Entry already up-to-date (not including subdirectories).
+            log_debug(Log, "Directory unchanged " ++ DirNameString, !IO),
             Res = ok
         ;
+            log_debug(Log, "Scanning " ++ DirNameString, !IO),
             (
                 dir.split_name(DirNameString, _, Tail),
                 new_or_cur(Tail)
@@ -198,21 +208,23 @@ update_dir(Log, DirName, Res, !Queue, !Dirs, !IO) :-
             ;
                 IsNewOrCur = no
             ),
-            dir.foldl2(enumerate_files(IsNewOrCur), DirNameString,
-                init - !.Queue, Res1, !IO),
+            get_time(Time0, !IO),
+            ReportProgress = yes(Time0 + 2),
+            Info0 = enum_info(init, 0, !.Queue, ReportProgress),
+            dir.foldl2(enumerate_files(Log, IsNewOrCur), DirNameString,
+                Info0, Res1, !IO),
             (
-                Res1 = ok(DirFiles - !:Queue),
-                Res = ok,
+                Res1 = ok(Info),
+                Info = enum_info(DirFiles, Count, !:Queue, _ReportProgress),
                 map.set(DirName, dirinfo(yes(ModTime), DirFiles), !Dirs),
-
-                NumFiles = count(DirFiles),
-                ( NumFiles > 0 ->
+                ( Count > 0 ->
                     log_debug(Log,
                         format("%s contains %d files\n",
-                            [s(DirNameString), i(NumFiles)]), !IO)
+                            [s(DirNameString), i(Count)]), !IO)
                 ;
                     true
-                )
+                ),
+                Res = ok
             ;
                 Res1 = error(_, Error),
                 Res = error(io.error_message(Error))
@@ -230,20 +242,35 @@ update_dir(Log, DirName, Res, !Queue, !Dirs, !IO) :-
         )
     ).
 
-:- pred enumerate_files(bool::in,
+:- pred enumerate_files(log::in, bool::in,
     string::in, string::in, io.file_type::in, bool::out,
-    pair(basename_tree, set(dirname))::in,
-    pair(basename_tree, set(dirname))::out, io::di, io::uo) is det.
+    enum_info::in, enum_info::out, io::di, io::uo) is det.
 
-enumerate_files(IsNewOrCur, DirName, BaseName, FileType, Continue,
-        !.BaseNames - !.Queue, !:BaseNames - !:Queue, !IO) :-
+enumerate_files(Log, IsNewOrCur, DirName, BaseName, FileType, Continue,
+        !Info, !IO) :-
     (
         FileType = regular_file,
         (
             IsNewOrCur = yes,
             not dot_file(BaseName)
         ->
-            det_insert(basename(BaseName), unit, !BaseNames)
+            !.Info = enum_info(BaseNames0, Count0, Queue, ReportProgress0),
+            det_insert(basename(BaseName), unit, BaseNames0, BaseNames),
+            Count = Count0 + 1,
+            (
+                ReportProgress0 = no,
+                ReportProgress = no
+            ;
+                ReportProgress0 = yes(Time0),
+                get_time(Time, !IO),
+                ( Time >= Time0 ->
+                    log_info(Log, "Scanning " ++ DirName ++ " ...", !IO),
+                    ReportProgress = no
+                ;
+                    ReportProgress = ReportProgress0
+                )
+            ),
+            !:Info = enum_info(BaseNames, Count, Queue, ReportProgress)
         ;
             true
         )
@@ -252,7 +279,9 @@ enumerate_files(IsNewOrCur, DirName, BaseName, FileType, Continue,
         (
             IsNewOrCur = no,
             % XXX could still scan an already scanned directory?
-            set.insert(dirname(DirName / BaseName), !Queue)
+            !.Info = enum_info(BaseNames, Count, Queue0, ReportProgress),
+            set.insert(dirname(DirName / BaseName), Queue0, Queue),
+            !:Info = enum_info(BaseNames, Count, Queue, ReportProgress)
         ;
             IsNewOrCur = yes
         )
@@ -292,6 +321,15 @@ det_insert(K, V, !Tree) :-
     ;
         unexpected($module, $pred, "duplicate key")
     ).
+
+:- pred get_time(int::out, io::di, io::uo) is det.
+
+:- pragma foreign_proc("C",
+    get_time(Time::out, _IO0::di, _IO::uo),
+    [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io],
+"
+    Time = (MR_Integer) time(0);
+").
 
 %-----------------------------------------------------------------------------%
 
