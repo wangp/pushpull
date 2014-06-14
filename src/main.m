@@ -245,8 +245,9 @@ sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
                 % the queue, particularly those induced by renamings performed
                 % during the sync cycle, which would cause us to wake
                 % immediately.
+                AddNewWatches = Config ^ idle,
                 update_dir_cache(Log, Inotify, scan_from_inotify_events(no),
-                    ResCache, !DirCache, !IO),
+                    AddNewWatches, ResCache, !DirCache, !IO),
                 (
                     ResCache = ok(yes),
                     ResIdle = ok(sync(shortcut(check, skip))),

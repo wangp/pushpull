@@ -30,8 +30,8 @@
 :- func init(dirname) = dir_cache.
 
 :- pred update_dir_cache(log::in, inotify(S)::in, update_method::in,
-    maybe_error(bool)::out, dir_cache::in, dir_cache::out, io::di, io::uo)
-    is det.
+    bool::in, maybe_error(bool)::out, dir_cache::in, dir_cache::out,
+    io::di, io::uo) is det.
 
 :- pred update_for_new_file(dirname::in, basename::in,
     dir_cache::in, dir_cache::out) is semidet.
@@ -88,7 +88,7 @@ init(Top) = dir_cache(Top, map.init).
 
 %-----------------------------------------------------------------------------%
 
-update_dir_cache(Log, Inotify, Method, Res, !DirCache, !IO) :-
+update_dir_cache(Log, Inotify, Method, AddNewWatches, Res, !DirCache, !IO) :-
     % In theory we could maintain our dir cache on the basis of inotify
     % events only (after the initial scan) but it seems too hairy.
     inotify.read_events(Inotify, ResEvents, !IO),
@@ -97,7 +97,8 @@ update_dir_cache(Log, Inotify, Method, Res, !DirCache, !IO) :-
         !.DirCache = dir_cache(TopDirName, Dirs0),
         Queue0 = set.from_sorted_list(map.sorted_keys(Dirs0)),
         set.insert(TopDirName, Queue0, Queue),
-        update_dir_cache_2(Log, Inotify, Queue, Res, !DirCache, !IO)
+        update_dir_cache_2(Log, Inotify, Queue, AddNewWatches, Res,
+            !DirCache, !IO)
     ;
         Method = scan_from_inotify_events(Force),
         (
@@ -106,7 +107,8 @@ update_dir_cache(Log, Inotify, Method, Res, !DirCache, !IO) :-
             ( set.is_empty(Queue) ->
                 Res = ok(Force)
             ;
-                update_dir_cache_2(Log, Inotify, Queue, Res, !DirCache, !IO)
+                update_dir_cache_2(Log, Inotify, Queue, AddNewWatches, Res,
+                    !DirCache, !IO)
             )
         ;
             ResEvents = error(Error1),
@@ -115,14 +117,20 @@ update_dir_cache(Log, Inotify, Method, Res, !DirCache, !IO) :-
     ).
 
 :- pred update_dir_cache_2(log::in, inotify(S)::in, set(dirname)::in,
-    maybe_error(bool)::out, dir_cache::in, dir_cache::out, io::di, io::uo)
-    is det.
+    bool::in, maybe_error(bool)::out, dir_cache::in, dir_cache::out,
+    io::di, io::uo) is det.
 
-update_dir_cache_2(Log, Inotify, Queue, Res, !DirCache, !IO) :-
+update_dir_cache_2(Log, Inotify, Queue, AddNewWatches, Res, !DirCache, !IO) :-
     update_by_scan(Log, Queue, Res0, !DirCache, !IO),
     (
         Res0 = ok,
-        add_watches(Log, Inotify, !.DirCache, Res1, !IO),
+        (
+            AddNewWatches = yes,
+            add_watches(Log, Inotify, !.DirCache, Res1, !IO)
+        ;
+            AddNewWatches = no,
+            Res1 = ok
+        ),
         (
             Res1 = ok,
             Res = ok(yes)

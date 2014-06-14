@@ -33,9 +33,12 @@
 
 %-----------------------------------------------------------------------------%
 
-update_db_local_mailbox(Log, _Config, Db, Inotify, MailboxPair, UpdateMethod,
+update_db_local_mailbox(Log, Config, Db, Inotify, MailboxPair, UpdateMethod,
         Res, !DirCache, !IO) :-
-    update_dir_cache(Log, Inotify, UpdateMethod, ResCache, !DirCache, !IO),
+    % Only need to watch directories if we will IDLE.
+    AddNewWatches = Config ^ idle,
+    update_dir_cache(Log, Inotify, UpdateMethod, AddNewWatches, ResCache,
+        !DirCache, !IO),
     (
         ResCache = ok(yes),
         get_unexpunged_pairings_by_uniquename(Db, MailboxPair,
