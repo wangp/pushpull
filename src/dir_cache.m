@@ -200,10 +200,7 @@ update_dir(Log, DirName, Res, !Queue, !Dirs, !IO) :-
             Res = ok
         ;
             log_debug(Log, "Scanning " ++ DirNameString, !IO),
-            (
-                dir.split_name(DirNameString, _, Tail),
-                new_or_cur(Tail)
-            ->
+            ( new_or_cur_suffix(DirNameString) ->
                 IsNewOrCur = yes
             ;
                 IsNewOrCur = no
@@ -308,10 +305,13 @@ enumerate_files(Log, IsNewOrCur, DirName, BaseName, FileType, Continue,
 dot_file(S) :-
     string.prefix(S, ".").
 
-:- pred new_or_cur(string::in) is semidet.
+:- pred new_or_cur_suffix(string::in) is semidet.
 
-new_or_cur("new").
-new_or_cur("cur").
+new_or_cur_suffix(S) :-
+    % dir.basename and dir.split_name are a bit slow.
+    ( string.suffix(S, "/new")
+    ; string.suffix(S, "/cur")
+    ).
 
 :- pred det_insert(K::in, V::in, rbtree(K, V)::in, rbtree(K, V)::out) is det.
 
@@ -502,8 +502,7 @@ add_watches(Log, Inotify, DirCache, Res, !IO) :-
 add_watch(Log, Inotify, dirname(DirName), _, Res0, Res, !IO) :-
     (
         Res0 = ok,
-        dir.split_name(DirName, _, Tail),
-        new_or_cur(Tail)
+        new_or_cur_suffix(DirName)
     ->
         is_watched(Inotify, DirName, IsWatched, !IO),
         (
