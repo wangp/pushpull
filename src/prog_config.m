@@ -6,7 +6,9 @@
 :- import_module bool.
 :- import_module io.
 :- import_module list.
+:- import_module maybe.
 
+:- import_module log.
 :- import_module imap.
 :- import_module imap.types.
 
@@ -14,14 +16,16 @@
 
 :- type prog_config
     --->    prog_config(
+                maybe_log_filename :: maybe(string),
+                log_level :: level,
                 db_filename :: string,
                 maildir_root :: maildir_root,
                 fsync :: fsync,
                 local_mailbox_name :: local_mailbox_name,
-                hostport    :: string,
-                username    :: username,
-                password    :: password,
-                mailbox     :: mailbox,
+                hostport :: string,
+                username :: username,
+                password :: password,
+                mailbox :: mailbox,
                 idle_timeout_secs :: int,
                 sync_on_idle_timeout :: bool
             ).
@@ -98,6 +102,23 @@ load_prog_config_2(Config, Res, !IO) :-
     list(string)::in, list(string)::out, io::di, io::uo) is det.
 
 make_prog_config(Config, ProgConfig, !Errors, !IO) :-
+    ( nonempty(Config, "log", "file", LogFileName) ->
+        MaybeLogFileName = yes(LogFileName)
+    ;
+        MaybeLogFileName = no
+    ),
+
+    ( nonempty(Config, "log", "level", Level0) ->
+        ( log_level(Level0, Level1) ->
+            LogLevel = Level1
+        ;
+            LogLevel = default_log_level,
+            cons("log.level invalid: " ++ Level0, !Errors)
+        )
+    ;
+        LogLevel = default_log_level
+    ),
+
     ( nonempty(Config, "local", "state", DbFileName0) ->
         DbFileName = DbFileName0
     ;
@@ -186,7 +207,8 @@ make_prog_config(Config, ProgConfig, !Errors, !IO) :-
         cons("missing pairing.remote", !Errors)
     ),
 
-    ProgConfig = prog_config(DbFileName, MaildirRoot, Fsync, LocalMailboxName,
+    ProgConfig = prog_config(MaybeLogFileName, LogLevel, DbFileName,
+        MaildirRoot, Fsync, LocalMailboxName,
         Host, UserName, Password, RemoteMailboxName,
         IdleTimeoutSecs, SyncOnIdleTimeout).
 
@@ -196,6 +218,12 @@ make_prog_config(Config, ProgConfig, !Errors, !IO) :-
 nonempty(Config, Section, Key, Value) :-
     search_config(Config, Section, Key, Value),
     Value \= "".
+
+:- pred positive_int(string::in, int::out) is semidet.
+
+positive_int(String, Int) :-
+    string.to_int(String, Int),
+    Int > 0.
 
 :- pred bool(string::in, bool::out) is semidet.
 
@@ -209,11 +237,22 @@ bool_lower("no", no).
 bool_lower("true", yes).
 bool_lower("false", no).
 
-:- pred positive_int(string::in, int::out) is semidet.
+:- pred log_level(string::in, log.level::out) is semidet.
 
-positive_int(String, Int) :-
-    string.to_int(String, Int),
-    Int > 0.
+log_level(String, Level) :-
+    log_level_lower(to_lower(String), Level).
+
+:- pred log_level_lower(string::in, log.level::out) is semidet.
+
+log_level_lower("error", error).
+log_level_lower("warning", warning).
+log_level_lower("notice", notice).
+log_level_lower("info", info).
+log_level_lower("debug", debug).
+
+:- func default_log_level = log.level.
+
+default_log_level = info.
 
 :- func max_idle_timeout_secs = int.
 

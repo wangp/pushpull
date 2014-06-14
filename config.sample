@@ -1,3 +1,7 @@
+[log]
+file = plugsink.log
+level = info
+
 [local]
 state = /home/user/Maildir/.plugsink/state.db
 maildir = /home/user/Maildir

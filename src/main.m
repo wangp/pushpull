@@ -65,7 +65,9 @@ main(!IO) :-
 :- pred main_1(prog_config::in, io::di, io::uo) is det.
 
 main_1(Config, !IO) :-
-    open_log(no, info, ResLog, !IO),
+    MaybeLogFileName = Config ^ maybe_log_filename,
+    Level = Config ^ log_level,
+    open_log(MaybeLogFileName, Level, ResLog, !IO),
     (
         ResLog = ok(Log),
         main_2(Log, Config, !IO),
