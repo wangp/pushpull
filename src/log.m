@@ -34,7 +34,9 @@
 :- implementation.
 
 :- import_module int.
+:- import_module list.
 :- import_module string.
+:- import_module time.
 
 :- type log
     --->    log(
@@ -70,10 +72,12 @@ close_log(log(_Stderr, MaybeFileStream, _MinLevel), !IO) :-
 
 log(log(Stderr, MaybeFileStream, MaxLevel), Level, Message, !IO) :-
     ( to_int(Level) =< to_int(MaxLevel) ->
-        do_log(Stderr, Level, Message, !IO),
+        time(Time, !IO),
+        Timestamp = timestamp(localtime(Time)),
+        do_log(Stderr, Level, Timestamp, Message, !IO),
         (
             MaybeFileStream = yes(FileStream),
-            do_log(FileStream, Level, Message, !IO),
+            do_log(FileStream, Level, Timestamp, Message, !IO),
             io.flush_output(FileStream, !IO)
         ;
             MaybeFileStream = no
@@ -82,11 +86,12 @@ log(log(Stderr, MaybeFileStream, MaxLevel), Level, Message, !IO) :-
         true
     ).
 
-:- pred do_log(io.output_stream::in, level::in, string::in, io::di, io::uo)
-    is det.
+:- pred do_log(io.output_stream::in, level::in, string::in, string::in,
+    io::di, io::uo) is det.
 
-do_log(Stream, Level, Message, !IO) :-
+do_log(Stream, Level, Timestamp, Message, !IO) :-
     % XXX may want to avoid throwing exceptions
+    io.write_string(Stream, Timestamp, !IO),
     io.write_string(Stream, to_string(Level), !IO),
     io.write_string(Stream, Message, !IO),
     ( string.suffix(Message, "\n") ->
@@ -125,6 +130,18 @@ to_string(warning) = "Warning: ".
 to_string(notice) = "".
 to_string(info) = "".
 to_string(debug) = "".
+
+:- func timestamp(tm) = string.
+
+timestamp(TM) = Timestamp :-
+    Year = TM ^ tm_year + 1900,
+    Month = TM ^ tm_mon + 1,
+    MonthDay = TM ^ tm_mday,
+    Hour = TM ^ tm_hour,
+    Min = TM ^ tm_min,
+    Sec = TM ^ tm_sec,
+    Timestamp = string.format("%04d-%02d-%02d %02d:%02d:%02d - ",
+        [i(Year), i(Month), i(MonthDay), i(Hour), i(Min), i(Sec)]).
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et
