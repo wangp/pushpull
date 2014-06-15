@@ -6,7 +6,6 @@
 :- import_module bool.
 :- import_module io.
 :- import_module list.
-:- import_module map.
 :- import_module maybe.
 
 :- import_module inotify.
@@ -42,7 +41,18 @@
 :- pred search_files_with_prefix(dir_cache::in, string::in, list(file)::out)
     is det.
 
-:- pred all_files(dir_cache::in, map(uniquename, file)::out) is det.
+%-----------------------------------------------------------------------------%
+
+:- type files.
+
+:- pred all_files(dir_cache::in, files::out) is semidet.
+
+:- pred remove_uniquename(uniquename::in, basename::out, files::in, files::out)
+    is semidet.
+
+:- pred foldl2(pred(basename, dirname, T, T, U, U), files, T, T, U, U) is det.
+:- mode foldl2(pred(in, in, in, out, di, uo) is det, in, in, out, di, uo)
+    is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -51,6 +61,7 @@
 
 :- import_module dir.
 :- import_module int.
+:- import_module map.
 :- import_module require.
 :- import_module set.
 :- import_module string.
@@ -82,6 +93,11 @@
                 enum_queue      :: set(dirname),
                 enum_progress   :: maybe(int)
             ).
+
+    % The basename and dirname values are shared with dir_cache
+    % so that the extra memory is all in the nodes.
+    %
+:- type files == rbtree(basename, dirname).
 
 %-----------------------------------------------------------------------------%
 
@@ -453,22 +469,55 @@ all_files(dir_cache(_, Dirs), Map) :-
     map.foldl(make_combined_map, Dirs, init, Map).
 
 :- pred make_combined_map(dirname::in, dirinfo::in,
-    map(uniquename, file)::in, map(uniquename, file)::out) is det.
+    rbtree(basename, dirname)::in, rbtree(basename, dirname)::out) is semidet.
 
 make_combined_map(DirName, dirinfo(_ModTime, BaseNames), !Map) :-
     my_rbtree.foldl(make_combined_map_2(DirName), BaseNames, !Map).
 
 :- pred make_combined_map_2(dirname::in, basename::in, unit::in,
-    map(uniquename, file)::in, map(uniquename, file)::out) is det.
+    rbtree(basename, dirname)::in, rbtree(basename, dirname)::out) is semidet.
 
 make_combined_map_2(DirName, BaseName, _unit, !Map) :-
-    % XXX could be more efficient: Flags is unused
-    ( parse_basename(BaseName, Unique, _Flags) ->
-        map.det_insert(Unique, file(BaseName, DirName), !Map)
+    insert(BaseName, DirName, !Map).
+
+%-----------------------------------------------------------------------------%
+
+remove_uniquename(Unique, BaseName, !Files) :-
+    search_uniquename_2(Unique, !.Files, BaseName),
+    remove(BaseName, _DirName, !Files).
+
+:- pred search_uniquename_2(uniquename::in, files::in, basename::out)
+    is semidet.
+
+search_uniquename_2(UniqueName, Tree, BaseName) :-
+    UniqueName = uniquename(Unique),
+    (
+        Tree = empty,
+        fail
     ;
-        % XXX warn about weird filenames
-        true
+        (
+            Tree = red(K, _, L, R)
+        ;
+            Tree = black(K, _, L, R)
+        ),
+        K = basename(KString),
+        ( string.prefix(KString, Unique) ->
+            ( parse_basename(K, UniqueName, _Flags) ->
+                BaseName = K
+            ;
+                fail
+            )
+        ; Unique @< KString ->
+            search_uniquename_2(UniqueName, L, BaseName)
+        ;
+            search_uniquename_2(UniqueName, R, BaseName)
+        )
     ).
+
+%-----------------------------------------------------------------------------%
+
+foldl2(Pred, Tree, !A, !B) :-
+    my_rbtree.foldl2(Pred, Tree, !A, !B).
 
 %-----------------------------------------------------------------------------%
 

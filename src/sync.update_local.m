@@ -18,7 +18,6 @@
 
 :- import_module bool.
 :- import_module list.
-:- import_module map.
 :- import_module set.
 :- import_module set_tree234.
 :- import_module string.
@@ -47,33 +46,36 @@ update_db_local_mailbox(Log, Config, Db, Inotify, MailboxPair, UpdateMethod,
         log_debug(Log, "Detecting local mailbox changes", !IO),
         % Avoid loading the entire database query result in memory.  The
         % directory cache is already in memory so we try to share with that.
-        all_files(!.DirCache, AllFiles),
-        fold_unexpunged_pairings_with_uniquename(detect_local_changes(Log),
-            Db, MailboxPair, ResFold,
-            AllFiles, NewFiles, [], Changes, init, UnseenPairingIds, !IO),
-        (
-            ResFold = ok,
-            log_debug(Log, "Update database local message state", !IO),
-            update_pairings(Db, Changes, ResUpdate, !IO),
+        ( all_files(!.DirCache, AllFiles) ->
+            fold_unexpunged_pairings_with_uniquename(detect_local_changes(Log),
+                Db, MailboxPair, ResFold,
+                AllFiles, NewFiles, [], Changes, init, UnseenPairingIds, !IO),
             (
-                ResUpdate = ok,
-                insert_pairings(Log, Db, MailboxPair, NewFiles, ResInsert,
-                    !IO),
+                ResFold = ok,
+                log_debug(Log, "Update database local message state", !IO),
+                update_pairings(Db, Changes, ResUpdate, !IO),
                 (
-                    ResInsert = ok,
-                    mark_expunged_local_messages(Log, Db, MailboxPair,
-                        UnseenPairingIds, Res, !IO)
+                    ResUpdate = ok,
+                    insert_pairings(Log, Db, MailboxPair, NewFiles, ResInsert,
+                        !IO),
+                    (
+                        ResInsert = ok,
+                        mark_expunged_local_messages(Log, Db, MailboxPair,
+                            UnseenPairingIds, Res, !IO)
+                    ;
+                        ResInsert = error(Error),
+                        Res = error(Error)
+                    )
                 ;
-                    ResInsert = error(Error),
+                    ResUpdate = error(Error),
                     Res = error(Error)
                 )
             ;
-                ResUpdate = error(Error),
+                ResFold = error(Error),
                 Res = error(Error)
             )
         ;
-            ResFold = error(Error),
-            Res = error(Error)
+            Res = error("non-unique file name")
         )
     ;
         ResCache = ok(no),
@@ -85,14 +87,14 @@ update_db_local_mailbox(Log, Config, Db, Inotify, MailboxPair, UpdateMethod,
 
 %-----------------------------------------------------------------------------%
 
-:- pred detect_local_changes(log::in, pairing_id::in, uniquename::in,
-    flag_deltas(local_mailbox)::in, map(uniquename, file)::in,
-    map(uniquename, file)::out, list(change)::in, list(change)::out,
+:- pred detect_local_changes(log::in,
+    pairing_id::in, uniquename::in, flag_deltas(local_mailbox)::in,
+    files::in, files::out, list(change)::in, list(change)::out,
     pairing_id_set::in, pairing_id_set::out, io::di, io::uo) is det.
 
 detect_local_changes(Log, PairingId, Unique, LocalFlagDeltas0,
         !Files, !Changes, !UnseenPairingIds, !IO) :-
-    ( map.remove(Unique, file(BaseName, _DirName), !Files) ->
+    ( remove_uniquename(Unique, BaseName, !Files) ->
         % Unique name exists found in directory.
         ( parse_basename(BaseName, Unique, MaildirStandardFlags) ->
             update_maildir_standard_flags(MaildirStandardFlags,
@@ -141,29 +143,28 @@ update_pairing(Db, Change, Res, !IO) :-
 
     % Could use a transaction around this.
 :- pred insert_pairings(log::in, database::in, mailbox_pair::in,
-    map(uniquename, file)::in, maybe_error::out, io::di, io::uo) is det.
+    files::in, maybe_error::out, io::di, io::uo) is det.
 
 insert_pairings(Log, Db, MailboxPair, NewFiles, Res, !IO) :-
-    map.foldl2(insert_pairing(Log, Db, MailboxPair), NewFiles, ok, Res, !IO).
+    foldl2(insert_pairing(Log, Db, MailboxPair), NewFiles, ok, Res, !IO).
 
 :- pred insert_pairing(log::in, database::in, mailbox_pair::in,
-    uniquename::in, file::in, maybe_error::in, maybe_error::out,
+    basename::in, dirname::in, maybe_error::in, maybe_error::out,
     io::di, io::uo) is det.
 
-insert_pairing(Log, Db, MailboxPair, Unique, File, Res0, Res, !IO) :-
+insert_pairing(Log, Db, MailboxPair, BaseName, DirName, Res0, Res, !IO) :-
     (
         Res0 = ok,
-        insert_pairing_2(Log, Db, MailboxPair, Unique, File, Res, !IO)
+        insert_pairing_2(Log, Db, MailboxPair, BaseName, DirName, Res, !IO)
     ;
         Res0 = error(_),
         Res = Res0
     ).
 
 :- pred insert_pairing_2(log::in, database::in, mailbox_pair::in,
-    uniquename::in, file::in, maybe_error::out, io::di, io::uo) is det.
+    basename::in, dirname::in, maybe_error::out, io::di, io::uo) is det.
 
-insert_pairing_2(Log, Db, MailboxPair, Unique, file(BaseName, DirName),
-        Res, !IO) :-
+insert_pairing_2(Log, Db, MailboxPair, BaseName, DirName, Res, !IO) :-
     ( parse_basename(BaseName, Unique, Flags) ->
         insert_pairing_3(Log, Db, MailboxPair, DirName, BaseName, Unique,
             Flags, Res, !IO)
