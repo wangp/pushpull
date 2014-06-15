@@ -6,10 +6,12 @@
 :- import_module bool.
 :- import_module io.
 :- import_module list.
+:- import_module map.
 :- import_module maybe.
 
 :- import_module inotify.
 :- import_module log.
+:- import_module maildir.   % XXX cyclic
 :- import_module path.
 
 %-----------------------------------------------------------------------------%
@@ -17,8 +19,6 @@
     % Cache the file names in a single Maildir mailbox.
     %
 :- type dir_cache.
-
-:- type stream.
 
 :- type file
     --->    file(basename, dirname).
@@ -42,20 +42,15 @@
 :- pred search_files_with_prefix(dir_cache::in, string::in, list(file)::out)
     is det.
 
-:- pred stream(dir_cache::in, stream::out) is det.
-
-:- pred another(file::out, stream::in, stream::out) is semidet.
+:- pred all_files(dir_cache::in, map(uniquename, file)::out) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
 :- implementation.
 
-:- import_module assoc_list.
 :- import_module dir.
 :- import_module int.
-:- import_module map.
-:- import_module pair.
 :- import_module require.
 :- import_module set.
 :- import_module string.
@@ -79,8 +74,6 @@
             ).
 
 :- type basename_tree == rbtree(basename, unit).
-
-:- type stream == assoc_list(dirname, basename_tree).
 
 :- type enum_info
     --->    enum_info(
@@ -456,35 +449,25 @@ search_prefix_2(Prefix, DirName, Tree, !Matching) :-
 
 %-----------------------------------------------------------------------------%
 
-stream(dir_cache(_, Dirs), Stream) :-
-    map.to_assoc_list(Dirs, AssocList),
-    assoc_list.map_values_only(basenames, AssocList, Stream).
+all_files(dir_cache(_, Dirs), Map) :-
+    map.foldl(make_combined_map, Dirs, init, Map).
 
-:- pred basenames(dirinfo::in, basename_tree::out) is det.
+:- pred make_combined_map(dirname::in, dirinfo::in,
+    map(uniquename, file)::in, map(uniquename, file)::out) is det.
 
-basenames(dirinfo(_, X), X).
+make_combined_map(DirName, dirinfo(_ModTime, BaseNames), !Map) :-
+    my_rbtree.foldl(make_combined_map_2(DirName), BaseNames, !Map).
 
-another(File, Stream0, Stream) :-
-    Stream0 = [DirName - Tree0 | Stream1],
-    (
-        Tree0 = empty,
-        another(File, Stream1, Stream)
+:- pred make_combined_map_2(dirname::in, basename::in, unit::in,
+    map(uniquename, file)::in, map(uniquename, file)::out) is det.
+
+make_combined_map_2(DirName, BaseName, _unit, !Map) :-
+    % XXX could be more efficient: Flags is unused
+    ( parse_basename(BaseName, Unique, _Flags) ->
+        map.det_insert(Unique, file(BaseName, DirName), !Map)
     ;
-        ( Tree0 = red(BaseName, _, L, R)
-        ; Tree0 = black(BaseName, _, L, R)
-        ),
-        % We don't guarantee the order of items returned by this predicate.
-        File = file(BaseName, DirName),
-        ( is_empty(L) ->
-            Stream2 = Stream1
-        ;
-            cons(DirName - L, Stream1, Stream2)
-        ),
-        ( is_empty(R) ->
-            Stream = Stream2
-        ;
-            cons(DirName - R, Stream2, Stream)
-        )
+        % XXX warn about weird filenames
+        true
     ).
 
 %-----------------------------------------------------------------------------%

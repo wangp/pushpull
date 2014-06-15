@@ -6,7 +6,6 @@
 :- import_module bool.
 :- import_module io.
 :- import_module list.
-:- import_module map.
 :- import_module maybe.
 :- import_module set.
 :- import_module univ.
@@ -81,9 +80,13 @@
                 flag_deltas(local_mailbox)
             ).
 
-:- pred get_unexpunged_pairings_by_uniquename(database::in, mailbox_pair::in,
-    maybe_error(map(uniquename, pairing_flag_deltas))::out, io::di, io::uo)
-    is det.
+:- pred fold_unexpunged_pairings_with_uniquename(
+    pred(pairing_id, uniquename, flag_deltas(local_mailbox), A, A, B, B, C, C,
+    io, io), database, mailbox_pair, maybe_error,
+    A, A, B, B, C, C, io, io).
+:- mode fold_unexpunged_pairings_with_uniquename(
+    pred(in, in, in, in, out, in, out, in, out, di, uo) is det, in, in, out,
+    in, out, in, out, in, out, di, uo) is det.
 
 :- pred search_pairing_by_remote_message(database::in,
     mailbox_pair::in, uid::in, maybe_message_id::in,
@@ -660,35 +663,27 @@ search_pairing_by_local_uniquename_2(Db, Stmt, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-get_unexpunged_pairings_by_uniquename(Db, MailboxPair, Res, !IO) :-
+fold_unexpunged_pairings_with_uniquename(Pred, Db, MailboxPair, Res,
+        !A, !B, !C, !IO) :-
     MailboxPair = mailbox_pair(MailboxPairId, _, _, _),
     Stmt = "SELECT pairing_id, local_uniquename, local_flags FROM pairing"
         ++ " WHERE mailbox_pair_id = :mailbox_pair_id"
         ++ "   AND local_uniquename IS NOT NULL"
         ++ "   AND NOT local_expunged",
-    with_stmt(get_unexpunged_pairings_by_uniquename_2, Db, Stmt, [
+    with_stmt_acc3(fold_unexpunged_pairings_with_uniquename_2(Pred), Db, Stmt, [
         name(":mailbox_pair_id") - bind_value(MailboxPairId)
-    ], Res, !IO).
+    ], Res, !A, !B, !C, !IO).
 
-:- pred get_unexpunged_pairings_by_uniquename_2(db(rw)::in, stmt::in,
-    maybe_error(map(uniquename, pairing_flag_deltas))::out, io::di, io::uo)
-    is det.
+:- pred fold_unexpunged_pairings_with_uniquename_2(
+    pred(pairing_id, uniquename, flag_deltas(local_mailbox), A, A, B, B, C, C,
+    io, io), database, stmt, maybe_error,
+    A, A, B, B, C, C, io, io).
+:- mode fold_unexpunged_pairings_with_uniquename_2(
+    pred(in, in, in, in, out, in, out, in, out, di, uo) is det, in, in, out,
+    in, out, in, out, in, out, di, uo) is det.
 
-get_unexpunged_pairings_by_uniquename_2(Db, Stmt, Res, !IO) :-
-    get_unexpunged_pairings_by_uniquename_3(Db, Stmt, Res0, map.init, Map, !IO),
-    (
-        Res0 = ok,
-        Res = ok(Map)
-    ;
-        Res0 = error(Error),
-        Res = error(Error)
-    ).
-
-:- pred get_unexpunged_pairings_by_uniquename_3(db(rw)::in, stmt::in,
-    maybe_error::out, map(uniquename, pairing_flag_deltas)::in,
-    map(uniquename, pairing_flag_deltas)::out, io::di, io::uo) is det.
-
-get_unexpunged_pairings_by_uniquename_3(Db, Stmt, Res, !Map, !IO) :-
+fold_unexpunged_pairings_with_uniquename_2(Pred, Db, Stmt, Res, !A, !B, !C,
+        !IO) :-
     step(Db, Stmt, StepResult, !IO),
     (
         StepResult = done,
@@ -701,11 +696,11 @@ get_unexpunged_pairings_by_uniquename_3(Db, Stmt, Res, !Map, !IO) :-
         (
             convert(X0, PairingId),
             convert(X1, Unique),
-            convert(X2, LocalFlagDeltas),
-            map.insert(Unique, pairing_flag_deltas(PairingId, LocalFlagDeltas),
-                !Map)
+            convert(X2, LocalFlagDeltas)
         ->
-            get_unexpunged_pairings_by_uniquename_3(Db, Stmt, Res, !Map, !IO)
+            Pred(PairingId, Unique, LocalFlagDeltas, !A, !B, !C, !IO),
+            fold_unexpunged_pairings_with_uniquename_2(Pred, Db, Stmt, Res,
+                !A, !B, !C, !IO)
         ;
             Res = error("database error")
         )

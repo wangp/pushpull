@@ -8,7 +8,7 @@
 :- import_module maybe.
 :- import_module set.
 
-:- import_module dir_cache.
+:- import_module dir_cache.     % XXX cyclic
 :- import_module imap.
 :- import_module imap.types.
 :- import_module lowio.
