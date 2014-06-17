@@ -59,9 +59,12 @@
 
 :- implementation.
 
+:- import_module char.
 :- import_module dir.
 :- import_module int.
 :- import_module map.
+:- import_module pair.
+:- import_module queue.
 :- import_module require.
 :- import_module set.
 :- import_module string.
@@ -80,9 +83,16 @@
 
 :- type dirinfo
     --->    dirinfo(
+                context     :: context,
                 mtime       :: maybe(time_t),
                 basenames   :: basename_tree
+                % Only new_or_cur should have non-empty basename_tree.
             ).
+
+:- type context
+    --->    top
+    ;       bucket
+    ;       new_or_cur.
 
 :- type basename_tree == rbtree(basename, unit).
 
@@ -90,9 +100,11 @@
     --->    enum_info(
                 enum_basenames  :: basename_tree,
                 enum_count      :: int,
-                enum_queue      :: set(dirname),
+                enum_queue      :: queue(scan_dir),
                 enum_progress   :: maybe(int)
             ).
+
+:- type scan_dir == pair(dirname, context).
 
     % The basename and dirname values are shared with dir_cache
     % so that the extra memory is all in the nodes.
@@ -112,18 +124,20 @@ update_dir_cache(Log, Inotify, Method, AddNewWatches, Res, !DirCache, !IO) :-
     (
         Method = scan_all,
         !.DirCache = dir_cache(TopDirName, Dirs0),
-        Queue0 = set.from_sorted_list(map.sorted_keys(Dirs0)),
-        set.insert(TopDirName, Queue0, Queue),
+        List0 = list.map(scan_element, map.to_assoc_list(Dirs0)),
+        List1 = [TopDirName - top | List0],
+        Queue = queue.from_list(set.to_sorted_list(set.from_list(List1))),
         update_dir_cache_2(Log, Inotify, Queue, AddNewWatches, Res,
             !DirCache, !IO)
     ;
         Method = scan_from_inotify_events(Force),
         (
             ResEvents = ok(Events),
-            list.foldl(evaluate_event(!.DirCache), Events, set.init, Queue),
-            ( set.is_empty(Queue) ->
+            list.foldl(evaluate_event(!.DirCache), Events, set.init, Set),
+            ( set.is_empty(Set) ->
                 Res = ok(Force)
             ;
+                Queue = queue.from_list(to_sorted_list(Set)),
                 update_dir_cache_2(Log, Inotify, Queue, AddNewWatches, Res,
                     !DirCache, !IO)
             )
@@ -133,7 +147,11 @@ update_dir_cache(Log, Inotify, Method, AddNewWatches, Res, !DirCache, !IO) :-
         )
     ).
 
-:- pred update_dir_cache_2(log::in, inotify(S)::in, set(dirname)::in,
+:- func scan_element(pair(dirname, dirinfo)) = pair(dirname, context).
+
+scan_element(DirName - DirInfo) = DirName - DirInfo ^ context.
+
+:- pred update_dir_cache_2(log::in, inotify(S)::in, queue(scan_dir)::in,
     bool::in, maybe_error(bool)::out, dir_cache::in, dir_cache::out,
     io::di, io::uo) is det.
 
@@ -162,7 +180,7 @@ update_dir_cache_2(Log, Inotify, Queue, AddNewWatches, Res, !DirCache, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-:- pred update_by_scan(log::in, set(dirname)::in, maybe_error::out,
+:- pred update_by_scan(log::in, queue(scan_dir)::in, maybe_error::out,
     dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
 update_by_scan(Log, Queue0, Res, DirCache0, DirCache, !IO) :-
@@ -174,12 +192,12 @@ update_by_scan(Log, Queue0, Res, DirCache0, DirCache, !IO) :-
         DirCache = DirCache0
     ).
 
-:- pred update_queue(log::in, maybe_error::out, set(dirname)::in,
-    set(dirname)::out, dirinfos::in, dirinfos::out, io::di, io::uo) is det.
+:- pred update_queue(log::in, maybe_error::out, queue(scan_dir)::in,
+    queue(scan_dir)::out, dirinfos::in, dirinfos::out, io::di, io::uo) is det.
 
 update_queue(Log, Res, !Queue, !Dirs, !IO) :-
-    ( set.remove_least(DirName, !Queue) ->
-        update_dir(Log, DirName, Res0, !Queue, !Dirs, !IO),
+    ( queue.get(DirNameContext, !Queue) ->
+        update_dir(Log, DirNameContext, Res0, !Queue, !Dirs, !IO),
         (
             Res0 = ok,
             update_queue(Log, Res, !Queue, !Dirs, !IO)
@@ -191,17 +209,18 @@ update_queue(Log, Res, !Queue, !Dirs, !IO) :-
         Res = ok
     ).
 
-:- pred update_dir(log::in, dirname::in, maybe_error::out,
-    set(dirname)::in, set(dirname)::out, dirinfos::in, dirinfos::out,
+:- pred update_dir(log::in, pair(dirname, context)::in, maybe_error::out,
+    queue(scan_dir)::in, queue(scan_dir)::out, dirinfos::in, dirinfos::out,
     io::di, io::uo) is det.
 
-update_dir(Log, DirName, Res, !Queue, !Dirs, !IO) :-
+update_dir(Log, DirName - Context, Res, !Queue, !Dirs, !IO) :-
     DirName = dirname(DirNameString),
     io.file_modification_time(DirNameString, ResModTime, !IO),
     (
         ResModTime = ok(ModTime),
         (
-            map.search(!.Dirs, DirName, dirinfo(yes(ModTime0), _)),
+            Context = new_or_cur,
+            map.search(!.Dirs, DirName, dirinfo(Context, yes(ModTime0), _)),
             ModTime0 = ModTime
         ->
             % Entry already up-to-date (not including subdirectories).
@@ -209,20 +228,16 @@ update_dir(Log, DirName, Res, !Queue, !Dirs, !IO) :-
             Res = ok
         ;
             log_debug(Log, "Scanning " ++ DirNameString, !IO),
-            ( new_or_cur_suffix(DirNameString) ->
-                IsNewOrCur = yes
-            ;
-                IsNewOrCur = no
-            ),
             get_time(Time0, !IO),
             ReportProgress = yes(Time0 + 2),
             Info0 = enum_info(init, 0, !.Queue, ReportProgress),
-            dir.foldl2(enumerate_files(Log, IsNewOrCur), DirNameString,
+            dir.foldl2(enumerate_files(Log, Context), DirNameString,
                 Info0, Res1, !IO),
             (
                 Res1 = ok(Info),
                 Info = enum_info(DirFiles, Count, !:Queue, _ReportProgress),
-                map.set(DirName, dirinfo(yes(ModTime), DirFiles), !Dirs),
+                map.set(DirName, dirinfo(Context, yes(ModTime), DirFiles),
+                    !Dirs),
                 ( Count > 0 ->
                     log_debug(Log,
                         format("%s contains %d files\n",
@@ -248,16 +263,16 @@ update_dir(Log, DirName, Res, !Queue, !Dirs, !IO) :-
         )
     ).
 
-:- pred enumerate_files(log::in, bool::in,
+:- pred enumerate_files(log::in, context::in,
     string::in, string::in, io.file_type::in, bool::out,
     enum_info::in, enum_info::out, io::di, io::uo) is det.
 
-enumerate_files(Log, IsNewOrCur, DirName, BaseName, FileType, Continue,
+enumerate_files(Log, Context, DirName, BaseName, FileType, Continue,
         !Info, !IO) :-
     (
         FileType = regular_file,
         (
-            IsNewOrCur = yes,
+            Context = new_or_cur,
             not dot_file(BaseName)
         ->
             !.Info = enum_info(BaseNames0, Count0, Queue, ReportProgress0),
@@ -282,14 +297,25 @@ enumerate_files(Log, IsNewOrCur, DirName, BaseName, FileType, Continue,
         )
     ;
         FileType = directory,
+        SubDirName = dirname(DirName / BaseName),
         (
-            IsNewOrCur = no,
-            % XXX could still scan an already scanned directory?
-            !.Info = enum_info(BaseNames, Count, Queue0, ReportProgress),
-            set.insert(dirname(DirName / BaseName), Queue0, Queue),
-            !:Info = enum_info(BaseNames, Count, Queue, ReportProgress)
+            Context = top,
+            ( new_or_cur(BaseName) ->
+                queue_scan(SubDirName - new_or_cur, !Info)
+            ; bucketlike(BaseName) ->
+                queue_scan(SubDirName - bucket, !Info)
+            ;
+                true
+            )
         ;
-            IsNewOrCur = yes
+            Context = bucket,
+            ( new_or_cur(BaseName) ->
+                queue_scan(SubDirName - new_or_cur, !Info)
+            ;
+                true
+            )
+        ;
+            Context = new_or_cur
         )
     ;
         FileType = symbolic_link,
@@ -309,74 +335,55 @@ enumerate_files(Log, IsNewOrCur, DirName, BaseName, FileType, Continue,
     ),
     Continue = yes.
 
-:- pred dot_file(string::in) is semidet.
+:- pred queue_scan(scan_dir::in, enum_info::in, enum_info::out) is det.
 
-dot_file(S) :-
-    string.prefix(S, ".").
-
-:- pred new_or_cur_suffix(string::in) is semidet.
-
-new_or_cur_suffix(S) :-
-    % dir.basename and dir.split_name are a bit slow.
-    ( string.suffix(S, "/new")
-    ; string.suffix(S, "/cur")
-    ).
-
-:- pred det_insert(K::in, V::in, rbtree(K, V)::in, rbtree(K, V)::out) is det.
-
-det_insert(K, V, !Tree) :-
-    ( insert(K, V, !Tree) ->
-        true
-    ;
-        unexpected($module, $pred, "duplicate key")
-    ).
-
-:- pred get_time(int::out, io::di, io::uo) is det.
-
-:- pragma foreign_proc("C",
-    get_time(Time::out, _IO0::di, _IO::uo),
-    [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io],
-"
-    Time = (MR_Integer) time(0);
-").
+queue_scan(ScanDir, !Info) :-
+    Queue0 = !.Info ^ enum_queue,
+    queue.put(ScanDir, Queue0, Queue),
+    !Info ^ enum_queue := Queue.
 
 %-----------------------------------------------------------------------------%
 
 :- pred evaluate_event(dir_cache::in, inotify_event(S)::in,
-    set(dirname)::in, set(dirname)::out) is det.
+    set(pair(dirname, context))::in, set(pair(dirname, context))::out) is det.
 
-evaluate_event(DirCache, Event, !Queue) :-
+evaluate_event(DirCache, Event, !Set) :-
     Event = inotify_event(_Watch, DirNameString, Mask, _Cookie, MaybeName),
     DirName = dirname(DirNameString),
+    lookup(DirCache, DirName, DirInfo),
+    Context = DirInfo ^ context,
     % If we already knew about the moved files (because we did it)
     % then that is no reason to rescan the directory.
     ( contains(Mask, moved_from) ->
         (
             MaybeName = yes(BaseName),
-            not contains(DirCache, DirName, basename(BaseName))
+            not contains_file(DirInfo, basename(BaseName))
         ->
             true
         ;
-            set.insert(DirName, !Queue)
+            set.insert(DirName - Context, !Set)
         )
     ; contains(Mask, moved_to) ->
         (
             MaybeName = yes(BaseName),
-            contains(DirCache, DirName, basename(BaseName))
+            contains_file(DirInfo, basename(BaseName))
         ->
             true
         ;
-            set.insert(DirName, !Queue)
+            set.insert(DirName - Context, !Set)
         )
     ;
-        set.insert(DirName, !Queue)
+        set.insert(DirName - Context, !Set)
     ).
 
-:- pred contains(dir_cache::in, dirname::in, basename::in) is semidet.
+:- pred lookup(dir_cache::in, dirname::in, dirinfo::out) is det.
 
-contains(DirCache, DirName, BaseName) :-
-    DirCache = dir_cache(_TopDir, Dirs),
-    map.search(Dirs, DirName, dirinfo(_ModTime, BaseNames)),
+lookup(dir_cache(_TopDir, Dirs), DirName, DirInfo) :-
+    map.lookup(Dirs, DirName, DirInfo).
+
+:- pred contains_file(dirinfo::in, basename::in) is semidet.
+
+contains_file(dirinfo(_Context, _ModTime, BaseNames), BaseName) :-
     search(BaseNames, BaseName, _).
 
 %-----------------------------------------------------------------------------%
@@ -400,32 +407,46 @@ update_for_rename(OldDirName, OldBaseName, NewDirName, NewBaseName,
 :- pred insert_cached(dirname::in, basename::in, dirinfos::in, dirinfos::out)
     is semidet.
 
-insert_cached(DirName, BaseName, Dirs0, Dirs) :-
-    ( map.search(Dirs0, DirName, dirinfo(ModTime, BaseNames0)) ->
+insert_cached(DirName, BaseName, !Dirs) :-
+    ( map.search(!.Dirs, DirName, dirinfo(Context, ModTime, BaseNames0)) ->
         insert(BaseName, unit, BaseNames0, BaseNames),
-        map.det_update(DirName, dirinfo(ModTime, BaseNames), Dirs0, Dirs)
+        map.det_update(DirName, dirinfo(Context, ModTime, BaseNames), !Dirs)
     ;
+        DirName = dirname(DirNameString),
+        new_or_cur_suffix(DirNameString)
+    ->
         % An previously unseen directory.
         BaseNames = singleton(BaseName, unit),
-        map.det_insert(DirName, dirinfo(no, BaseNames), Dirs0, Dirs)
+        map.det_insert(DirName, dirinfo(new_or_cur, no, BaseNames), !Dirs)
+    ;
+        unexpected($module, $pred, "not new or cur")
     ).
 
 :- pred remove_cached(dirname::in, basename::in, dirinfos::in, dirinfos::out)
     is semidet.
 
 remove_cached(DirName, BaseName, Dirs0, Dirs) :-
-    map.search(Dirs0, DirName, dirinfo(ModTime, BaseNames0)),
+    map.search(Dirs0, DirName, dirinfo(Context, ModTime, BaseNames0)),
     remove(BaseName, _, BaseNames0, BaseNames),
-    map.det_update(DirName, dirinfo(ModTime, BaseNames), Dirs0, Dirs).
+    map.det_update(DirName, dirinfo(Context, ModTime, BaseNames), Dirs0, Dirs).
 
 :- pred rename_cached(dirname::in, basename::in, basename::in,
     dirinfos::in, dirinfos::out) is semidet.
 
 rename_cached(DirName, OldBaseName, NewBaseName, Dirs0, Dirs) :-
-    map.search(Dirs0, DirName, dirinfo(ModTime, BaseNames0)),
+    map.search(Dirs0, DirName, dirinfo(Context, ModTime, BaseNames0)),
     remove(OldBaseName, _, BaseNames0, BaseNames1),
     insert(NewBaseName, unit, BaseNames1, BaseNames),
-    map.det_update(DirName, dirinfo(ModTime, BaseNames), Dirs0, Dirs).
+    map.det_update(DirName, dirinfo(Context, ModTime, BaseNames), Dirs0, Dirs).
+
+:- pred det_insert(K::in, V::in, rbtree(K, V)::in, rbtree(K, V)::out) is det.
+
+det_insert(K, V, !Tree) :-
+    ( insert(K, V, !Tree) ->
+        true
+    ;
+        unexpected($module, $pred, "duplicate key")
+    ).
 
 %-----------------------------------------------------------------------------%
 
@@ -436,8 +457,16 @@ search_files_with_prefix(DirCache, Prefix, Matching) :-
 :- pred search_prefix(string::in, dirname::in, dirinfo::in,
     list(file)::in, list(file)::out) is det.
 
-search_prefix(Prefix, DirName, dirinfo(_ModTime, BaseNames), !Matching) :-
-    search_prefix_2(Prefix, DirName, BaseNames, !Matching).
+search_prefix(Prefix, DirName, dirinfo(Context, _ModTime, BaseNames),
+        !Matching) :-
+    (
+        Context = new_or_cur,
+        search_prefix_2(Prefix, DirName, BaseNames, !Matching)
+    ;
+        Context = top
+    ;
+        Context = bucket
+    ).
 
 :- pred search_prefix_2(string::in, dirname::in, basename_tree::in,
     list(file)::in, list(file)::out) is det.
@@ -471,8 +500,15 @@ all_files(dir_cache(_, Dirs), Map) :-
 :- pred make_combined_map(dirname::in, dirinfo::in,
     rbtree(basename, dirname)::in, rbtree(basename, dirname)::out) is semidet.
 
-make_combined_map(DirName, dirinfo(_ModTime, BaseNames), !Map) :-
-    my_rbtree.foldl(make_combined_map_2(DirName), BaseNames, !Map).
+make_combined_map(DirName, dirinfo(Context, _ModTime, BaseNames), !Map) :-
+    (
+        Context = top
+    ;
+        Context = bucket
+    ;
+        Context = new_or_cur,
+        my_rbtree.foldl(make_combined_map_2(DirName), BaseNames, !Map)
+    ).
 
 :- pred make_combined_map_2(dirname::in, basename::in, unit::in,
     rbtree(basename, dirname)::in, rbtree(basename, dirname)::out) is semidet.
@@ -559,6 +595,54 @@ add_watch(Log, Inotify, dirname(DirName), _, Res0, Res, !IO) :-
 :- func watch_events = list(event_type).
 
 watch_events = [close_write, moved_from, moved_to, delete].
+
+%-----------------------------------------------------------------------------%
+
+:- pred dot_file(string::in) is semidet.
+
+dot_file(S) :-
+    string.prefix(S, ".").
+
+:- pred new_or_cur(string::in) is semidet.
+
+new_or_cur("new").
+new_or_cur("cur").
+
+:- pred new_or_cur_suffix(string::in) is semidet.
+
+new_or_cur_suffix(S) :-
+    % dir.basename and dir.split_name are a bit slow.
+    ( string.suffix(S, "/new")
+    ; string.suffix(S, "/cur")
+    ).
+
+:- pred bucketlike(string::in) is semidet.
+
+bucketlike(S) :-
+    string.to_char_list(S, [X, Y]),
+    lower_hex_digit(X),
+    lower_hex_digit(Y).
+
+:- pred lower_hex_digit(char::in) is semidet.
+
+lower_hex_digit(C) :- char.is_digit(C).
+lower_hex_digit('a').
+lower_hex_digit('b').
+lower_hex_digit('c').
+lower_hex_digit('d').
+lower_hex_digit('e').
+lower_hex_digit('f').
+
+%-----------------------------------------------------------------------------%
+
+:- pred get_time(int::out, io::di, io::uo) is det.
+
+:- pragma foreign_proc("C",
+    get_time(Time::out, _IO0::di, _IO::uo),
+    [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io],
+"
+    Time = (MR_Integer) time(0);
+").
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et
