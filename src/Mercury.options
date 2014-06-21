@@ -3,6 +3,7 @@ MAIN_TARGET = main
 
 # Linking.
 MLLIBS-main += -lsqlite3
+MLLIBS-main += -lssl -lcrypto
 
 # General optimisation flags.
 MCFLAGS += --optimise-constructor-last-call

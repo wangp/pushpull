@@ -57,11 +57,11 @@ read_crlf_line_chop(open(Pipe), Res, !IO) :-
 read_crlf_line_chop(closed, Res, !IO) :-
     Res = error(io.make_io_error("session closed")).
 
-:- pred read_crlf_line(subprocess::in, io.result::out,
+:- pred read_crlf_line(bio::in, io.result::out,
     list(int)::in, list(int)::out, io::di, io::uo) is det.
 
-read_crlf_line(Pipe, Res, !RevBytes, !IO) :-
-    read_byte(Pipe, ResByte, !IO),
+read_crlf_line(Bio, Res, !RevBytes, !IO) :-
+    bio_read_byte(Bio, ResByte, !IO),
     (
         ResByte = ok(Byte),
         (
@@ -72,7 +72,7 @@ read_crlf_line(Pipe, Res, !RevBytes, !IO) :-
             Res = ok
         ;
             cons(Byte, !RevBytes),
-            read_crlf_line(Pipe, Res, !RevBytes, !IO)
+            read_crlf_line(Bio, Res, !RevBytes, !IO)
         )
     ;
         ResByte = eof,
@@ -94,22 +94,28 @@ cr = 13.
 
 %-----------------------------------------------------------------------------%
 
-read_bytes(open(Pipe), NumOctets, Res, !IO) :-
-    read_bytes(Pipe, NumOctets, Res, !IO).
+read_bytes(open(Bio), NumOctets, Res, !IO) :-
+    bio_read_bytes(Bio, NumOctets, Res, !IO).
 read_bytes(closed, _NumOctets, Res, !IO) :-
     Res = error(io.make_io_error("session closed")).
 
 %-----------------------------------------------------------------------------%
 
-write_command_stream(open(Pipe), Tag, Xs, Res, !IO) :-
+write_command_stream(open(Bio), Tag, Xs, Res, !IO) :-
     trace [runtime(env("DEBUG_IMAP")), io(!IO2)] (
         Stream = io.stderr_stream,
         io.write_string(Stream, "\x1B\[32;01m", !IO2),
         list.foldl(io.write_string(Stream), Xs, !IO2),
         io.write_string(Stream, "\x1B\[0m\n", !IO2)
     ),
-    write_command_stream_2(open(Pipe), Tag, Xs, Res, !IO),
-    flush_output(Pipe, !IO).
+    write_command_stream_2(open(Bio), Tag, Xs, Res0, !IO),
+    (
+        Res0 = ok,
+        bio_flush(Bio, Res, !IO)
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
 
 write_command_stream(closed, _, _, Res, !IO) :-
     Res = error("session closed").
@@ -117,21 +123,27 @@ write_command_stream(closed, _, _, Res, !IO) :-
 :- pred write_command_stream_2(pipe::in(open), tag::in, list(string)::in,
     maybe_error::out, io::di, io::uo) is det.
 
-write_command_stream_2(open(Pipe), _Tag, [], Res, !IO) :-
-    write_string(Pipe, crlf, Res, !IO).
+write_command_stream_2(open(Bio), _Tag, [], Res, !IO) :-
+    bio_write_string(Bio, crlf, Res, !IO).
 write_command_stream_2(OpenPipe, Tag, [X | Xs], Res, !IO) :-
-    OpenPipe = open(Pipe),
-    write_string(Pipe, X, Res0, !IO),
+    OpenPipe = open(Bio),
+    bio_write_string(Bio, X, Res0, !IO),
     (
         Res0 = ok,
         ( X = crlf ->
-            flush_output(Pipe, !IO),
-            wait_for_continuation_request(OpenPipe, Tag, ResContinue, !IO),
+            bio_flush(Bio, Res1, !IO),
             (
-                ResContinue = ok,
-                write_command_stream_2(OpenPipe, Tag, Xs, Res, !IO)
+                Res1 = ok,
+                wait_for_continuation_request(OpenPipe, Tag, ResContinue, !IO),
+                (
+                    ResContinue = ok,
+                    write_command_stream_2(OpenPipe, Tag, Xs, Res, !IO)
+                ;
+                    ResContinue = error(Error),
+                    Res = error(Error)
+                )
             ;
-                ResContinue = error(Error),
+                Res1 = error(Error),
                 Res = error(Error)
             )
         ;

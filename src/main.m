@@ -27,6 +27,7 @@
 :- import_module inotify.
 :- import_module log.
 :- import_module log_help.
+:- import_module openssl.
 :- import_module path.
 :- import_module prog_config.
 :- import_module select.
@@ -116,6 +117,7 @@ print_error(Error, !IO) :-
 :- pred log_in(log::in, prog_config::in, database::in, io::di, io::uo) is det.
 
 log_in(Log, Config, Db, !IO) :-
+    openssl.library_init(!IO),
     HostPort = Config ^ hostport,
     UserName = Config ^ username,
     Password = Config ^ password,

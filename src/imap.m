@@ -153,7 +153,7 @@
 :- import_module imap.io.
 :- import_module imap.parsing.
 :- import_module imap.response.
-:- import_module subprocess.
+:- import_module openssl.
 
 :- type imap
     --->    imap(
@@ -163,7 +163,7 @@
             ).
 
 :- type pipe
-    --->    open(subprocess)
+    --->    open(bio)
     ;       closed.
 
 :- type imap_state
@@ -242,42 +242,76 @@
 %-----------------------------------------------------------------------------%
 
 open(HostPort, Res, Alerts, !IO) :-
-    subprocess.spawn("/usr/bin/openssl",
-        ["s_client", "-quiet", "-connect", HostPort], ResSpawn, !IO),
+    connect_handshake(tlsv1_client_method, HostPort, ResBio, !IO),
     (
-        ResSpawn = ok(Proc),
-        Pipe = open(Proc),
-        wait_for_greeting(Pipe, ResGreeting, !IO),
+        ResBio = ok(Bio),
+        wait_for_greeting(open(Bio), ResGreeting, !IO),
         (
             ResGreeting = ok(Greeting),
             (
                 Greeting = ok(RespText),
                 handle_greeting_resp_text(RespText, MaybeCaps, Alerts),
-                make_imap(Proc, not_authenticated, MaybeCaps, IMAP, !IO),
+                make_imap(Bio, not_authenticated, MaybeCaps, IMAP, !IO),
                 Res = ok(IMAP)
             ;
                 Greeting = preauth(RespText),
                 handle_greeting_resp_text(RespText, MaybeCaps, Alerts),
-                make_imap(Proc, authenticated, MaybeCaps, IMAP, !IO),
+                make_imap(Bio, authenticated, MaybeCaps, IMAP, !IO),
                 Res = ok(IMAP)
             ;
                 Greeting = bye(RespText),
                 handle_greeting_resp_text(RespText, _MaybeCaps, Alerts),
-                close_pipes(Proc, !IO),
-                wait_pid(Proc, blocking, _WaitRes, !IO),
                 Res = error("greeted with BYE")
             )
         ;
             ResGreeting = error(Error),
-            close_pipes(Proc, !IO),
-            wait_pid(Proc, blocking, _WaitRes, !IO),
             Res = error(Error),
             Alerts = []
+        ),
+        (
+            Res = ok(_)
+        ;
+            Res = error(_),
+            bio_free_all(Bio, !IO)
         )
     ;
-        ResSpawn = error(Error),
+        ResBio = error(Error),
         Res = error(Error),
         Alerts = []
+    ).
+
+    % XXX verify certificate
+:- pred connect_handshake(method::in, string::in, maybe_error(bio)::out,
+    io::di, io::uo) is det.
+
+connect_handshake(Method, HostPort, Res, !IO) :-
+    setup(Method, HostPort, ResBio, !IO),
+    (
+        ResBio = ok(Bio),
+        bio_do_connect(Bio, ResConnect, !IO),
+        (
+            ResConnect = ok,
+            bio_do_handshake(Bio, ResHandshake, !IO),
+            (
+                ResHandshake = ok,
+                Res = ok(Bio)
+            ;
+                ResHandshake = error(Error),
+                Res = error(Error)
+            )
+        ;
+            ResConnect = error(Error),
+            Res = error(Error)
+        ),
+        (
+            Res = ok(_)
+        ;
+            Res = error(_),
+            bio_free_all(Bio, !IO)
+        )
+    ;
+        ResBio = error(Error),
+        Res = error(Error)
     ).
 
 :- pred wait_for_greeting(pipe::in, maybe_error(greeting)::out,
@@ -344,11 +378,11 @@ handle_greeting_resp_text(RespText, MaybeCaps, Alerts) :-
         Alerts = []
     ).
 
-:- pred make_imap(subprocess::in, connection_state::in,
+:- pred make_imap(bio::in, connection_state::in,
     maybe(capability_data)::in, imap::out, io::di, io::uo) is det.
 
-make_imap(Proc, ConnState, MaybeCaps, IMAP, !IO) :-
-    store.new_mutvar(open(Proc), PipeMutvar, !IO),
+make_imap(Bio, ConnState, MaybeCaps, IMAP, !IO) :-
+    store.new_mutvar(open(Bio), PipeMutvar, !IO),
     store.new_mutvar(1, TagMutvar, !IO),
     store.new_mutvar(imap_state(ConnState, MaybeCaps, no), StateMutvar, !IO),
     IMAP = imap(PipeMutvar, TagMutvar, StateMutvar).
@@ -393,9 +427,8 @@ close_pipe_on_logout(IMAP, !IO) :-
         IMAP = imap(PipeMutvar, _TagMutvar, _StateMutvar),
         get_mutvar(PipeMutvar, MaybePipe, !IO),
         (
-            MaybePipe = open(Proc),
-            close_pipes(Proc, !IO),
-            wait_pid(Proc, blocking, _WaitRes, !IO),
+            MaybePipe = open(Bio),
+            bio_free_all(Bio, !IO),
             set_mutvar(PipeMutvar, closed, !IO)
         ;
             MaybePipe = closed
@@ -1300,9 +1333,8 @@ apply_idle_done_response(ResumeConnState, Response, Result, !State, unit, unit,
 get_read_filedes(IMAP, Res, !IO) :-
     get_pipe(IMAP, Pipe, !IO),
     (
-        Pipe = open(Proc),
-        get_read_filedes(Proc, Fd),
-        Res = ok(Fd)
+        Pipe = open(Bio),
+        bio_get_fd(Bio, Res, !IO)
     ;
         Pipe = closed,
         Res = error("connection closed")
