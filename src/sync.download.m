@@ -27,6 +27,7 @@
 :- import_module solutions.
 :- import_module string.
 
+:- import_module binary_string.
 :- import_module crc8.
 :- import_module flag_delta.
 :- import_module imap.time.
@@ -210,12 +211,17 @@ find_uid_fetch_result(FetchResults, UID, MsgAtts) :-
         (pred(_ - Atts::in) is semidet :- list.member(uid(UID), Atts)),
         FetchResults, _MsgSeqNr - MsgAtts).
 
-:- pred get_rfc822_att(msg_atts::in, string::out) is semidet.
+:- pred get_rfc822_att(msg_atts::in, message(crlf)::out) is semidet.
 
-get_rfc822_att(Atts, String) :-
+get_rfc822_att(Atts, message(BinaryString)) :-
     solutions(pred(X::out) is nondet :- member(rfc822(X), Atts), [NString]),
     NString = yes(IString),
-    String = from_imap_string(IString).
+    (
+        IString = quoted(S),
+        BinaryString = from_string(S)
+    ;
+        IString = literal(BinaryString)
+    ).
 
 :- pred get_flags(msg_atts::in, set(flag)::out) is semidet.
 
@@ -238,7 +244,7 @@ get_internaldate(Atts, DateTime) :-
 
 :- pred save_message_and_pair(log::in, prog_config::in, database::in,
     mailbox_pair::in, local_mailbox_path::in, int::in,
-    unpaired_remote_message::in, string::in, set(flag)::in, date_time::in,
+    unpaired_remote_message::in, message(lf)::in, set(flag)::in, date_time::in,
     maybe_error::out, int::in, int::out, dir_cache::in, dir_cache::out,
     io::di, io::uo) is det.
 
@@ -294,7 +300,7 @@ save_message_and_pair(Log, Config, Database, MailboxPair, LocalMailboxPath,
     ).
 
 :- pred match_unpaired_local_message(log::in, database::in, mailbox_pair::in,
-    dir_cache::in, maybe_message_id::in, string::in,
+    dir_cache::in, maybe_message_id::in, message(lf)::in,
     maybe_error(maybe(unpaired_local_message))::out, io::di, io::uo) is det.
 
 match_unpaired_local_message(Log, Database, MailboxPair, DirCache,
@@ -311,7 +317,7 @@ match_unpaired_local_message(Log, Database, MailboxPair, DirCache,
     ).
 
 :- pred verify_unpaired_local_messages(log::in, dir_cache::in,
-    list(unpaired_local_message)::in, string::in,
+    list(unpaired_local_message)::in, message(lf)::in,
     maybe_error(maybe(unpaired_local_message))::out, io::di, io::uo) is det.
 
 verify_unpaired_local_messages(Log, DirCache, UnpairedLocals, RawMessageLf,
@@ -337,11 +343,11 @@ verify_unpaired_local_messages(Log, DirCache, UnpairedLocals, RawMessageLf,
     ).
 
 :- pred verify_unpaired_local_message(log::in, dir_cache::in,
-    unpaired_local_message::in, string::in, maybe_error(bool)::out,
+    unpaired_local_message::in, message(lf)::in, maybe_error(bool)::out,
     io::di, io::uo) is det.
 
-verify_unpaired_local_message(Log, DirCache, UnpairedLocal, RawMessageLf, Res,
-        !IO) :-
+verify_unpaired_local_message(Log, DirCache, UnpairedLocal,
+        message(RawMessageLf), Res, !IO) :-
     UnpairedLocal = unpaired_local_message(_PairingId, Unique),
     find_file(DirCache, Unique, ResFind),
     (
@@ -358,8 +364,8 @@ verify_unpaired_local_message(Log, DirCache, UnpairedLocal, RawMessageLf, Res,
     ).
 
 :- pred save_raw_message(log::in, prog_config::in, local_mailbox_path::in,
-    uid::in, maybe_message_id::in, string::in, set(flag)::in, date_time::in,
-    int::in, int::in, save_result::out, io::di, io::uo) is det.
+    uid::in, maybe_message_id::in, message(lf)::in, set(flag)::in,
+    date_time::in, int::in, int::in, save_result::out, io::di, io::uo) is det.
 
 save_raw_message(Log, Config, local_mailbox_path(DirName), uid(UID), MessageId,
         RawMessageLf, Flags, InternalDate, Count, Total, Res, !IO) :-
@@ -396,7 +402,7 @@ save_raw_message(Log, Config, local_mailbox_path(DirName), uid(UID), MessageId,
     ).
 
 :- pred save_raw_message_2(log::in, prog_config::in, uid::in, dirname::in,
-    string::in, set(flag)::in, date_time::in, int::in, int::in,
+    message(lf)::in, set(flag)::in, date_time::in, int::in, int::in,
     save_result::out, io::di, io::uo) is det.
 
 save_raw_message_2(Log, Config, uid(UID), dirname(SubDirName), RawMessageLf,
@@ -432,12 +438,12 @@ save_raw_message_2(Log, Config, uid(UID), dirname(SubDirName), RawMessageLf,
     ).
 
 :- pred do_save_raw_message(prog_config::in, path::in, dirname::in, path::in,
-    filedes::in, string::in, date_time::in, maybe_error::out, io::di, io::uo)
-    is det.
+    filedes::in, message(lf)::in, date_time::in, maybe_error::out,
+    io::di, io::uo) is det.
 
 do_save_raw_message(Config, path(TmpPath), DestDir, path(DestPath),
-        Fd, RawMessageLf, InternalDate, Res, !IO) :-
-    lowio.write_string(Fd, RawMessageLf, ResWrite, !IO),
+        Fd, message(RawMessageLf), InternalDate, Res, !IO) :-
+    lowio.write_binary_string(Fd, RawMessageLf, ResWrite, !IO),
     (
         ResWrite = ok,
         maybe_fsync(Config, Fd, ResFsync, !IO),
@@ -532,10 +538,6 @@ hex_bits(MessageId) = Str :-
         Crc = crc_8([])
     ),
     string.format("%02x", [i(Crc)], Str).
-
-:- func crlf_to_lf(string) = string.
-
-crlf_to_lf(S) = string.replace_all(S, "\r\n", "\n").
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

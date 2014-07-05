@@ -13,6 +13,7 @@ MCFLAGS-lowio += --no-ansi-c
 MCFLAGS-select += --no-ansi-c
 MCFLAGS-signal += --no-ansi-c
 MCFLAGS-sync.flags_local += --exec-trace-tail-rec
+CFLAGS-binary_string += -D_GNU_SOURCE
 CFLAGS-imap.time += -D_BSD_SOURCE
 CFLAGS-string_util += -D_GNU_SOURCE
 CFLAGS-sys_util += -D_BSD_SOURCE

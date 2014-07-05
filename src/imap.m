@@ -13,6 +13,7 @@
 :- include_module imap.time.
 :- include_module imap.types.
 
+:- import_module binary_string.
 :- import_module imap.types.
 
 %-----------------------------------------------------------------------------%
@@ -85,7 +86,8 @@
     io::di, io::uo) is det.
 
 :- pred append(imap::in, mailbox::in, list(flag)::in, maybe(date_time)::in,
-    string::in, imap_result(maybe(appenduid))::out, io::di, io::uo) is det.
+    binary_string::in, imap_result(maybe(appenduid))::out, io::di, io::uo)
+    is det.
 
 :- type uid_search_result
     --->    uid_search_result(
@@ -900,8 +902,8 @@ append(IMAP, Mailbox, Flags, MaybeDateTime, Content, Res, !IO) :-
     ).
 
 :- pred do_append(mailbox::in, list(flag)::in, maybe(date_time)::in,
-    string::in, imap::in, imap_result(maybe(appenduid))::out, io::di, io::uo)
-    is det.
+    binary_string::in, imap::in, imap_result(maybe(appenduid))::out,
+    io::di, io::uo) is det.
 
 do_append(Mailbox, Flags, MaybeDateTime, Content, IMAP, Res, !IO) :-
     get_new_tag(IMAP, Pipe, Tag, !IO),

@@ -7,7 +7,9 @@
 :- import_module io.
 :- import_module maybe.
 
-:- pred verify_file(string::in, string::in, maybe_error(bool)::out,
+:- import_module binary_string.
+
+:- pred verify_file(string::in, binary_string::in, maybe_error(bool)::out,
     io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
@@ -16,20 +18,19 @@
 :- implementation.
 
 :- import_module int.
-:- import_module string.
 
 verify_file(FileName, Expected, Res, !IO) :-
     io.open_binary_input(FileName, ResOpen, !IO),
     (
         ResOpen = ok(Stream),
-        verify(Stream, Expected, 0, count_code_units(Expected), Res, !IO),
+        verify(Stream, Expected, 0, length(Expected), Res, !IO),
         io.close_binary_input(Stream, !IO)
     ;
         ResOpen = error(Error),
         Res = error(io.error_message(Error))
     ).
 
-:- pred verify(io.binary_input_stream::in, string::in, int::in, int::in,
+:- pred verify(io.binary_input_stream::in, binary_string::in, int::in, int::in,
     maybe_error(bool)::out, io::di, io::uo) is det.
 
 verify(Stream, Expected, Pos0, EndPos, Res, !IO) :-
@@ -37,7 +38,7 @@ verify(Stream, Expected, Pos0, EndPos, Res, !IO) :-
     (
         ReadRes = ok(Byte),
         ( Pos0 < EndPos ->
-            ( string.unsafe_index_code_unit(Expected, Pos0, Byte) ->
+            ( binary_string.unsafe_byte(Expected, Pos0, Byte) ->
                 verify(Stream, Expected, Pos0 + 1, EndPos, Res, !IO)
             ;
                 Res = ok(no)

@@ -20,7 +20,7 @@
 
     % Valid only in Authenticated or Selected state.
 :- type command_auth
-    --->    append(mailbox, list(flag), maybe(date_time), string)
+    --->    append(mailbox, list(flag), maybe(date_time), binary_string)
     %;      create
     %;      delete
     ;       select(mailbox)
@@ -56,16 +56,17 @@
     ;       search(search)
     ;       uid_search(search).
 
-:- func crlf = string.
-
-    % A crlf in the command stream means the client must wait for a
+    % A crlf_wait in the command stream means the client must wait for a
     % continuation response from the server before continuing with the rest of
-    % the stream.  The final crlf that terminates the command is NOT in the
-    % command stream.
-    %
-:- pred make_command_stream(command::in, list(string)::out) is det.
+    % the stream.
+:- type chunk
+    --->    string(string)
+    ;       binary(binary_string)
+    ;       crlf_wait.
 
-:- func idle_done_command_stream = list(string).
+:- pred make_command_stream(command::in, list(chunk)::out) is det.
+
+:- func idle_done_command_stream = list(chunk).
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -77,7 +78,7 @@
 :- import_module require.
 :- import_module string.
 
-:- type acc == cord(string). % could probably be reverse list
+:- type acc == cord(chunk). % could probably be reverse list
 
 :- type sp ---> sp.
 :- type dquote ---> dquote.
@@ -88,13 +89,11 @@
 
 %-----------------------------------------------------------------------------%
 
-crlf = "\r\n".
-
 make_command_stream(Command, List) :-
     add(Command, init, Acc),
     List = list(Acc).
 
-idle_done_command_stream = ["DONE"].
+idle_done_command_stream = [string("DONE")].
 
 :- pred add_sp_sep_list(list(T)::in, acc::in, acc::out) is det <= add(T).
 
@@ -114,8 +113,12 @@ add_sp_then(X) -->
     add(no, !Acc)
 ].
 
+:- instance add(chunk) where [
+    add(X, A, snoc(A, X))
+].
+
 :- instance add(string) where [
-    add(S, A, snoc(A, S))
+    add(S, A, snoc(A, string(S)))
 ].
 
 :- instance add(sp) where [
@@ -191,11 +194,11 @@ add_sp_then(X) -->
         add(escape_for_quoted_string(Q), !Acc),
         add(dquote, !Acc)
     ;
-        String = literal(L),
-        BraceCount = string.format("{%d}", [i(count_code_units(L))]),
+        String = literal(Binary),
+        BraceCount = string.format("{%d}", [i(length(Binary))]),
         add(BraceCount, !Acc),
-        add(crlf, !Acc), % Need to wait for server response.
-        add(L, !Acc)
+        add(crlf_wait, !Acc), % Need to wait for server response.
+        add(binary(Binary), !Acc)
     )
 ].
 

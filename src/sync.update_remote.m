@@ -28,6 +28,7 @@
 :- import_module string.
 :- import_module unit.
 
+:- import_module binary_string.
 :- import_module database.
 :- import_module flag_delta.
 :- import_module log.
@@ -255,11 +256,12 @@ is_message_id_att(Att, MaybeMessageId) :-
     strcase_equal(FieldName, "Message-Id"),
     (
         (
-            NString = yes(quoted(S))
+            NString = yes(quoted(S)),
+            Content = binary_string.from_string(S)
         ;
-            NString = yes(literal(S))
+            NString = yes(literal(Content))
         ),
-        read_message_id_from_message_crlf(S, ReadMessageId),
+        read_message_id_from_message_crlf(message(Content), ReadMessageId),
         (
             ReadMessageId = yes(MessageId),
             MaybeMessageId = message_id(MessageId)

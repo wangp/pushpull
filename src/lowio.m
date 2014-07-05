@@ -6,6 +6,8 @@
 :- import_module io.
 :- import_module maybe.
 
+:- import_module binary_string.
+
 :- type filedes
     --->    filedes(int).
 
@@ -21,6 +23,9 @@
 
 :- pred write_string(filedes::in, string::in, maybe_error::out, io::di, io::uo)
     is det.
+
+:- pred write_binary_string(filedes::in, binary_string::in, maybe_error::out,
+    io::di, io::uo) is det.
 
 :- pred fsync(filedes::in, maybe_error::out, io::di, io::uo) is det.
 
@@ -120,15 +125,49 @@ write_string(filedes(Fd), String, Res, !IO) :-
     [will_not_call_mercury, promise_pure, not_thread_safe, tabled_for_io,
         may_not_duplicate],
 "
+    RC = do_write(Fd, String, Length, &Error, MR_ALLOC_ID);
+").
+
+write_binary_string(filedes(Fd), String, Res, !IO) :-
+    write_binary_string_2(Fd, String, RC, Error, !IO),
+    ( RC = length(String) ->
+        Res = ok
+    ; RC = -1 ->
+        Res = error(Error)
+    ;
+        Res = error("incomplete write")
+    ).
+
+:- pred write_binary_string_2(int::in, binary_string::in, int::out,
+    string::out, io::di, io::uo) is det.
+
+:- pragma foreign_proc("C",
+    write_binary_string_2(Fd::in, String::in, RC::out, Error::out,
+        _IO0::di, _IO::uo),
+    [will_not_call_mercury, promise_pure, not_thread_safe, tabled_for_io,
+        may_not_duplicate],
+"
+    RC = do_write(Fd, String->data, String->len, &Error, MR_ALLOC_ID);
+").
+
+:- pragma foreign_decl("C", local,
+"
+static int
+do_write(int Fd, const void *Buf, int Length, MR_String *Error,
+    MR_AllocSiteInfoPtr alloc_id)
+{
+    int RC;
     /* XXX handle EINTR after some partial bytes written */
     do {
-        RC = write(Fd, String, Length);
+        RC = write(Fd, Buf, Length);
     } while (errno == EINTR);
     if (Fd == -1) {
-        Error = MR_make_string(MR_ALLOC_ID, ""%s"", strerror(errno));
+        *Error = MR_make_string(alloc_id, ""%s"", strerror(errno));
     } else {
-        Error = MR_make_string_const("""");
+        *Error = MR_make_string_const("""");
     }
+    return RC;
+}
 ").
 
 %-----------------------------------------------------------------------------%

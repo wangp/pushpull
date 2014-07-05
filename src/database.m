@@ -236,6 +236,7 @@
 :- import_module pair.
 :- import_module string.
 
+:- import_module binary_string.
 :- import_module sqlite3.
 
 %-----------------------------------------------------------------------------%
@@ -297,6 +298,10 @@
 
 :- instance bind_value(string) where [
     bind_value(S) = text_by_reference(S)
+].
+
+:- instance bind_value(binary_string) where [
+    bind_value(S) = blob_by_reference(unsafe_pointer(S), length(S))
 ].
 
 :- instance bind_value(mailbox) where [

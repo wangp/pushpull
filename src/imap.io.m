@@ -6,10 +6,10 @@
 :- pred read_crlf_line_chop(pipe::in, io.result(list(int))::out,
     io::di, io::uo) is det.
 
-:- pred read_bytes(pipe::in, int::in, io.res(list(int))::out,
+:- pred read_bytes(pipe::in, int::in, io.result(binary_string)::out,
     io::di, io::uo) is det.
 
-:- pred write_command_stream(pipe::in, tag::in, list(string)::in,
+:- pred write_command_stream(pipe::in, tag::in, list(chunk)::in,
     maybe_error::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
@@ -103,10 +103,7 @@ read_bytes(closed, _NumOctets, Res, !IO) :-
 
 write_command_stream(open(Bio), Tag, Xs, Res, !IO) :-
     trace [runtime(env("DEBUG_IMAP")), io(!IO2)] (
-        Stream = io.stderr_stream,
-        io.write_string(Stream, "\x1B\[32;01m", !IO2),
-        list.foldl(io.write_string(Stream), Xs, !IO2),
-        io.write_string(Stream, "\x1B\[0m\n", !IO2)
+        debug_chunks(io.stderr_stream, Xs, !IO2)
     ),
     write_command_stream_2(open(Bio), Tag, Xs, Res0, !IO),
     (
@@ -120,17 +117,23 @@ write_command_stream(open(Bio), Tag, Xs, Res, !IO) :-
 write_command_stream(closed, _, _, Res, !IO) :-
     Res = error("session closed").
 
-:- pred write_command_stream_2(pipe::in(open), tag::in, list(string)::in,
+:- pred write_command_stream_2(pipe::in(open), tag::in, list(chunk)::in,
     maybe_error::out, io::di, io::uo) is det.
 
 write_command_stream_2(open(Bio), _Tag, [], Res, !IO) :-
     bio_write_string(Bio, crlf, Res, !IO).
 write_command_stream_2(OpenPipe, Tag, [X | Xs], Res, !IO) :-
     OpenPipe = open(Bio),
-    bio_write_string(Bio, X, Res0, !IO),
+    write_chunk(Bio, X, Res0, !IO),
     (
         Res0 = ok,
-        ( X = crlf ->
+        (
+            ( X = string(_)
+            ; X = binary(_)
+            ),
+            write_command_stream_2(OpenPipe, Tag, Xs, Res, !IO)
+        ;
+            X = crlf_wait,
             bio_flush(Bio, Res1, !IO),
             (
                 Res1 = ok,
@@ -146,12 +149,25 @@ write_command_stream_2(OpenPipe, Tag, [X | Xs], Res, !IO) :-
                 Res1 = error(Error),
                 Res = error(Error)
             )
-        ;
-            write_command_stream_2(OpenPipe, Tag, Xs, Res, !IO)
         )
     ;
         Res0 = error(Error),
         Res = error(Error)
+    ).
+
+:- pred write_chunk(bio::in, chunk::in, maybe_error::out, io::di, io::uo)
+    is det.
+
+write_chunk(Bio, Chunk, Res, !IO) :-
+    (
+        Chunk = string(String),
+        bio_write_string(Bio, String, Res, !IO)
+    ;
+        Chunk = binary(BinaryString),
+        bio_write_binary_string(Bio, BinaryString, Res, !IO)
+    ;
+        Chunk = crlf_wait,
+        bio_write_string(Bio, crlf, Res, !IO)
     ).
 
 :- pred wait_for_continuation_request(pipe::in(open), tag::in,
@@ -179,6 +195,34 @@ wait_for_continuation_request(Pipe, Tag, Res, !IO) :-
     ;
         Res0 = error(Error),
         Res = error(Error)
+    ).
+
+:- func crlf = string.
+
+crlf = "\r\n".
+
+%-----------------------------------------------------------------------------%
+
+:- pred debug_chunks(io.output_stream::in, list(chunk)::in,
+    io::di, io::uo) is det.
+
+debug_chunks(Stream, Xs, !IO) :-
+    io.write_string(Stream, "\x1B\[32;01m", !IO),
+    list.foldl(debug_chunk(Stream), Xs, !IO),
+    io.write_string(Stream, "\x1B\[0m\n", !IO).
+
+:- pred debug_chunk(io.output_stream::in, chunk::in, io::di, io::uo) is det.
+
+debug_chunk(Stream, X, !IO) :-
+    (
+        X = string(String),
+        io.write_string(Stream, String, !IO)
+    ;
+        X = binary(BinaryString),
+        io.format(Stream, "<%d bytes>", [i(length(BinaryString))], !IO)
+    ;
+        X = crlf_wait,
+        io.write_string(Stream, "<wait>", !IO)
     ).
 
 %-----------------------------------------------------------------------------%

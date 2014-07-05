@@ -5,6 +5,14 @@
 
 :- import_module io.
 
+:- import_module binary_string.
+
+:- type message(T)
+    --->    message(binary_string).
+
+:- type crlf        ---> crlf.
+:- type lf          ---> lf.
+
 :- type read_message_id_result
     --->    yes(string)
     ;       no
@@ -17,10 +25,12 @@
     % The input string is a message, assumed to use LF or CRLF ending
     % respectively.
     %
-:- pred read_message_id_from_message_lf(string::in,
+:- pred read_message_id_from_message_lf(message(lf)::in,
     read_message_id_result::out) is det.
-:- pred read_message_id_from_message_crlf(string::in,
+:- pred read_message_id_from_message_crlf(message(crlf)::in,
     read_message_id_result::out) is det.
+
+:- func crlf_to_lf(message(crlf)) = message(lf).
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -104,13 +114,13 @@ chop_crlf_or_lf(Line0, Line) :-
 
 %-----------------------------------------------------------------------------%
 
-read_message_id_from_message_crlf(Input, Res) :-
-    read_message_id_from_message(Input, "\r\n", Res).
+read_message_id_from_message_crlf(message(Input), Res) :-
+    read_message_id_from_message(Input, from_string("\r\n"), Res).
 
-read_message_id_from_message_lf(Input, Res) :-
-    read_message_id_from_message(Input, "\n", Res).
+read_message_id_from_message_lf(message(Input), Res) :-
+    read_message_id_from_message(Input, from_string("\n"), Res).
 
-:- pred read_message_id_from_message(string::in, string::in,
+:- pred read_message_id_from_message(binary_string::in, binary_string::in,
     read_message_id_result::out) is det.
 
 read_message_id_from_message(Input, Delim, Res) :-
@@ -126,30 +136,33 @@ read_message_id_from_message(Input, Delim, Res) :-
         Res = error(Error)
     ).
 
-:- pred read_header_lines_from_string(string::in, string::in, int::in, int::in,
-    list(string)::out, intermediate_result::out) is det.
+:- pred read_header_lines_from_string(binary_string::in, binary_string::in,
+    int::in, int::in, list(string)::out, intermediate_result::out) is det.
 
 read_header_lines_from_string(Input, Delim, Pos0, EndPos, Lines, Res) :-
-    ( Pos0 < EndPos ->
-        ( string.sub_string_search_start(Input, Delim, Pos0, Pos1) ->
-            ( Pos1 = Pos0 ->
-                % Blank line separates header and body.
-                Lines = [],
-                Res = ok
-            ;
-                string.unsafe_between(Input, Pos0, Pos1, Line),
-                Pos2 = Pos1 + length(Delim),
-                read_header_lines_from_string(Input, Delim, Pos2, EndPos,
-                    Lines0, Res),
-                Lines = [Line | Lines0]
-            )
-        ;
+    ( Pos0 >= EndPos ->
+        Lines = [],
+        Res = ok
+    ; binary_string.sub_string_search_start(Input, Delim, Pos0, Pos1) ->
+        ( Pos1 = Pos0 ->
+            % Blank line separates header and body.
             Lines = [],
-            Res = format_error("incomplete line")
+            Res = ok
+        ;
+            Pos2 = Pos1 + length(Delim),
+            % Ignore non-UTF-8 lines.
+            ( string_between(Input, Pos0, Pos1, Line) ->
+                Lines = [Line | Lines0],
+                read_header_lines_from_string(Input, Delim, Pos2, EndPos,
+                    Lines0, Res)
+            ;
+                read_header_lines_from_string(Input, Delim, Pos2, EndPos,
+                    Lines, Res)
+            )
         )
     ;
         Lines = [],
-        Res = ok
+        Res = format_error("incomplete line")
     ).
 
 %-----------------------------------------------------------------------------%
@@ -247,6 +260,13 @@ plausible_msg_id_char(C) :-
     C \= ('@'),
     C \= ('<'),
     C \= ('>').
+
+%-----------------------------------------------------------------------------%
+
+crlf_to_lf(message(BinaryStringCrLf)) = message(BinaryStringLf) :-
+    CrLf = from_string("\r\n"),
+    Lf = from_string("\n"),
+    binary_string.replace_all(BinaryStringCrLf, CrLf, Lf, BinaryStringLf).
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

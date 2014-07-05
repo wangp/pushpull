@@ -23,6 +23,7 @@
 :- import_module string.
 :- import_module time.
 
+:- import_module binary_string.
 :- import_module flag_delta.
 :- import_module imap.time.
 :- import_module log.
@@ -33,7 +34,7 @@
 
 :- type file_data
     --->    file_data(
-                content :: string,
+                content :: message(lf), % assumed
                 modtime :: time_t
             ).
 
@@ -159,16 +160,17 @@ get_file_data(path(Path), Res, !IO) :-
     io.file_modification_time(Path, ResTime, !IO),
     (
         ResTime = ok(ModTime),
-        io.open_input(Path, ResOpen, !IO),
+        io.open_binary_input(Path, ResOpen, !IO),
         (
             ResOpen = ok(Stream),
-            io.read_file_as_string(Stream, ResRead, !IO),
-            io.close_input(Stream, !IO),
+            io.read_binary_file_as_bitmap(Stream, ResRead, !IO),
+            io.close_binary_input(Stream, !IO),
             (
-                ResRead = ok(Content),
+                ResRead = ok(Bitmap),
+                Content = message(from_bitmap(Bitmap)),
                 Res = ok(file_data(Content, ModTime))
             ;
-                ResRead = error(_, Error),
+                ResRead = error(Error),
                 Res = error(Error)
             )
         ;
@@ -199,7 +201,7 @@ do_upload_message(Log, IMAP, MailboxPair, FileData, Flags, Res, !IO) :-
         PriorModSeqValue = no
     ),
 
-    FileData = file_data(ContentLf, ModTime),
+    FileData = file_data(Message @ message(ContentLf), ModTime),
     DateTime = make_date_time(ModTime),
     append(IMAP, MailboxName, to_sorted_list(Flags), yes(DateTime), ContentLf,
         result(ResAppend, Text, Alerts), !IO),
@@ -207,7 +209,7 @@ do_upload_message(Log, IMAP, MailboxPair, FileData, Flags, Res, !IO) :-
     (
         ResAppend = ok_with_data(MaybeAppendUID),
         log_debug(Log, Text, !IO),
-        get_appended_uid(Log, IMAP, UIDValidity, MaybeAppendUID, ContentLf,
+        get_appended_uid(Log, IMAP, UIDValidity, MaybeAppendUID, Message,
             PriorModSeqValue, Res, !IO)
     ;
         ( ResAppend = no
@@ -220,10 +222,10 @@ do_upload_message(Log, IMAP, MailboxPair, FileData, Flags, Res, !IO) :-
     ).
 
 :- pred get_appended_uid(log::in, imap::in, uidvalidity::in,
-    maybe(appenduid)::in, string::in, maybe(mod_seq_value)::in,
+    maybe(appenduid)::in, message(lf)::in, maybe(mod_seq_value)::in,
     maybe_error(maybe(uid))::out, io::di, io::uo) is det.
 
-get_appended_uid(Log, IMAP, MailboxUIDValidity, MaybeAppendUID, ContentLf,
+get_appended_uid(Log, IMAP, MailboxUIDValidity, MaybeAppendUID, Message,
         PriorModSeqValue, Res, !IO) :-
     % In the best case the server sent an APPENDUID response with the UID.
     % Otherwise we search the mailbox for the Message-Id (if it's unique).
@@ -234,16 +236,16 @@ get_appended_uid(Log, IMAP, MailboxUIDValidity, MaybeAppendUID, ContentLf,
     ->
         Res = ok(yes(UID))
     ;
-        get_appended_uid_fallback(Log, IMAP, ContentLf, PriorModSeqValue, Res,
+        get_appended_uid_fallback(Log, IMAP, Message, PriorModSeqValue, Res,
             !IO)
     ).
 
-:- pred get_appended_uid_fallback(log::in, imap::in, string::in,
+:- pred get_appended_uid_fallback(log::in, imap::in, message(lf)::in,
     maybe(mod_seq_value)::in, maybe_error(maybe(uid))::out, io::di, io::uo)
     is det.
 
-get_appended_uid_fallback(Log, IMAP, ContentLf, PriorModSeqValue, Res, !IO) :-
-    read_message_id_from_message_lf(ContentLf, ReadMessageId),
+get_appended_uid_fallback(Log, IMAP, Message, PriorModSeqValue, Res, !IO) :-
+    read_message_id_from_message_lf(Message, ReadMessageId),
     (
         ReadMessageId = yes(MessageId),
         SearchKey0 = header(make_astring("Message-Id"),

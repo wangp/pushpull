@@ -6,6 +6,8 @@
 :- import_module integer.
 :- import_module set.
 
+:- import_module binary_string.
+
 :- type atom
     --->    atom(string).           % 1*ATOM-CHAR (keep uppercased)
 
@@ -15,7 +17,7 @@
 
 :- type imap_string
     --->    quoted(string)          % *QUOTED-CHAR (kept unescaped)
-    ;       literal(string).        % *CHAR8
+    ;       literal(binary_string). % *CHAR8
 
 :- type nstring == maybe(imap_string).
 
@@ -295,8 +297,6 @@
 
 :- func make_astring(string) = astring.
 
-:- func from_imap_string(imap_string) = string.
-
 :- pred system_flag(atom::in, system_flag::out) is semidet.
 
 :- pred month(string, month).
@@ -395,11 +395,8 @@ make_astring(S) = AString :-
         % Should use literal if S too long.
         AString = imap_string(quoted(S))
     ;
-        AString = imap_string(literal(S))
+        AString = imap_string(literal(from_string(S)))
     ).
-
-from_imap_string(quoted(S)) = S.
-from_imap_string(literal(S)) = S.
 
 %-----------------------------------------------------------------------------%
 

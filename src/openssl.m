@@ -4,8 +4,9 @@
 :- interface.
 
 :- import_module io.
-:- import_module list.
 :- import_module maybe.
+
+:- import_module binary_string.
 
 :- type method
     --->    tlsv1_client_method.
@@ -27,11 +28,14 @@
 
 :- pred bio_read_byte(bio::in, io.result(int)::out, io::di, io::uo) is det.
 
-:- pred bio_read_bytes(bio::in, int::in, io.res(list(int))::out,
+:- pred bio_read_bytes(bio::in, int::in, io.result(binary_string)::out,
     io::di, io::uo) is det.
 
 :- pred bio_write_string(bio::in, string::in, maybe_error::out, io::di, io::uo)
     is det.
+
+:- pred bio_write_binary_string(bio::in, binary_string::in, maybe_error::out,
+    io::di, io::uo) is det.
 
 :- pred bio_flush(bio::in, maybe_error::out, io::di, io::uo) is det.
 
@@ -42,6 +46,7 @@
 
 :- import_module bool.
 :- import_module int.
+:- import_module list.
 :- import_module string.
 
 :- type method_ptr.
@@ -242,44 +247,67 @@ bio_read_byte(Bio, Res, !IO) :-
 %-----------------------------------------------------------------------------%
 
 bio_read_bytes(Bio, NumOctets, Res, !IO) :-
-    read_bytes_loop(Bio, NumOctets, Res0, [], RevBytes, !IO),
-    (
-        Res0 = ok,
-        Res = ok(reverse(RevBytes))
-    ;
-        Res0 = error(Error),
-        Res = error(Error)
-    ).
-
-:- pred read_bytes_loop(bio::in, int::in, io.res::out,
-    list(int)::in, list(int)::out, io::di, io::uo) is det.
-
-read_bytes_loop(Bio, NumOctets, Res, !Acc, !IO) :-
-    ( NumOctets =< 0 ->
-        Res = ok
-    ;
-        bio_read_byte(Bio, Res0, !IO),
-        (
-            Res0 = ok(Byte),
-            cons(Byte, !Acc),
-            read_bytes_loop(Bio, NumOctets - 1, Res, !Acc, !IO)
+    bio_read_bytes_2(Bio, NumOctets, Error, NumRead, BinaryString, !IO),
+    ( Error = 0 ->
+        ( NumRead = NumOctets ->
+            Res = ok(BinaryString)
         ;
-            Res0 = eof,
-            Res = error(io.make_io_error("unexpected eof"))
-        ;
-            Res0 = error(Error),
-            Res = error(Error)
+            string.format("read %d bytes but expected %d bytes",
+                [i(NumRead), i(NumOctets)], Message),
+            Res = error(io.make_io_error(Message))
         )
+    ; Error = -2 ->
+        Res = error(io.make_io_error("read not implemented for this BIO type"))
+    ;
+        Res = eof
     ).
+
+:- pred bio_read_bytes_2(bio::in, int::in, int::out, int::out,
+    binary_string::uo, io::di, io::uo) is det.
+
+:- pragma foreign_proc("C",
+    bio_read_bytes_2(Bio::in, NumOctets::in, Error::out, NumRead::out,
+        BinaryString::uo, _IO0::di, _IO::uo),
+    [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
+        may_not_duplicate],
+"
+    unsigned char *data;
+
+    data = allocate_binary_string_buffer(NumOctets, MR_ALLOC_ID);
+    NumRead = 0;
+    Error = 0;
+
+    while (NumRead < NumOctets) {
+        const int remaining = NumOctets - NumRead;
+        const int x = BIO_read(Bio, data + NumRead, NumOctets - NumRead);
+
+        /* We set SSL_MODE_AUTO_RETRY so we should not need to retry. */
+        if (x <= 0) {
+            Error = x;
+            break;
+        }
+
+        NumRead += x;
+    }
+
+    if (Error == 0 && NumRead == NumOctets) {
+        BinaryString = make_binary_string(NumOctets, data, MR_ALLOC_ID);
+    } else {
+        BinaryString = NULL;
+    }
+").
 
 %-----------------------------------------------------------------------------%
 
 bio_write_string(Bio, String, Res, !IO) :-
-    string.count_code_units(String, Length),
+    bio_write_binary_string(Bio, from_string(String), Res, !IO).
+
+bio_write_binary_string(Bio, BinaryString, Res, !IO) :-
+    Length = length(BinaryString),
     ( Length = 0 ->
         Res = ok
     ;
-        bio_write_string_unsafe(Bio, String, Length, NumWrite, !IO),
+        bio_write_binary_string_2(Bio, BinaryString, NumWrite, !IO),
         ( NumWrite = Length ->
             Res = ok
         ; NumWrite > 0 ->
@@ -289,16 +317,16 @@ bio_write_string(Bio, String, Res, !IO) :-
         )
     ).
 
-:- pred bio_write_string_unsafe(bio::in, string::in, int::in, int::out,
+:- pred bio_write_binary_string_2(bio::in, binary_string::in, int::out,
     io::di, io::uo) is det.
 
 :- pragma foreign_proc("C",
-    bio_write_string_unsafe(Bio::in, String::in, Length::in, NumWritten::out,
+    bio_write_binary_string_2(Bio::in, BinaryString::in, NumWritten::out,
         _IO0::di, _IO::uo),
     [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
         may_not_duplicate],
 "
-    NumWritten = BIO_write(Bio, String, Length);
+    NumWritten = BIO_write(Bio, BinaryString->data, BinaryString->len);
 ").
 
 %-----------------------------------------------------------------------------%

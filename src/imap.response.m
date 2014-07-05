@@ -313,16 +313,10 @@ literal_octet_count(Src, NumOctets, !PS) :-
 :- pred literal(src::in, int::in, imap_string::out, ps::out, io::di, io::uo)
     is det.
 
-literal(src(Pipe), NumOctets, literal(String), NewPS, !IO) :-
+literal(src(Pipe), NumOctets, literal(Bytes), NewPS, !IO) :-
     read_bytes(Pipe, NumOctets, ResBytes, !IO),
     (
         ResBytes = ok(Bytes),
-        % XXX support other encodings and binaries
-        ( string.from_code_unit_list(Bytes, StringPrime) ->
-            String = StringPrime
-        ;
-            throw(fail_exception)
-        ),
         read_crlf_line_chop(Pipe, ResLine, !IO),
         (
             ResLine = ok(NewPS)
@@ -333,6 +327,9 @@ literal(src(Pipe), NumOctets, literal(String), NewPS, !IO) :-
             ResLine = error(_),
             throw(fail_exception)
         )
+    ;
+        ResBytes = eof,
+        throw(fail_exception)
     ;
         ResBytes = error(_),
         throw(fail_exception)
@@ -1037,8 +1034,11 @@ maybe_message_id(Src, MessageId, !PS, !IO) :-
         NString = no,
         MessageId = nil
     ;
-        NString = yes(S),
-        MessageId = message_id(from_imap_string(S))
+        NString = yes(quoted(S)),
+        MessageId = message_id(S)
+    ;
+        NString = yes(literal(_)),
+        sorry($module, $pred, "literal")
     ).
 
 :- pred date_time(src::in, date_time::out, ps::in, ps::out) is semidet.
