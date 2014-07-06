@@ -72,6 +72,7 @@
 :- import_module unit.
 
 :- import_module my_rbtree.
+:- import_module signal.
 
 :- type dir_cache
     --->    dir_cache(
@@ -196,7 +197,10 @@ update_by_scan(Log, Queue0, Res, DirCache0, DirCache, !IO) :-
     queue(scan_dir)::out, dirinfos::in, dirinfos::out, io::di, io::uo) is det.
 
 update_queue(Log, Res, !Queue, !Dirs, !IO) :-
-    ( queue.get(DirNameContext, !Queue) ->
+    signal.get_sigint_count(Sigint, !IO),
+    ( Sigint > 0 ->
+        Res = error("interrupted")
+    ; queue.get(DirNameContext, !Queue) ->
         update_dir(Log, DirNameContext, Res0, !Queue, !Dirs, !IO),
         (
             Res0 = ok,
