@@ -18,6 +18,8 @@
 :- implementation.
 
 :- import_module bool.
+:- import_module enum.
+:- import_module diet.
 :- import_module integer.
 :- import_module list.
 :- import_module map.
@@ -67,6 +69,38 @@ update_db_remote_mailbox(Log, _Config, Db, IMAP, MailboxPair, LastModSeqValzer,
 
 update_db_remote_mailbox_state(Log, Db, IMAP, MailboxPair, LastModSeqValzer,
         HighestModSeqValue, Res, !IO) :-
+    % Find the UIDs in the mailbox so we can decide how to batch large
+    % UID FETCH ranges.
+    % The search return option forces the server to return UIDs using
+    % sequence-set syntax (RFC 4731).
+    uid_search(IMAP, modseq(LastModSeqValzer), yes([all]),
+        result(ResSearch, Text, Alerts), !IO),
+    report_alerts(Log, Alerts, !IO),
+    (
+        ResSearch = ok_with_data(uid_search_result(_UIDs,
+            _HighestModSeqValueOfFound, ReturnDatas)),
+        ( get_all_uids_diet(ReturnDatas, KnownUIDs) ->
+            update_db_remote_mailbox_state_2(Log, Db, IMAP, MailboxPair,
+                KnownUIDs, LastModSeqValzer, HighestModSeqValue, Res, !IO)
+        ;
+            Res = error("expected UID SEARCH response ALL sequence-set")
+        )
+    ;
+        ( ResSearch = no
+        ; ResSearch = bad
+        ; ResSearch = bye
+        ; ResSearch = continue
+        ; ResSearch = error
+        ),
+        Res = error("unexpected response to UID SEARCH: " ++ Text)
+    ).
+
+:- pred update_db_remote_mailbox_state_2(log::in, database::in, imap::in,
+    mailbox_pair::in, diet(uid)::in, mod_seq_valzer::in, mod_seq_value::in,
+    maybe_error::out, io::di, io::uo) is det.
+
+update_db_remote_mailbox_state_2(Log, Db, IMAP, MailboxPair, KnownUIDs,
+        LastModSeqValzer, HighestModSeqValue, Res, !IO) :-
     % To avoid starting over if we are interrupted when processing a large list
     % of messages, we divide flag updates into two ranges, 1:MidUID and
     % (MidUID+1):*
@@ -84,9 +118,9 @@ update_db_remote_mailbox_state(Log, Db, IMAP, MailboxPair, LastModSeqValzer,
     (
         ResMidUID = ok(yes(MidUID)),
         % Update (MidUID+1):*
-        update_uid_range(Log, Db, IMAP, MailboxPair,
-            number(plus_one(MidUID)), star,
-            LastModSeqValzer, HighestModSeqValue, ResUpdate0, !IO),
+        update_uid_range(Log, Db, IMAP, MailboxPair, KnownUIDs,
+            plus_one(MidUID), no, LastModSeqValzer, HighestModSeqValue,
+            ResUpdate0, !IO),
         (
             ResUpdate0 = ok,
             % Update 1:MidUID
@@ -99,7 +133,7 @@ update_db_remote_mailbox_state(Log, Db, IMAP, MailboxPair, LastModSeqValzer,
                 ResMinModSeq = ok(MinModSeq),
                 SinceModSeq = max(LastModSeqValzer, MinModSeq),
                 update_uid_range_then_finalise(Log, Db, IMAP, MailboxPair,
-                    number(uid(one)), number(MidUID), SinceModSeq,
+                    KnownUIDs, uid(one), yes(MidUID), SinceModSeq,
                     HighestModSeqValue, Res, !IO)
             ;
                 ResMinModSeq = error(Error),
@@ -112,22 +146,21 @@ update_db_remote_mailbox_state(Log, Db, IMAP, MailboxPair, LastModSeqValzer,
     ;
         ResMidUID = ok(no),
         % Previous update pass was completed.  Update 1:*
-        update_uid_range_then_finalise(Log, Db, IMAP, MailboxPair,
-            number(uid(one)), star, LastModSeqValzer, HighestModSeqValue,
-            Res, !IO)
+        update_uid_range_then_finalise(Log, Db, IMAP, MailboxPair, KnownUIDs,
+            uid(one), no, LastModSeqValzer, HighestModSeqValue, Res, !IO)
     ;
         ResMidUID = error(Error),
         Res = error(Error)
     ).
 
 :- pred update_uid_range_then_finalise(log::in, database::in, imap::in,
-    mailbox_pair::in, seq_number(uid)::in, seq_number(uid)::in,
+    mailbox_pair::in, diet(uid)::in, uid::in, maybe(uid)::in,
     mod_seq_valzer::in, mod_seq_value::in, maybe_error::out, io::di, io::uo)
     is det.
 
-update_uid_range_then_finalise(Log, Db, IMAP, MailboxPair, SeqMin, SeqMax,
-        SinceModSeqValzer, HighestModSeqValue, Res, !IO) :-
-    update_uid_range(Log, Db, IMAP, MailboxPair, SeqMin, SeqMax,
+update_uid_range_then_finalise(Log, Db, IMAP, MailboxPair, KnownUIDs,
+        RangeMin, RangeMax, SinceModSeqValzer, HighestModSeqValue, Res, !IO) :-
+    update_uid_range(Log, Db, IMAP, MailboxPair, KnownUIDs, RangeMin, RangeMax,
         SinceModSeqValzer, HighestModSeqValue, Res0, !IO),
     (
         Res0 = ok,
@@ -138,28 +171,69 @@ update_uid_range_then_finalise(Log, Db, IMAP, MailboxPair, SeqMin, SeqMax,
         Res = error(Error)
     ).
 
-:- func plus_one(uid) = uid.
-
-plus_one(uid(N)) = uid(N + one).
-
-:- func max(mod_seq_valzer, mod_seq_valzer) = mod_seq_valzer.
-
-max(mod_seq_valzer(X), mod_seq_valzer(Y)) = mod_seq_valzer(Max) :-
-    Max = ( X >= Y -> X ; Y ).
-
-%-----------------------------------------------------------------------------%
-
 :- pred update_uid_range(log::in, database::in, imap::in, mailbox_pair::in,
-    seq_number(uid)::in, seq_number(uid)::in, mod_seq_valzer::in,
+    diet(uid)::in, uid::in, maybe(uid)::in, mod_seq_valzer::in,
     mod_seq_value::in, maybe_error::out, io::di, io::uo) is det.
 
-update_uid_range(Log, Db, IMAP, MailboxPair, SeqMin, SeqMax, SinceModSeqValzer,
-        HighestModSeqValue, Res, !IO) :-
-    log_debug(Log,
-        format("Update UID range %s:%s",
-            [s(to_string(SeqMin)), s(to_string(SeqMax))]), !IO),
+update_uid_range(Log, Db, IMAP, MailboxPair, KnownUIDs, BatchMin, RangeMax,
+        SinceModSeqValzer, HighestModSeqValue, Res, !IO) :-
+    get_batch_max(KnownUIDs, BatchMin, RangeMax, BatchMax, MaybeNextBatchMin),
+    update_uid_range_batch(Log, Db, IMAP, MailboxPair, number(BatchMin),
+        BatchMax, SinceModSeqValzer, HighestModSeqValue, Res0, !IO),
+    (
+        Res0 = ok,
+        (
+            MaybeNextBatchMin = yes(NextBatchMin),
+            update_uid_range(Log, Db, IMAP, MailboxPair, KnownUIDs,
+                NextBatchMin, RangeMax, SinceModSeqValzer, HighestModSeqValue,
+                Res, !IO)
+        ;
+            MaybeNextBatchMin = no,
+            Res = ok
+        )
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
 
-    SequenceSet = last(range(SeqMin, SeqMax)),
+:- pred get_batch_max(diet(uid)::in, uid::in, maybe(uid)::in,
+    seq_number(uid)::out, maybe(uid)::out) is det.
+
+get_batch_max(KnownUIDs, uid(BatchMin), MaybeRangeMax,
+        BatchMax, MaybeNextBatchMin) :-
+    (
+        MaybeRangeMax = yes(RangeMax),
+        ResultSet = intersect(KnownUIDs,
+            make_interval_set(uid(BatchMin), RangeMax))
+    ;
+        MaybeRangeMax = no,
+        ResultSet = difference(KnownUIDs,
+            make_interval_set(uid(zero), uid(BatchMin - one)))
+    ),
+    ( count(ResultSet) =< max_batch_size ->
+        BatchMax = star,
+        MaybeNextBatchMin = no
+    ;
+        BatchMaxUID = BatchMin + integer(max_batch_size - 1),
+        NextBatchMinUID = BatchMin + integer(max_batch_size),
+        BatchMax = number(uid(BatchMaxUID)),
+        MaybeNextBatchMin = yes(uid(NextBatchMinUID))
+    ).
+
+:- func max_batch_size = int.
+
+max_batch_size = 4000.
+
+:- pred update_uid_range_batch(log::in, database::in, imap::in,
+    mailbox_pair::in, seq_number(uid)::in, seq_number(uid)::in,
+    mod_seq_valzer::in, mod_seq_value::in, maybe_error::out, io::di, io::uo)
+    is det.
+
+update_uid_range_batch(Log, Db, IMAP, MailboxPair, BatchMin, BatchMax,
+        SinceModSeqValzer, HighestModSeqValue, Res, !IO) :-
+    log_debug(Log, format("Update UID range %s:%s",
+        [s(to_string(BatchMin)), s(to_string(BatchMax))]), !IO),
+    SequenceSet = last(range(BatchMin, BatchMax)),
     % We only need the Message-ID from the envelope and really only for new
     % messages.
     MessageIdField = header_fields(make_astring("Message-Id"), []),
@@ -369,6 +443,7 @@ do_update_db_with_remote_message_info(Db, MailboxPair, HighestModSeqValue,
 detect_remote_message_expunges(Log, Db, IMAP, MailboxPair, Res, !IO) :-
     % The search return option forces the server to return UIDs using
     % sequence-set syntax (RFC 4731).
+    % XXX might be able to reuse UID set from update_db_remote_mailbox_state
     uid_search(IMAP, all, yes([all]), result(ResSearch, Text, Alerts), !IO),
     report_alerts(Log, Alerts, !IO),
     (
@@ -399,20 +474,6 @@ detect_remote_message_expunges(Log, Db, IMAP, MailboxPair, Res, !IO) :-
         ; ResSearch = error
         ),
         Res = error("unexpected response to UID SEARCH: " ++ Text)
-    ).
-
-:- pred get_all_uids_set(list(search_return_data(uid))::in,
-    maybe(sequence_set(uid))::out) is semidet.
-
-get_all_uids_set(ReturnDatas, MaybeSequenceSet) :-
-    ( ReturnDatas = [] ->
-        % Empty mailbox.
-        MaybeSequenceSet = no
-    ;
-        solutions((pred(Set::out) is nondet :- member(all(Set), ReturnDatas)),
-            [SequenceSet]),
-        MaybeSequenceSet = yes(SequenceSet),
-        sequence_set_only_numbers(SequenceSet)
     ).
 
 :- pred mark_expunged_remote_messages(log::in, database::in, mailbox_pair::in,
@@ -457,6 +518,74 @@ mark_expunged_remote_messages(Log, Db, MailboxPair, DbMinUID, DbMaxUID,
     ;
         Res0 = error(Error),
         Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
+    % XXX diet uses int internally but UIDs may overflow 32-bit signed ints
+:- instance enum(uid) where [
+    from_int(Int) = uid(integer(Int)) :- Int > 0,
+    to_int(uid(Integer)) = Int :-
+    (
+        ( string.to_int(to_string(Integer), IntPrime) ->
+            Int = IntPrime
+        ;
+            sorry($module, $pred,
+                "UID to int conversion failed (probably overflow)")
+        )
+    )
+].
+
+:- pred get_all_uids_diet(list(search_return_data(uid))::in, diet(uid)::out)
+    is semidet.
+
+get_all_uids_diet(ReturnDatas, Diet) :-
+    ( ReturnDatas = [] ->
+        diet.init(Diet)
+    ;
+        solutions((pred(Set::out) is nondet :- member(all(Set), ReturnDatas)),
+            [SequenceSet]),
+        sequence_set_to_diet(SequenceSet, Diet)
+    ).
+
+:- pred sequence_set_to_diet(sequence_set(uid)::in, diet(uid)::out) is semidet.
+
+sequence_set_to_diet(last(Elem), Diet) :-
+    sequence_set_element_to_diet(Elem, Diet).
+sequence_set_to_diet(cons(Elem, Set), Diet) :-
+    sequence_set_element_to_diet(Elem, DietA),
+    sequence_set_to_diet(Set, DietB),
+    diet.union(DietA, DietB, Diet).
+
+:- pred sequence_set_element_to_diet(sequence_set_element(uid)::in,
+    diet(uid)::out) is semidet.
+
+sequence_set_element_to_diet(Elem, Diet) :-
+    (
+        Elem = element(number(UID)),
+        Diet = diet.make_singleton_set(UID)
+    ;
+        Elem = range(number(uid(X)), number(uid(Y))),
+        ( X < Y ->
+            Diet = diet.make_interval_set(uid(X), uid(Y))
+        ;
+            Diet = diet.make_interval_set(uid(Y), uid(X))
+        )
+    ).
+
+    % XXX inefficient, to replace with diet
+:- pred get_all_uids_set(list(search_return_data(uid))::in,
+    maybe(sequence_set(uid))::out) is semidet.
+
+get_all_uids_set(ReturnDatas, MaybeSequenceSet) :-
+    ( ReturnDatas = [] ->
+        % Empty mailbox.
+        MaybeSequenceSet = no
+    ;
+        solutions((pred(Set::out) is nondet :- member(all(Set), ReturnDatas)),
+            [SequenceSet]),
+        MaybeSequenceSet = yes(SequenceSet),
+        sequence_set_only_numbers(SequenceSet)
     ).
 
     % XXX inefficient, to replace with diet
@@ -516,6 +645,15 @@ element_contains(Element, UID) :-
 
 uid(X) =< uid(Y) :-
     X =< Y.
+
+:- func plus_one(uid) = uid.
+
+plus_one(uid(N)) = uid(N + one).
+
+:- func max(mod_seq_valzer, mod_seq_valzer) = mod_seq_valzer.
+
+max(mod_seq_valzer(X), mod_seq_valzer(Y)) = mod_seq_valzer(Max) :-
+    Max = ( X >= Y -> X ; Y ).
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et
