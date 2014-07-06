@@ -38,6 +38,7 @@
 :- import_module maildir.
 :- import_module message_file.
 :- import_module path.
+:- import_module signal.
 :- import_module utime.
 :- import_module verify_file.
 
@@ -119,9 +120,9 @@ download_message_batch(Log, Config, Database, IMAP, MailboxPair,
         ResFetch = ok_with_data(FetchResults),
         LocalMailboxName = get_local_mailbox_name(MailboxPair),
         LocalMailboxPath = make_local_mailbox_path(Config, LocalMailboxName),
-        list.foldl4(handle_downloaded_message(Log, Config, Database,
-            MailboxPair, LocalMailboxPath, Total, FetchResults),
-            UnpairedRemotes, ok, Res, !Count, !DirCache, !IO)
+        handle_downloaded_messages(Log, Config, Database,
+            MailboxPair, LocalMailboxPath, Total, FetchResults,
+            UnpairedRemotes, Res, !Count, !DirCache, !IO)
     ;
         ( ResFetch = no
         ; ResFetch = bad
@@ -132,32 +133,46 @@ download_message_batch(Log, Config, Database, IMAP, MailboxPair,
         Res = error("unexpected response to UID FETCH: " ++ Text)
     ).
 
-:- pred handle_downloaded_message(log::in, prog_config::in, database::in,
+:- pred handle_downloaded_messages(log::in, prog_config::in, database::in,
     mailbox_pair::in, local_mailbox_path::in, int::in,
-    assoc_list(message_seq_nr, msg_atts)::in, unpaired_remote_message::in,
-    maybe_error::in, maybe_error::out, int::in, int::out,
-    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+    assoc_list(message_seq_nr, msg_atts)::in,
+    list(unpaired_remote_message)::in, maybe_error::out,
+    int::in, int::out, dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
-handle_downloaded_message(Log, Config, Database, MailboxPair, LocalMailboxPath,
-        Total, FetchResults, UnpairedRemote, Res0, Res, !Count, !DirCache, !IO)
-        :-
+handle_downloaded_messages(Log, Config, Database, MailboxPair,
+        LocalMailboxPath, Total, FetchResults, UnpairedRemotes, Res,
+        !Count, !DirCache, !IO) :-
     (
-        Res0 = ok,
-        handle_downloaded_message_2(Log, Config, Database, MailboxPair,
-            LocalMailboxPath, Total, FetchResults, UnpairedRemote, Res,
-            !Count, !DirCache, !IO)
+        UnpairedRemotes = [],
+        Res = ok
     ;
-        Res0 = error(_),
-        Res = Res0
+        UnpairedRemotes = [H | T],
+        handle_downloaded_message(Log, Config, Database, MailboxPair,
+            LocalMailboxPath, Total, FetchResults, H, Res0,
+            !Count, !DirCache, !IO),
+        (
+            Res0 = ok,
+            signal.get_sigint_count(Sigint, !IO),
+            ( Sigint > 0 ->
+                Res = error("interrupted")
+            ;
+                handle_downloaded_messages(Log, Config, Database, MailboxPair,
+                    LocalMailboxPath, Total, FetchResults, T, Res,
+                    !Count, !DirCache, !IO)
+            )
+        ;
+            Res0 = error(Error),
+            Res = error(Error)
+        )
     ).
 
-:- pred handle_downloaded_message_2(log::in, prog_config::in, database::in,
+:- pred handle_downloaded_message(log::in, prog_config::in, database::in,
     mailbox_pair::in, local_mailbox_path::in, int::in,
     assoc_list(message_seq_nr, msg_atts)::in, unpaired_remote_message::in,
     maybe_error::out, int::in, int::out, dir_cache::in, dir_cache::out,
     io::di, io::uo) is det.
 
-handle_downloaded_message_2(Log, Config, Database, MailboxPair,
+handle_downloaded_message(Log, Config, Database, MailboxPair,
         LocalMailboxPath, Total, FetchResults, UnpairedRemote, Res,
         !Count, !DirCache, !IO) :-
     UnpairedRemote = unpaired_remote_message(_PairingId, UID,
