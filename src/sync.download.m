@@ -26,6 +26,7 @@
 :- import_module set.
 :- import_module solutions.
 :- import_module string.
+:- import_module unit.
 
 :- import_module binary_string.
 :- import_module crc8.
@@ -276,22 +277,30 @@ save_message_and_pair(Log, Config, Database, MailboxPair, LocalMailboxPath,
     ;
         ResMatch = ok(yes(UnpairedLocal)),
         UnpairedLocal = unpaired_local_message(OtherPairingId, Unique),
-        % XXX use a transaction around this sequence
         lookup_local_message_flags(Database, OtherPairingId, ResLocalFlags,
             !IO),
-        delete_pairing(Database, OtherPairingId, ResDeleteOther, !IO),
         (
-            ResDeleteOther = ok,
+            ResLocalFlags = ok(LocalFlags),
+            % Delete OtherPairingId, keep PairingId.
+            transaction(
+                delete_pairing_set_pairing_local_message(Database,
+                    OtherPairingId, PairingId, Unique, LocalFlags),
+                Database, ResTxn, !IO),
             (
-                ResLocalFlags = ok(LocalFlags),
-                set_pairing_local_message(Database, PairingId, Unique,
-                    LocalFlags, Res, !IO)
+                ResTxn = ok(commit(_ : unit)),
+                Res = ok
             ;
-                ResLocalFlags = error(Error),
+                ResTxn = ok(rollback(Error)),
+                Res = error(Error)
+            ;
+                ResTxn = ok(rollback_exception(Univ)),
+                Res = error("exception thrown: " ++ string(Univ))
+            ;
+                ResTxn = error(Error),
                 Res = error(Error)
             )
         ;
-            ResDeleteOther = error(Error),
+            ResLocalFlags = error(Error),
             Res = error(Error)
         )
     ;
@@ -314,6 +323,29 @@ match_unpaired_local_message(Log, Database, MailboxPair, DirCache,
     ;
         ResSearch = error(Error),
         Res = error(Error)
+    ).
+
+:- pred delete_pairing_set_pairing_local_message(database::in, pairing_id::in,
+    pairing_id::in, uniquename::in, flag_deltas(local_mailbox)::in,
+    transaction_result(unit, string)::out, io::di, io::uo) is det.
+
+delete_pairing_set_pairing_local_message(Database, UnwantedPairingId,
+        KeepPairingId, Unique, LocalFlags, Res, !IO) :-
+    delete_pairing(Database, UnwantedPairingId, ResDelete, !IO),
+    (
+        ResDelete = ok,
+        set_pairing_local_message(Database, KeepPairingId, Unique, LocalFlags,
+            ResSetPairingLocal, !IO),
+        (
+            ResSetPairingLocal = ok,
+            Res = commit(unit)
+        ;
+            ResSetPairingLocal = error(Error),
+            Res = rollback(Error)
+        )
+    ;
+        ResDelete = error(Error),
+        Res = rollback(Error)
     ).
 
 :- pred verify_unpaired_local_messages(log::in, dir_cache::in,
