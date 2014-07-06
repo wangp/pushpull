@@ -324,7 +324,6 @@ update_db_with_remote_message_info(Log, Db, MailboxPair, HighestModSeqValue,
         MaybeError = error(Error)
     ).
 
-    % XXX probably want a transaction around this
 :- pred do_update_db_with_remote_message_info(database::in, mailbox_pair::in,
     mod_seq_value::in, uid::in, remote_message_info::in, maybe_error::out,
     io::di, io::uo) is det.
