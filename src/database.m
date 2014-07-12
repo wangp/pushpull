@@ -406,10 +406,76 @@
 %-----------------------------------------------------------------------------%
 
 open_database(FileName, Res, !IO) :-
+    FollowSymlinks = yes,
+    io.file_type(FollowSymlinks, FileName, ResFileType, !IO),
+    (
+        ResFileType = ok(FileType),
+        (
+            ( FileType = regular_file
+            ; FileType = unknown
+            )
+        ->
+            open_existing_database(FileName, Res, !IO)
+        ;
+            Res = error("unxpected file type for database path")
+        )
+    ;
+        % Assume the database does not exist.
+        % XXX better we had a io.file_exists predicate
+        ResFileType = error(_),
+        open_new_database(FileName, Res, !IO)
+    ).
+
+:- pred open_new_database(string::in, maybe_error(database)::out,
+    io::di, io::uo) is det.
+
+open_new_database(FileName, Res, !IO) :-
+    open_database_2(FileName, misc_init ++ create_tables, ResOpen, !IO),
+    (
+        ResOpen = ok(Db),
+        insert_database_version(Db, ResVersion, !IO),
+        (
+            ResVersion = ok,
+            Res = ok(Db)
+        ;
+            ResVersion = error(Error),
+            close_database(Db, !IO),
+            Res = error(Error)
+        )
+    ;
+        ResOpen = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred open_existing_database(string::in, maybe_error(database)::out,
+    io::di, io::uo) is det.
+
+open_existing_database(FileName, Res, !IO) :-
+    open_database_2(FileName, misc_init, ResOpen, !IO),
+    (
+        ResOpen = ok(Db),
+        check_database_version(Db, ResVersion, !IO),
+        (
+            ResVersion = ok,
+            Res = ok(Db)
+        ;
+            ResVersion = error(Error),
+            close_database(Db, !IO),
+            Res = error(Error)
+        )
+    ;
+        ResOpen = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred open_database_2(string::in, string::in, maybe_error(database)::out,
+    io::di, io::uo) is det.
+
+open_database_2(FileName, Sql, Res, !IO) :-
     open_rw(FileName, normal, ResOpen, !IO),
     (
         ResOpen = ok(Db),
-        exec(Db, create_tables, ExecRes, !IO),
+        exec(Db, Sql, ExecRes, !IO),
         (
             ExecRes = ok,
             Res = ok(Db)
@@ -423,14 +489,24 @@ open_database(FileName, Res, !IO) :-
         Res = error(Error)
     ).
 
-:- func create_tables = string.
+:- func misc_init = string.
 
-create_tables =
-"
+misc_init = "
     /* Foreign keys are off by default */
     PRAGMA foreign_keys = ON;
 
-    CREATE TABLE IF NOT EXISTS mailbox_pair(
+    ATTACH DATABASE ':memory:' AS mem;
+".
+
+:- func create_tables = string.
+
+create_tables = "
+    CREATE TABLE meta(
+        key                 TEXT NOT NULL UNIQUE PRIMARY KEY,
+        value               TEXT
+    );
+
+    CREATE TABLE mailbox_pair(
         mailbox_pair_id     INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
         local_mailbox       TEXT NOT NULL,
         remote_mailbox      TEXT NOT NULL,
@@ -439,7 +515,7 @@ create_tables =
         UNIQUE(local_mailbox, remote_mailbox, uidvalidity)
     );
 
-    CREATE TABLE IF NOT EXISTS pairing(
+    CREATE TABLE pairing(
         pairing_id          INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
         mailbox_pair_id     INTEGER NOT NULL
                             REFERENCES mailbox_pair(mailbox_pair_id),
@@ -459,17 +535,92 @@ create_tables =
         UNIQUE(mailbox_pair_id, local_uniquename, remote_uid)
     );
 
-    CREATE INDEX IF NOT EXISTS message_id_index ON pairing(message_id);
-    CREATE INDEX IF NOT EXISTS local_attn_index ON pairing(local_flags_attn);
-    CREATE INDEX IF NOT EXISTS remote_attn_index ON pairing(remote_flags_attn);
-
-    ATTACH DATABASE ':memory:' AS mem;
+    CREATE INDEX message_id_index ON pairing(message_id);
+    CREATE INDEX local_attn_index ON pairing(local_flags_attn);
+    CREATE INDEX remote_attn_index ON pairing(remote_flags_attn);
 ".
 
 %   name,expunged   state
 %   NULL,0          never existed
 %   TEXT,0          exists
 %   NULL,1          expunged
+
+%-----------------------------------------------------------------------------%
+
+:- pred insert_database_version(database::in, maybe_error::out, io::di, io::uo)
+    is det.
+
+insert_database_version(Db, Res, !IO) :-
+    Stmt = "INSERT INTO meta(key, value) VALUES('version', :version)",
+    Bindings = [
+        name(":version") - bind_value(current_database_version)
+    ],
+    with_stmt(insert_database_version_2, Db, Stmt, Bindings, Res, !IO).
+
+:- pred insert_database_version_2(db(rw)::in, stmt::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+insert_database_version_2(Db, Stmt, Res, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
+    (
+        StepResult = done,
+        Res = ok
+    ;
+        StepResult = row,
+        Res = error("unexpected row")
+    ;
+        StepResult = error(Error),
+        Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
+:- pred check_database_version(database::in, maybe_error::out, io::di, io::uo)
+    is det.
+
+check_database_version(Db, Res, !IO) :-
+    % Throws exception if table doesn't exist.
+    Stmt = "SELECT VALUE FROM meta WHERE key = 'version'",
+    promise_equivalent_solutions [ResVersion, !:IO]
+    ( try [io(!IO)]
+        with_stmt(get_database_version, Db, Stmt, [], ResVersionPrime, !IO)
+    then
+        ResVersion = ResVersionPrime
+    catch_any Excp ->
+        ResVersion = error(string(Excp))
+    ),
+    (
+        ResVersion = ok(Version),
+        ( Version = current_database_version ->
+            Res = ok
+        ;
+            Res = error("unexpected database version: " ++ Version)
+        )
+    ;
+        ResVersion = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred get_database_version(db(rw)::in, stmt::in, maybe_error(string)::out,
+    io::di, io::uo) is det.
+
+get_database_version(Db, Stmt, Res, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
+    (
+        StepResult = done,
+        Res = error("expected row")
+    ;
+        StepResult = row,
+        column_text(Stmt, column(0), Version, !IO),
+        Res = ok(Version)
+    ;
+        StepResult = error(Error),
+        Res = error(Error)
+    ).
+
+:- func current_database_version = string.
+
+current_database_version = "1:2014-07-12".
 
 %-----------------------------------------------------------------------------%
 
