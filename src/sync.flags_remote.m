@@ -30,30 +30,35 @@ propagate_flag_deltas_from_local(Log, _Config, Db, IMAP, MailboxPair, Res, !IO)
     search_pending_flag_deltas_from_local(Db, MailboxPair, ResSearch, !IO),
     (
         ResSearch = ok(Pendings),
-        list.foldl2(propagate_flag_deltas_from_local_2(Log, Db, IMAP),
-            Pendings, ok, Res, !IO)
+        list.length(Pendings, Total),
+        list.foldl3(propagate_flag_deltas_from_local_2(Log, Db, IMAP, Total),
+            Pendings, ok, Res, 1, _Count, !IO)
     ;
         ResSearch = error(Error),
         Res = error(Error)
     ).
 
 :- pred propagate_flag_deltas_from_local_2(log::in, database::in, imap::in,
-    pending_flag_deltas::in, maybe_error::in, maybe_error::out, io::di, io::uo)
-    is det.
+    int::in, pending_flag_deltas::in, maybe_error::in, maybe_error::out,
+    int::in, int::out, io::di, io::uo) is det.
 
-propagate_flag_deltas_from_local_2(Log, Db, IMAP, Pending, Res0, Res, !IO) :-
+propagate_flag_deltas_from_local_2(Log, Db, IMAP, Total, Pending, Res0, Res,
+        Count, Count + 1, !IO) :-
     (
         Res0 = ok,
-        propagate_flag_deltas_from_local_3(Log, Db, IMAP, Pending, Res, !IO)
+        propagate_flag_deltas_from_local_3(Log, Db, IMAP, Pending, Count,
+            Total, Res, !IO)
     ;
         Res0 = error(Error),
         Res = error(Error)
     ).
 
 :- pred propagate_flag_deltas_from_local_3(log::in, database::in, imap::in,
-    pending_flag_deltas::in, maybe_error::out, io::di, io::uo) is det.
+    pending_flag_deltas::in, int::in, int::in, maybe_error::out,
+    io::di, io::uo) is det.
 
-propagate_flag_deltas_from_local_3(Log, Db, IMAP, Pending, Res, !IO) :-
+propagate_flag_deltas_from_local_3(Log, Db, IMAP, Pending, Count, Total, Res,
+        !IO) :-
     Pending = pending_flag_deltas(PairingId,
         MaybeUnique, LocalFlags0, LocalExpunged,
         MaybeUID, RemoteFlags0, RemoteExpunged),
@@ -67,8 +72,16 @@ propagate_flag_deltas_from_local_3(Log, Db, IMAP, Pending, Res, !IO) :-
     RemoveFlags = Flags0 `difference` Flags,
     (
         MaybeUID = yes(UID),
-        store_remote_flags_add_rm(Log, IMAP, UID, AddFlags, RemoveFlags, Res0,
-            !IO),
+        (
+            set.empty(AddFlags),
+            set.empty(RemoveFlags)
+        ->
+            Res0 = ok
+        ;
+            log_remote_flag_update(Log, UID, Count, Total, !IO),
+            store_remote_flags_add_rm(Log, IMAP, UID, AddFlags, RemoveFlags,
+                Res0, !IO)
+        ),
         (
             Res0 = ok,
             record_local_flag_deltas_applied_to_remote(Db, PairingId,
@@ -95,6 +108,14 @@ propagate_flag_deltas_from_local_3(Log, Db, IMAP, Pending, Res, !IO) :-
         )
     ).
 
+:- pred log_remote_flag_update(log::in, uid::in, int::in, int::in,
+    io::di, io::uo) is det.
+
+log_remote_flag_update(Log, uid(UID), Count, Total, !IO) :-
+    log_info(Log,
+        format("Store UID %s flags (%d of %d)",
+            [s(to_string(UID)), i(Count), i(Total)]), !IO).
+
 :- pred store_remote_flags_add_rm(log::in, imap::in, uid::in,
     set(flag)::in, set(flag)::in, maybe_error::out, io::di, io::uo) is det.
 
@@ -117,10 +138,6 @@ store_remote_flags_change(Log, IMAP, UID, Operation, ChangeFlags, Res, !IO) :-
     ( set.empty(ChangeFlags) ->
         Res = ok
     ;
-        UID = uid(UIDInteger),
-        log_info(Log,
-            format("Change remote flags UID %s", [s(to_string(UIDInteger))]),
-            !IO),
         uid_store(IMAP, singleton_sequence_set(UID), Operation, silent,
             to_sorted_list(ChangeFlags), result(ResAdd, Text, Alerts), !IO),
         report_alerts(Log, Alerts, !IO),
