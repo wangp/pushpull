@@ -26,7 +26,7 @@
                 local_mailbox_name :: local_mailbox_name,
                 hostport :: string,
                 username :: username,
-                password :: password,
+                password :: maybe(password),
                 mailbox :: mailbox,
                 idle :: bool,
                 idle_timeout_secs :: int,
@@ -190,11 +190,10 @@ make_prog_config(Config, ProgConfig, !Errors, !IO) :-
         cons("missing imap.username", !Errors)
     ),
 
-    ( nonempty(Config, "imap", "password", Password0) ->
-        Password = password(Password0)
+    ( nonempty(Config, "imap", "password", Password) ->
+        MaybePassword = yes(password(Password))
     ;
-        Password = password(""),
-        cons("missing imap.password", !Errors)
+        MaybePassword = no
     ),
 
     ( nonempty(Config, "imap", "idle", Idle0) ->
@@ -252,7 +251,7 @@ make_prog_config(Config, ProgConfig, !Errors, !IO) :-
 
     ProgConfig = prog_config(MaybeLogFileName, LogLevel, DbFileName,
         MaildirRoot, Fsync, Buckets, LocalMailboxName,
-        Host, UserName, Password, RemoteMailboxName,
+        Host, UserName, MaybePassword, RemoteMailboxName,
         Idle, IdleTimeoutSecs, SyncOnIdleTimeout, CommandPostSync).
 
 :- pred nonempty(config::in, config.section::in, string::in,

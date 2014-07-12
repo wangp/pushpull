@@ -33,6 +33,7 @@
 :- import_module select.
 :- import_module signal.
 :- import_module sync.
+:- import_module terminal_attr.
 
 :- type idle_next_outer
     --->    quit
@@ -93,7 +94,14 @@ main_2(Log, Config, !IO) :-
     open_database(DbFileName, ResOpenDb, !IO),
     (
         ResOpenDb = ok(Db),
-        log_in(Log, Config, Db, !IO),
+        maybe_prompt_password(Config, ResPassword, !IO),
+        (
+            ResPassword = ok(Password),
+            log_in(Log, Config, Password, Db, !IO)
+        ;
+            ResPassword = error(Error),
+            report_error(Log, Error, !IO)
+        ),
         close_database(Db, !IO)
     ;
         ResOpenDb = error(Error),
@@ -112,15 +120,60 @@ print_error(Error, !IO) :-
     io.write_string(Stream, Error, !IO),
     io.nl(Stream, !IO).
 
+:- pred maybe_prompt_password(prog_config::in, maybe_error(password)::out,
+    io::di, io::uo) is det.
+
+maybe_prompt_password(Config, Res, !IO) :-
+    MaybePassword = Config ^ password,
+    (
+        MaybePassword = yes(Password),
+        Res = ok(Password)
+    ;
+        MaybePassword = no,
+        UserName = Config ^ username,
+        HostPort = Config ^ hostport,
+        prompt_password(UserName, HostPort, Res, !IO)
+    ).
+
+:- pred prompt_password(username::in, string::in, maybe_error(password)::out,
+    io::di, io::uo) is det.
+
+prompt_password(username(UserName), HostPort, Res, !IO) :-
+    string.format("Enter password for '%s' to '%s': ",
+        [s(UserName), s(HostPort)], Prompt),
+    io.write_string(Prompt, !IO),
+    io.flush_output(!IO),
+    set_echo(no, Res0, !IO),
+    (
+        Res0 = ok,
+        io.read_line_as_string(ResRead, !IO),
+        io.nl(!IO),
+        set_echo(yes, _, !IO),
+        (
+            ResRead = ok(Line),
+            Password = password(chomp(Line)),
+            Res = ok(Password)
+        ;
+            ResRead = eof,
+            Res = error("unexpected eof")
+        ;
+            ResRead = error(Error),
+            Res = error(io.error_message(Error))
+        )
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
+
 %-----------------------------------------------------------------------------%
 
-:- pred log_in(log::in, prog_config::in, database::in, io::di, io::uo) is det.
+:- pred log_in(log::in, prog_config::in, password::in, database::in,
+    io::di, io::uo) is det.
 
-log_in(Log, Config, Db, !IO) :-
+log_in(Log, Config, Password, Db, !IO) :-
     openssl.library_init(!IO),
     HostPort = Config ^ hostport,
     UserName = Config ^ username,
-    Password = Config ^ password,
     imap.open(HostPort, ResOpen, OpenAlerts, !IO),
     report_alerts(Log, OpenAlerts, !IO),
     (
