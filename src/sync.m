@@ -35,6 +35,9 @@
 :- implementation.
 
 :- import_module int.
+:- import_module list.
+:- import_module std_util.
+:- import_module string.
 
 :- include_module sync.download.
 :- include_module sync.flags_local.
@@ -51,6 +54,8 @@
 :- import_module sync.upload.
 
 :- import_module dir_cache.
+:- import_module quote_arg.
+:- import_module shell_word.
 
 %-----------------------------------------------------------------------------%
 
@@ -123,6 +128,12 @@ sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
         delete_expunged_pairings(Db, !:Res, !IO)
     ;
         !.Res = error(_)
+    ),
+    (
+        !.Res = ok,
+        call_command_post_sync(Log, Config, !:Res, !IO)
+    ;
+        !.Res = error(_)
     ).
 
 :- pred force_check_local(inotify(S)::in, check::in, check::out,
@@ -151,6 +162,34 @@ force_check_local(Inotify, CheckLocal0, CheckLocal, Res0, Res, !IO) :-
         Res0 = error(Error),
         Res = error(Error),
         CheckLocal = CheckLocal0
+    ).
+
+:- pred call_command_post_sync(log::in, prog_config::in,
+    maybe_error::out, io::di, io::uo) is det.
+
+call_command_post_sync(Log, Config, Res, !IO) :-
+    MaybeCommand = Config ^ command_post_sync,
+    (
+        MaybeCommand = yes(Words),
+        Command = join_list(" ", map(compose(quote_arg, word_string), Words)),
+        log_info(Log, "Calling command: " ++ Command, !IO),
+        io.call_system(Command, CallRes, !IO),
+        (
+            CallRes = ok(ExitStatus),
+            ( ExitStatus = 0 ->
+                Res = ok
+            ;
+                Res = error("post_sync command returned exit status " ++
+                    string.from_int(ExitStatus))
+            )
+        ;
+            CallRes = error(Error),
+            Res = error(io.error_message(Error))
+        )
+    ;
+        MaybeCommand = no,
+        log_debug(Log, "No post_sync command configured.", !IO),
+        Res = ok
     ).
 
 %-----------------------------------------------------------------------------%

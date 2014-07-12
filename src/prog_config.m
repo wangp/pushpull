@@ -11,6 +11,7 @@
 :- import_module log.
 :- import_module imap.
 :- import_module imap.types.
+:- import_module shell_word.
 
 %-----------------------------------------------------------------------------%
 
@@ -29,7 +30,8 @@
                 mailbox :: mailbox,
                 idle :: bool,
                 idle_timeout_secs :: int,
-                sync_on_idle_timeout :: bool
+                sync_on_idle_timeout :: bool,
+                command_post_sync :: maybe(list(word))
             ).
 
 :- type maildir_root
@@ -59,7 +61,7 @@
     ;       errors(list(string)).
 
 :- pred load_prog_config(string::in, load_prog_config_result::out,
-    io::di, io::uo) is det.
+    io::di, io::uo) is cc_multi.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -68,6 +70,7 @@
 
 :- import_module dir.
 :- import_module int.
+:- import_module parsing_utils.
 :- import_module string.
 
 :- import_module config.
@@ -92,7 +95,7 @@ load_prog_config(FileName, Res, !IO) :-
     ).
 
 :- pred load_prog_config_2(config::in, load_prog_config_result::out,
-    io::di, io::uo) is det.
+    io::di, io::uo) is cc_multi.
 
 load_prog_config_2(Config, Res, !IO) :-
     make_prog_config(Config, ProgConfig, [], RevErrors, !IO),
@@ -105,7 +108,7 @@ load_prog_config_2(Config, Res, !IO) :-
     ).
 
 :- pred make_prog_config(config::in, prog_config::out,
-    list(string)::in, list(string)::out, io::di, io::uo) is det.
+    list(string)::in, list(string)::out, io::di, io::uo) is cc_multi.
 
 make_prog_config(Config, ProgConfig, !Errors, !IO) :-
     ( nonempty(Config, "log", "file", LogFileName) ->
@@ -241,10 +244,16 @@ make_prog_config(Config, ProgConfig, !Errors, !IO) :-
         cons("missing pairing.remote", !Errors)
     ),
 
+    ( nonempty(Config, "command", "post_sync", Command0) ->
+        parse_command(Command0, CommandPostSync, !Errors)
+    ;
+        CommandPostSync = maybe.no
+    ),
+
     ProgConfig = prog_config(MaybeLogFileName, LogLevel, DbFileName,
         MaildirRoot, Fsync, Buckets, LocalMailboxName,
         Host, UserName, Password, RemoteMailboxName,
-        Idle, IdleTimeoutSecs, SyncOnIdleTimeout).
+        Idle, IdleTimeoutSecs, SyncOnIdleTimeout, CommandPostSync).
 
 :- pred nonempty(config::in, config.section::in, string::in,
     string::out) is semidet.
@@ -291,6 +300,26 @@ default_log_level = info.
 :- func max_idle_timeout_secs = int.
 
 max_idle_timeout_secs = 29 * 60.
+
+:- pred parse_command(string::in, maybe(list(word))::out,
+    list(string)::in, list(string)::out) is cc_multi.
+
+parse_command(S0, MaybeWords, !Errors) :-
+    shell_word.split(S0, ParseResult),
+    (
+        ParseResult = ok(Words),
+        MaybeWords = yes(Words)
+    ;
+        (
+            ParseResult = error(yes(Message), _Line, _Column)
+        ;
+            ParseResult = error(no, _Line, _Column),
+            Message = "parse error"
+        ),
+        Error = string.format("%s in value: %s", [s(Message), s(S0)]),
+        cons(Error, !Errors),
+        MaybeWords = no
+    ).
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et
