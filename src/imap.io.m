@@ -12,6 +12,9 @@
 :- pred write_command_stream(pipe::in, tag::in, list(chunk)::in,
     maybe_error::out, io::di, io::uo) is det.
 
+:- pred write_command_stream_sensitive(pipe::in, tag::in, list(chunk)::in,
+    maybe_error::out, io::di, io::uo) is det.
+
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
@@ -101,11 +104,27 @@ read_bytes(closed, _NumOctets, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
+write_command_stream(closed, _, _, Res, !IO) :-
+    Res = error("session closed").
 write_command_stream(open(Bio), Tag, Xs, Res, !IO) :-
     trace [runtime(env("DEBUG_IMAP")), io(!IO2)] (
         debug_chunks(io.stderr_stream, Xs, !IO2)
     ),
-    write_command_stream_2(open(Bio), Tag, Xs, Res0, !IO),
+    write_command_stream_chunks(Bio, Tag, Xs, Res, !IO).
+
+write_command_stream_sensitive(closed, _, _, Res, !IO) :-
+    Res = error("session closed").
+write_command_stream_sensitive(open(Bio), Tag, Xs, Res, !IO) :-
+    trace [runtime(env("DEBUG_IMAP")), io(!IO2)] (
+        debug_chunks(io.stderr_stream, [string("<command omitted>")], !IO2)
+    ),
+    write_command_stream_chunks(Bio, Tag, Xs, Res, !IO).
+
+:- pred write_command_stream_chunks(bio::in, tag::in, list(chunk)::in,
+    maybe_error::out, io::di, io::uo) is det.
+
+write_command_stream_chunks(Bio, _Tag, [], Res, !IO) :-
+    bio_write_string(Bio, crlf, Res0, !IO),
     (
         Res0 = ok,
         bio_flush(Bio, Res, !IO)
@@ -113,17 +132,7 @@ write_command_stream(open(Bio), Tag, Xs, Res, !IO) :-
         Res0 = error(Error),
         Res = error(Error)
     ).
-
-write_command_stream(closed, _, _, Res, !IO) :-
-    Res = error("session closed").
-
-:- pred write_command_stream_2(pipe::in(open), tag::in, list(chunk)::in,
-    maybe_error::out, io::di, io::uo) is det.
-
-write_command_stream_2(open(Bio), _Tag, [], Res, !IO) :-
-    bio_write_string(Bio, crlf, Res, !IO).
-write_command_stream_2(OpenPipe, Tag, [X | Xs], Res, !IO) :-
-    OpenPipe = open(Bio),
+write_command_stream_chunks(Bio, Tag, [X | Xs], Res, !IO) :-
     write_chunk(Bio, X, Res0, !IO),
     (
         Res0 = ok,
@@ -131,16 +140,16 @@ write_command_stream_2(OpenPipe, Tag, [X | Xs], Res, !IO) :-
             ( X = string(_)
             ; X = binary(_)
             ),
-            write_command_stream_2(OpenPipe, Tag, Xs, Res, !IO)
+            write_command_stream_chunks(Bio, Tag, Xs, Res, !IO)
         ;
             X = crlf_wait,
             bio_flush(Bio, Res1, !IO),
             (
                 Res1 = ok,
-                wait_for_continuation_request(OpenPipe, Tag, ResContinue, !IO),
+                wait_for_continuation_request(Bio, Tag, ResContinue, !IO),
                 (
                     ResContinue = ok,
-                    write_command_stream_2(OpenPipe, Tag, Xs, Res, !IO)
+                    write_command_stream_chunks(Bio, Tag, Xs, Res, !IO)
                 ;
                     ResContinue = error(Error),
                     Res = error(Error)
@@ -170,11 +179,11 @@ write_chunk(Bio, Chunk, Res, !IO) :-
         bio_write_string(Bio, crlf, Res, !IO)
     ).
 
-:- pred wait_for_continuation_request(pipe::in(open), tag::in,
+:- pred wait_for_continuation_request(bio::in, tag::in,
     maybe_error::out, io::di, io::uo) is det.
 
-wait_for_continuation_request(Pipe, Tag, Res, !IO) :-
-    wait_for_complete_response(Pipe, Tag, Res0, !IO),
+wait_for_continuation_request(Bio, Tag, Res, !IO) :-
+    wait_for_complete_response(open(Bio), Tag, Res0, !IO),
     (
         Res0 = ok(Response),
         % XXX do something with the rest of the response

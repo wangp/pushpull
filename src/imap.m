@@ -610,7 +610,7 @@ do_login(username(UserName), password(Password), IMAP, Res, !IO) :-
     get_new_tag(IMAP, Pipe, Tag, !IO),
     Login = login(make_astring(UserName), make_astring(Password)),
     make_command_stream(Tag - command_nonauth(Login), CommandStream),
-    write_command_stream(Pipe, Tag, CommandStream, Res0, !IO),
+    write_command_stream_sensitive(Pipe, Tag, CommandStream, Res0, !IO),
     (
         Res0 = ok,
         wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
