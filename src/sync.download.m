@@ -200,7 +200,7 @@ handle_downloaded_message(Log, Config, Database, MailboxPair,
             read_message_id_from_message_crlf(RawMessageCrLf, ResMessageId),
             (
                 (
-                    ResMessageId = yes(ReadMessageId),
+                    ResMessageId = yes(message_id(ReadMessageId)),
                     HaveMessageId = message_id(ReadMessageId)
                 ;
                     ResMessageId = no,

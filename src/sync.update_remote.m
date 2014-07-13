@@ -384,7 +384,7 @@ parse_message_id_att(NString, Res) :-
         ),
         read_message_id_from_message_crlf(message(Content), ReadMessageId),
         (
-            ReadMessageId = yes(MessageId),
+            ReadMessageId = yes(message_id(MessageId)),
             Res = ok(message_id(MessageId))
         ;
             ReadMessageId = no,

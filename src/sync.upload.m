@@ -247,7 +247,7 @@ get_appended_uid(Log, IMAP, MailboxUIDValidity, MaybeAppendUID, Message,
 get_appended_uid_fallback(Log, IMAP, Message, PriorModSeqValue, Res, !IO) :-
     read_message_id_from_message_lf(Message, ReadMessageId),
     (
-        ReadMessageId = yes(MessageId),
+        ReadMessageId = yes(message_id(MessageId)),
         SearchKey0 = header(make_astring("Message-Id"),
             make_astring(MessageId)),
         % If we know a mod-seq-value prior to the APPEND then we can restrict

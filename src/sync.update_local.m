@@ -181,7 +181,7 @@ insert_pairing_3(Log, Db, MailboxPair, DirName, BaseName, Unique, Flags, Res,
     DirName / BaseName = path(Path),
     read_message_id_from_file(Path, ResRead, !IO),
     (
-        ResRead = yes(MessageId),
+        ResRead = yes(message_id(MessageId)),
         % There may already be an unpaired remote message in the database
         % for this local message.  We will download the remote message to
         % compare, as we don't want to assume that Message-Ids are unique.

@@ -7,6 +7,9 @@
 
 :- import_module binary_string.
 
+:- type message_id
+    --->    message_id(string).
+
 :- type message(T)
     --->    message(binary_string).
 
@@ -14,7 +17,7 @@
 :- type lf          ---> lf.
 
 :- type read_message_id_result
-    --->    yes(string)
+    --->    yes(message_id)
     ;       no
     ;       format_error(string)
     ;       error(string).
@@ -40,11 +43,11 @@
 :- import_module char.
 :- import_module int.
 :- import_module list.
+:- import_module parsing_utils.
 :- import_module string.
+:- import_module unit.
 
 :- import_module string_util.
-
-:- type message_id == string.
 
 :- type intermediate_result
     --->    ok
@@ -209,45 +212,117 @@ folded_line(Line) :-
     string.index(Line, 0, Char),
     'WSP'(Char).
 
-:- pred 'WSP'(char::in) is semidet.
-
-'WSP'(' ').
-'WSP'('\t').
-
 %-----------------------------------------------------------------------------%
 
 :- pred parse_message_id_body(string::in, message_id::out) is semidet.
 
 parse_message_id_body(Input, MessageId) :-
-    % We don't need to be too strict about this as we just treat the message-id
-    % as an opaque string.
-    some [!Pos] (
-        Start = 0,
-        !:Pos = Start,
-        unsafe_index_next(Input, !Pos, ('<')),
-        advance_while(plausible_msg_id_char, Input, !Pos),
-        unsafe_index_next(Input, !Pos, ('@')),
-        advance_while(plausible_msg_id_char, Input, !Pos),
-        unsafe_index_next(Input, !Pos, ('>')),
-        End = !.Pos,
-        advance_while('WSP', Input, !Pos),
-        not unsafe_index_next(Input, !.Pos, _, _), % eof
+    % We aren't too strict about this as we (mostly!) just treat the message-id
+    % as an opaque string, and we have to cope with many malformed ids anyway.
+    promise_equivalent_solutions [ParseResult] (
+        parsing_utils.parse(Input, no_skip_whitespace, msg_id, ParseResult)
+    ),
+    ParseResult = ok(MessageId).
 
-        End >= Start + 5,
-        string.unsafe_between(Input, Start, End, MessageId)
+:- pred msg_id(src::in, message_id::out, ps::in, ps::out) is semidet.
+
+msg_id(Src, message_id(MessageId), !PS) :-
+    skip_CFWS(Src, !PS),
+    ( next_char(Src, '<', !PS) ->
+        true
+    ;
+        % Tolerate invalid syntax.
+        true
+    ),
+    current_offset(Src, Start, !PS),
+    % We don't interpret internal CFWS or quotes or anything.
+    until_end_of_msg_id(Src, !PS),
+    % Ignore everything afterwards, such as a comment.
+    current_offset(Src, End, !PS),
+    input_substring(Src, Start, End, MessageId).
+
+:- pred until_end_of_msg_id(src::in, ps::in, ps::out) is semidet.
+
+until_end_of_msg_id(Src, !PS) :-
+    (
+        next_char(Src, C, !PS),
+        C \= ('>'),
+        C \= ('\r'),
+        C \= ('\n')
+    ->
+        until_end_of_msg_id(Src, !PS)
+    ;
+        true
     ).
 
-:- pred plausible_msg_id_char(char::in) is semidet.
+%-----------------------------------------------------------------------------%
 
-plausible_msg_id_char(C) :-
-    char.to_int(C, I),
-    % Printable US-ASCII plus SP.
-    0x20 =< I, I < 0x7f,
-    % XXX these could be escaped in quoted-strings so we might need proper
-    % parsing after all
-    C \= ('@'),
-    C \= ('<'),
-    C \= ('>').
+% Partially from rfc5322.m
+
+:- pred no_skip_whitespace(src::in, unit::out, ps::in, ps::out) is semidet.
+
+no_skip_whitespace(_Src, unit, !PS) :-
+    semidet_true.
+
+:- pred 'WSP'(char::in) is semidet.
+
+'WSP'(' ').
+'WSP'('\t').
+
+:- pred skip_FWS(src::in, ps::in, ps::out) is det.
+
+skip_FWS(Src, !PS) :-
+    % We assume unfolding has already occurred.
+    skip_WSP_chars(Src, !PS).
+
+:- pred skip_WSP_chars(src::in, ps::in, ps::out) is det.
+
+skip_WSP_chars(Src, !PS) :-
+    (
+        next_char(Src, C, !PS),
+        'WSP'(C)
+    ->
+        skip_WSP_chars(Src, !PS)
+    ;
+        true
+    ).
+
+:- pred skip_CFWS(src::in, ps::in, ps::out) is det.
+
+skip_CFWS(Src, !PS) :-
+    skip_FWS(Src, !PS),
+    ( skip_comment(Src, !PS) ->
+        skip_CFWS(Src, !PS)
+    ;
+        true
+    ).
+
+:- pred skip_comment(src::in, ps::in, ps::out) is semidet.
+
+skip_comment(Src, !PS) :-
+    next_char(Src, '(', !PS),
+    comment_tail(Src, !PS).
+
+:- pred comment_tail(src::in, ps::in, ps::out) is semidet.
+
+comment_tail(Src, !PS) :-
+    next_char(Src, C, !PS),
+    ( C = (')') ->
+        % End of comment.
+        true
+    ;
+        ( C = ('\\') ->
+            next_char(Src, _, !PS)
+        ; C = ('(') ->
+            % Nested comment.
+            comment_tail(Src, !PS)
+        ;
+            'WSP'(C)
+        ;
+            true
+        ),
+        comment_tail(Src, !PS)
+    ).
 
 %-----------------------------------------------------------------------------%
 
