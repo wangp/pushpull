@@ -38,6 +38,11 @@
 :- import_module message_file.
 :- import_module string_util.
 
+:- type make_remote_message_info_result
+    --->    yes(uid, remote_message_info)
+    ;       no
+    ;       error(string).
+
 :- type remote_message_info
     --->    remote_message_info(
                 message_id  :: maybe_message_id,
@@ -251,10 +256,10 @@ update_uid_range_batch(Log, Db, IMAP, MailboxPair, BatchMin, BatchMax,
     (
         ResFetch = ok_with_data(FetchResults),
         log_debug(Log, Text, !IO),
+        make_remote_message_infos(FetchResults, ResParse,
+            map.init, RemoteMessageInfos),
         (
-            list.foldl(make_remote_message_info, FetchResults,
-                map.init, RemoteMessageInfos)
-        ->
+            ResParse = ok,
             % Transaction around this for faster.
             transaction(
                 update_db_with_remote_message_infos(Log, Db, MailboxPair,
@@ -274,7 +279,8 @@ update_uid_range_batch(Log, Db, IMAP, MailboxPair, BatchMin, BatchMax,
                 Res = error(Error)
             )
         ;
-            Res = error("failed in make_remote_message_info")
+            ResParse = error(Error),
+            Res = error(Error)
         )
     ;
         ( ResFetch = no
@@ -291,43 +297,84 @@ update_uid_range_batch(Log, Db, IMAP, MailboxPair, BatchMin, BatchMax,
 to_string(number(uid(N))) = to_string(N).
 to_string(star) = "*".
 
-:- pred make_remote_message_info(pair(message_seq_nr, msg_atts)::in,
-    map(uid, remote_message_info)::in, map(uid, remote_message_info)::out)
-    is semidet.
+:- pred make_remote_message_infos( list(pair(message_seq_nr, msg_atts))::in,
+    maybe_error::out, map(uid, remote_message_info)::in, map(uid,
+    remote_message_info)::out) is det.
 
-make_remote_message_info(_MsgSeqNr - Atts, !Map) :-
+make_remote_message_infos([], ok, !Map).
+make_remote_message_infos([H | T], Res, !Map) :-
+    make_remote_message_info(H, ResMake),
+    (
+        ResMake = yes(UID, Info),
+        ( map.insert(UID, Info, !Map) ->
+            make_remote_message_infos(T, Res, !Map)
+        ;
+            % I guess the server should not send multiple results for the same
+            % UID.
+            Res = error("duplicate UID in FETCH result")
+        )
+    ;
+        ResMake = no,
+        make_remote_message_infos(T, Res, !Map)
+    ;
+        ResMake = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred make_remote_message_info(pair(message_seq_nr, msg_atts)::in,
+    make_remote_message_info_result::out) is det.
+
+make_remote_message_info(_MsgSeqNr - Atts, Res) :-
     % If changes are being made on the remote mailbox concurrently the server
     % (at least Dovecot) may send unsolicited FETCH responses which are not
     % directly in response to our FETCH request, and therefore not matching the
     % items that we asked for.  Ignore those, though we could make use to
     % augment preceding FETCH responses.
-    (
-        solutions((pred(U::out) is nondet :- member(uid(U), Atts)), [UID])
-    ->
-        solutions(
-            (pred(MaybeMessageId0::out) is nondet :-
-                member(Att, Atts),
-                is_message_id_att(Att, MaybeMessageId0)
-            ),
-            [MaybeMessageId]),
-
-        solutions((pred(F::out) is nondet :- member(flags(F), Atts)),
-            [Flags0]),
-        list.filter_map(flag_except_recent, Flags0, Flags1),
-        set.list_to_set(Flags1, Flags),
-
-        % I guess the server should not send multiple results for the same UID.
-        Info = remote_message_info(MaybeMessageId, Flags),
-        map.insert(UID, Info, !Map)
+    ( solutions((pred(U::out) is nondet :- member(uid(U), Atts)), [UID]) ->
+        (
+            solutions(
+                (pred(NString0::out) is nondet :-
+                    member(Att, Atts),
+                    is_message_id_att(Att, NString0)
+                ),
+                [NString])
+        ->
+            parse_message_id_att(NString, ResMaybeMessageId),
+            (
+                ResMaybeMessageId = ok(MaybeMessageId),
+                (
+                    solutions(
+                        (pred(F::out) is nondet :- member(flags(F), Atts)),
+                        [Flags0]),
+                    list.filter_map(flag_except_recent, Flags0, Flags1),
+                    set.list_to_set(Flags1, Flags)
+                ->
+                    Info = remote_message_info(MaybeMessageId, Flags),
+                    Res = yes(UID, Info)
+                ;
+                    Res = error("missing or unexpected flags in FETCH result")
+                )
+            ;
+                ResMaybeMessageId = error(Error),
+                Res = error("bad Message-Id in FETCH result: " ++ Error)
+            )
+        ;
+            Res = error("missing Message-Id in FETCH result")
+        )
     ;
-        true
+        Res = no
     ).
 
-:- pred is_message_id_att(msg_att::in, maybe_message_id::out) is semidet.
+:- pred is_message_id_att(msg_att::in, nstring::out) is semidet.
 
-is_message_id_att(Att, MaybeMessageId) :-
+is_message_id_att(Att, NString) :-
     Att = body(msgtext(header_fields(astring(FieldName), [])), no, NString),
-    strcase_equal(FieldName, "Message-Id"),
+    strcase_equal(FieldName, "Message-Id").
+
+:- pred parse_message_id_att(nstring::in, maybe_error(maybe_message_id)::out)
+    is det.
+
+parse_message_id_att(NString, Res) :-
     (
         (
             NString = yes(quoted(S)),
@@ -338,19 +385,20 @@ is_message_id_att(Att, MaybeMessageId) :-
         read_message_id_from_message_crlf(message(Content), ReadMessageId),
         (
             ReadMessageId = yes(MessageId),
-            MaybeMessageId = message_id(MessageId)
+            Res = ok(message_id(MessageId))
         ;
             ReadMessageId = no,
-            MaybeMessageId = nil
+            Res = ok(nil)
         ;
-            ( ReadMessageId = format_error(_)
-            ; ReadMessageId = error(_)
-            ),
-            unexpected($module, $pred, "failed to parse Message-Id header")
+            ReadMessageId = format_error(Error),
+            Res = error(Error)
+        ;
+            ReadMessageId = error(Error),
+            Res = error(Error)
         )
     ;
         NString = no,
-        MaybeMessageId = nil
+        Res = ok(nil)
     ).
 
 :- pred flag_except_recent(flag_fetch::in, flag::out) is semidet.

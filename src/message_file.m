@@ -190,14 +190,15 @@ extract_message_id([Line | Lines], MaybeMessageId0, Res) :-
                 ( parse_message_id_body(FieldBody, MessageId) ->
                     extract_message_id(Lines, yes(MessageId), Res)
                 ;
-                    Res = format_error("bad Message-Id field body")
+                    Res = format_error("bad Message-Id field body: "
+                        ++ FieldBody)
                 )
             )
         ;
             extract_message_id(RestLines, MaybeMessageId0, Res)
         )
     ;
-        Res = format_error("expected header field")
+        Res = format_error("expected header field: " ++ Line)
     ).
 
 :- pred is_header_field(string::in, list(string)::in, list(string)::out,
