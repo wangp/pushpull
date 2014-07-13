@@ -40,7 +40,6 @@
 :- import_module char.
 :- import_module int.
 :- import_module list.
-:- import_module maybe.
 :- import_module string.
 
 :- import_module string_util.
@@ -167,35 +166,23 @@ read_header_lines_from_string(Input, Delim, Pos0, EndPos, Lines, Res) :-
 
 %-----------------------------------------------------------------------------%
 
-:- pred extract_message_id(list(string)::in, maybe(message_id)::in,
+:- pred extract_message_id(list(string)::in, read_message_id_result::in,
     read_message_id_result::out) is det.
 
-extract_message_id([], MaybeMessageId, Res) :-
-    (
-        MaybeMessageId = yes(MessageId),
-        Res = yes(MessageId)
-    ;
-        MaybeMessageId = no,
-        Res = no
-    ).
-
-extract_message_id([Line | Lines], MaybeMessageId0, Res) :-
+extract_message_id([], Res, Res).
+extract_message_id([Line | Lines], Res0, Res) :-
     ( is_header_field(Line, Lines, RestLines, FieldName, FieldBody) ->
         ( strcase_equal(FieldName, "Message-Id") ->
-            (
-                MaybeMessageId0 = yes(_),
-                Res = format_error("multiple Message-Id header fields")
+            % If there are multiple Message-Id header fields then use the last
+            % one. That seems to be what GMime and Dovecot do.
+            ( parse_message_id_body(FieldBody, MessageId) ->
+                extract_message_id(RestLines, yes(MessageId), Res)
             ;
-                MaybeMessageId0 = no,
-                ( parse_message_id_body(FieldBody, MessageId) ->
-                    extract_message_id(Lines, yes(MessageId), Res)
-                ;
-                    Res = format_error("bad Message-Id field body: "
-                        ++ FieldBody)
-                )
+                Res = format_error("bad Message-Id field body: "
+                    ++ FieldBody)
             )
         ;
-            extract_message_id(RestLines, MaybeMessageId0, Res)
+            extract_message_id(RestLines, Res0, Res)
         )
     ;
         Res = format_error("expected header field: " ++ Line)
