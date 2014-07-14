@@ -78,7 +78,13 @@ update_db_remote_mailbox_state(Log, Db, IMAP, MailboxPair, LastModSeqValzer,
     % UID FETCH ranges.
     % The search return option forces the server to return UIDs using
     % sequence-set syntax (RFC 4731).
-    uid_search(IMAP, modseq(LastModSeqValzer), yes([all]),
+    % Avoid MODSEQ 0; it may be faster on large mailboxes just to ask for ALL.
+    ( LastModSeqValzer = mod_seq_valzer(zero) ->
+        SearchKey = (all)
+    ;
+        SearchKey = modseq(LastModSeqValzer)
+    ),
+    uid_search(IMAP, SearchKey, yes([all]),
         result(ResSearch, Text, Alerts), !IO),
     report_alerts(Log, Alerts, !IO),
     (
@@ -492,6 +498,7 @@ detect_remote_message_expunges(Log, Db, IMAP, MailboxPair, Res, !IO) :-
     % The search return option forces the server to return UIDs using
     % sequence-set syntax (RFC 4731).
     % XXX might be able to reuse UID set from update_db_remote_mailbox_state
+    % but be careful as messages may be added in the mean time
     uid_search(IMAP, all, yes([all]), result(ResSearch, Text, Alerts), !IO),
     report_alerts(Log, Alerts, !IO),
     (
