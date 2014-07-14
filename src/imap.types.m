@@ -252,7 +252,8 @@
 :- type origin_octet == integer.
 
 :- type section
-    --->    msgtext(section_msgtext).
+    --->    entire_message
+    ;       msgtext(section_msgtext).
     %;      part(section_part, section_text).
 
 :- type section_msgtext

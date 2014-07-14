@@ -1108,8 +1108,12 @@ zone(Src, Zone, !PS) :-
 
 section(Src, Section, !PS, !IO) :-
     det_next_char(Src, '[', !PS),
-    section_spec(Src, Section, !PS, !IO),
-    det_next_char(Src, ']', !PS).
+    ( next_char(Src, ']', !PS) ->
+        Section = entire_message
+    ;
+        section_spec(Src, Section, !PS, !IO),
+        det_next_char(Src, ']', !PS)
+    ).
 
 :- pred section_spec(src::in, section::out, ps::in, ps::out, io::di, io::uo)
     is det.

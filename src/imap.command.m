@@ -565,6 +565,7 @@ escape_for_quoted_string(S0) = S :-
 ].
 
 :- instance add(section) where [
+    add(entire_message) --> [],
     add(msgtext(MsgText)) --> add(MsgText)
 ].
 

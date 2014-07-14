@@ -110,6 +110,7 @@ download_message_batch(Log, Config, Database, IMAP, MailboxPair,
         Total, UnpairedRemotes, Res, !Count, !DirCache, !IO) :-
     UIDs = list.map(get_uid, UnpairedRemotes),
     ( make_sequence_set(UIDs, SequenceSet) ->
+        % Use BODY.PEEK instead of RFC822 to avoid setting \Seen flag.
         % Need FLAGS for Maildir filename.
         % INTERNALDATE for setting mtime on new files.
         %
@@ -117,7 +118,8 @@ download_message_batch(Log, Config, Database, IMAP, MailboxPair,
         % a FETCH request, the server MUST include the MODSEQ fetch response
         % data items in all subsequent unsolicited FETCH responses."
         % We will use this to update our highest mod-seq-value.
-        Items = atts(rfc822, [flags, modseq, internaldate]),
+        Items = atts(body_peek(entire_message, no),
+            [flags, modseq, internaldate]),
         uid_fetch(IMAP, SequenceSet, Items, no,
             result(ResFetch, Text, Alerts), !IO),
         report_alerts(Log, Alerts, !IO)
@@ -193,7 +195,7 @@ handle_downloaded_message(Log, Config, Database, MailboxPair,
     % items that we asked for.
     ( find_uid_fetch_result(FetchResults, UID, Atts) ->
         (
-            get_rfc822_att(Atts, RawMessageCrLf),
+            get_entire_body(Atts, RawMessageCrLf),
             get_flags(Atts, Flags),
             get_internaldate(Atts, InternalDate)
         ->
@@ -238,10 +240,14 @@ find_uid_fetch_result(FetchResults, UID, MsgAtts) :-
         (pred(_ - Atts::in) is semidet :- list.member(uid(UID), Atts)),
         FetchResults, _MsgSeqNr - MsgAtts).
 
-:- pred get_rfc822_att(msg_atts::in, message(crlf)::out) is semidet.
+:- pred get_entire_body(msg_atts::in, message(crlf)::out) is semidet.
 
-get_rfc822_att(Atts, message(BinaryString)) :-
-    solutions(pred(X::out) is nondet :- member(rfc822(X), Atts), [NString]),
+get_entire_body(Atts, message(BinaryString)) :-
+    solutions(
+        (pred(X::out) is nondet :-
+            member(body(entire_message, no, X), Atts)
+        ),
+        [NString]),
     NString = yes(IString),
     (
         IString = quoted(S),
