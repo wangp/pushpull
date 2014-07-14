@@ -153,10 +153,19 @@ read_header_lines_from_string(Input, Delim, Pos0, EndPos, Lines, Res) :-
         ;
             Pos2 = Pos1 + length(Delim),
             % Ignore non-UTF-8 lines.
-            ( string_between(Input, Pos0, Pos1, Line) ->
-                Lines = [Line | Lines0],
-                read_header_lines_from_string(Input, Delim, Pos2, EndPos,
-                    Lines0, Res)
+            ( string_between(Input, Pos0, Pos1, Line1) ->
+                % Handle stray CRs before end of line.
+                Line = string.rstrip_pred(cr, Line1),
+                ( Line = "" ->
+                    % Broken file, treat this as the end of the header.
+                    % (The example file had a CR CR LF sequence.)
+                    Lines = [],
+                    Res = ok
+                ;
+                    Lines = [Line | Lines0],
+                    read_header_lines_from_string(Input, Delim, Pos2, EndPos,
+                        Lines0, Res)
+                )
             ;
                 read_header_lines_from_string(Input, Delim, Pos2, EndPos,
                     Lines, Res)
@@ -166,6 +175,10 @@ read_header_lines_from_string(Input, Delim, Pos0, EndPos, Lines, Res) :-
         Lines = [],
         Res = format_error("incomplete line")
     ).
+
+:- pred cr(char::in) is semidet.
+
+cr('\r').
 
 %-----------------------------------------------------------------------------%
 
