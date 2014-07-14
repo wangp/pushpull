@@ -504,12 +504,14 @@ detect_remote_message_expunges(Log, Db, IMAP, MailboxPair, Res, !IO) :-
     (
         ResSearch = ok_with_data(uid_search_result(_UIDs,
             _HighestModSeqValueOfFound, ReturnDatas)),
-        ( get_all_uids_set(ReturnDatas, MaybeSequenceSet) ->
+        ( get_all_uids_diet(ReturnDatas, RemoteUIDs) ->
             search_min_max_uid(Db, MailboxPair, ResMinMaxUID, !IO),
             (
                 ResMinMaxUID = ok(yes({DbMinUID, DbMaxUID})),
+                MissingUIDs = difference(make_interval_set(DbMinUID, DbMaxUID),
+                    RemoteUIDs),
                 mark_expunged_remote_messages(Log, Db, MailboxPair,
-                    DbMinUID, DbMaxUID, MaybeSequenceSet, Res, !IO)
+                    MissingUIDs, Res, !IO)
             ;
                 ResMinMaxUID = ok(no),
                 % Mailbox already empty.
@@ -532,19 +534,17 @@ detect_remote_message_expunges(Log, Db, IMAP, MailboxPair, Res, !IO) :-
     ).
 
 :- pred mark_expunged_remote_messages(log::in, database::in, mailbox_pair::in,
-    uid::in, uid::in, maybe(sequence_set(uid))::in, maybe_error::out,
-    io::di, io::uo) is det.
+    diet(uid)::in, maybe_error::out, io::di, io::uo) is det.
 
-mark_expunged_remote_messages(Log, Db, MailboxPair, DbMinUID, DbMaxUID,
-        MaybeSequenceSet, Res, !IO) :-
+mark_expunged_remote_messages(Log, Db, MailboxPair, MissingUIDs, Res, !IO) :-
     begin_detect_expunge(Db, Res0, !IO),
     (
         Res0 = ok(InsertStmt),
-        insert_inverse(Db, InsertStmt, MaybeSequenceSet,
-            DbMinUID, DbMaxUID, Res1, !IO),
+        foldl2(detect_expunge_insert_uid(Db, InsertStmt), MissingUIDs,
+            ok, Res1, !IO),
         (
             Res1 = ok,
-            mark_expunged_remote_messages(Db, MailboxPair, Res2, !IO),
+            database.mark_expunged_remote_messages(Db, MailboxPair, Res2, !IO),
             (
                 Res2 = ok(Count),
                 ( Count = 0 ->
@@ -628,78 +628,18 @@ sequence_set_element_to_diet(Elem, Diet) :-
         )
     ).
 
-    % XXX inefficient, to replace with diet
-:- pred get_all_uids_set(list(search_return_data(uid))::in,
-    maybe(sequence_set(uid))::out) is semidet.
+:- pred detect_expunge_insert_uid(database::in,
+    insert_into_detect_expunge_stmt::in, uid::in, maybe_error::in,
+    maybe_error::out, io::di, io::uo) is det.
 
-get_all_uids_set(ReturnDatas, MaybeSequenceSet) :-
-    ( ReturnDatas = [] ->
-        % Empty mailbox.
-        MaybeSequenceSet = no
-    ;
-        solutions((pred(Set::out) is nondet :- member(all(Set), ReturnDatas)),
-            [SequenceSet]),
-        MaybeSequenceSet = yes(SequenceSet),
-        sequence_set_only_numbers(SequenceSet)
-    ).
-
-    % XXX inefficient, to replace with diet
-:- pred insert_inverse(database::in, insert_into_detect_expunge_stmt::in,
-    maybe(sequence_set(uid))::in, uid::in, uid::in, maybe_error::out,
-    io::di, io::uo) is det.
-
-insert_inverse(Db, Stmt, MaybeSequenceSet, UID, DbMaxUID, Res, !IO) :-
-    ( UID =< DbMaxUID ->
-        (
-            MaybeSequenceSet = yes(SequenceSet),
-            sequence_set_contains(SequenceSet, UID)
-        ->
-            Res0 = ok
-        ;
-            detect_expunge_insert_uid(Db, Stmt, UID, Res0, !IO)
-        ),
-        (
-            Res0 = ok,
-            insert_inverse(Db, Stmt, MaybeSequenceSet, plus_one(UID), DbMaxUID,
-                Res, !IO)
-        ;
-            Res0 = error(Error),
-            Res = error(Error)
-        )
-    ;
-        Res = ok
-    ).
-
-:- pred sequence_set_contains(sequence_set(uid)::in, uid::in) is semidet.
-
-sequence_set_contains(SequenceSet, UID) :-
+detect_expunge_insert_uid(Db, Stmt, UID, Res0, Res, !IO) :-
     (
-        SequenceSet = cons(Elem, Tail),
-        (
-            element_contains(Elem, UID)
-        ;
-            sequence_set_contains(Tail, UID)
-        )
+        Res0 = ok,
+        database.detect_expunge_insert_uid(Db, Stmt, UID, Res, !IO)
     ;
-        SequenceSet = last(Elem),
-        element_contains(Elem, UID)
+        Res0 = error(_),
+        Res = Res0
     ).
-
-:- pred element_contains(sequence_set_element(uid)::in, uid::in) is semidet.
-
-element_contains(Element, UID) :-
-    (
-        Element = element(number(UID))
-    ;
-        Element = range(number(Low), number(High)),
-        Low =< UID, UID =< High
-    ).
-
-:- pred uid =< uid.
-:- mode in =< in is semidet.
-
-uid(X) =< uid(Y) :-
-    X =< Y.
 
 :- func plus_one(uid) = uid.
 
