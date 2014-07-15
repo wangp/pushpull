@@ -56,10 +56,10 @@
     ;       nomodseq
     ;       highestmodseq(mod_seq_value).
 
-    % open("host:port", Res, Alerts)
+    % open("host:port", MaybeCertificateFile, Res, Alerts)
     %
-:- pred open(string::in, maybe_error(imap)::out, list(alert)::out,
-    io::di, io::uo) is det.
+:- pred open(string::in, maybe(string)::in, maybe_error(imap)::out,
+    list(alert)::out, io::di, io::uo) is det.
 
 :- pred login(imap::in, username::in, imap.password::in, imap_result::out,
     io::di, io::uo) is det.
@@ -243,8 +243,9 @@
 
 %-----------------------------------------------------------------------------%
 
-open(HostPort, Res, Alerts, !IO) :-
-    connect_handshake(tlsv1_client_method, HostPort, ResBio, !IO),
+open(HostPort, MaybeCertificateFile, Res, Alerts, !IO) :-
+    connect_handshake(tlsv1_client_method, HostPort, MaybeCertificateFile,
+        ResBio, !IO),
     (
         ResBio = ok(Bio),
         wait_for_greeting(open(Bio), ResGreeting, !IO),
@@ -279,15 +280,16 @@ open(HostPort, Res, Alerts, !IO) :-
     ;
         ResBio = error(Error),
         Res = error(Error),
-        Alerts = []
+        Alerts = [],
+        % XXX ugly
+        openssl.print_errors(io.stderr_stream, !IO)
     ).
 
-    % XXX verify certificate
-:- pred connect_handshake(method::in, string::in, maybe_error(bio)::out,
-    io::di, io::uo) is det.
+:- pred connect_handshake(method::in, string::in, maybe(string)::in,
+    maybe_error(bio)::out, io::di, io::uo) is det.
 
-connect_handshake(Method, HostPort, Res, !IO) :-
-    setup(Method, HostPort, ResBio, !IO),
+connect_handshake(Method, HostPort, MaybeCertificateFile, Res, !IO) :-
+    setup(Method, HostPort, MaybeCertificateFile, ResBio, !IO),
     (
         ResBio = ok(Bio),
         bio_do_connect(Bio, ResConnect, !IO),

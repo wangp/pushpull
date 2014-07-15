@@ -31,6 +31,7 @@
                 idle :: bool,
                 idle_timeout_secs :: int,
                 sync_on_idle_timeout :: bool,
+                certificate_file :: maybe(string),
                 command_post_sync :: maybe(list(word))
             ).
 
@@ -229,6 +230,12 @@ make_prog_config(Config, ProgConfig, !Errors, !IO) :-
         SyncOnIdleTimeout = no
     ),
 
+    ( nonempty(Config, "ssl", "certificate_file", CertificateFile) ->
+        MaybeCertificateFile = yes(CertificateFile)
+    ;
+        MaybeCertificateFile = no
+    ),
+
     ( nonempty(Config, "pairing", "local", LocalMailboxName0) ->
         LocalMailboxName = local_mailbox_name(LocalMailboxName0)
     ;
@@ -252,7 +259,8 @@ make_prog_config(Config, ProgConfig, !Errors, !IO) :-
     ProgConfig = prog_config(MaybeLogFileName, LogLevel, DbFileName,
         MaildirRoot, Fsync, Buckets, LocalMailboxName,
         Host, UserName, MaybePassword, RemoteMailboxName,
-        Idle, IdleTimeoutSecs, SyncOnIdleTimeout, CommandPostSync).
+        Idle, IdleTimeoutSecs, SyncOnIdleTimeout, MaybeCertificateFile,
+        CommandPostSync).
 
 :- pred nonempty(config::in, config.section::in, string::in,
     string::out) is semidet.

@@ -15,8 +15,11 @@
 
 :- pred library_init(io::di, io::uo) is det.
 
-:- pred setup(method::in, string::in, maybe_error(bio)::out, io::di, io::uo)
-    is det.
+:- pred setup(method::in, string::in, maybe(string)::in, maybe_error(bio)::out,
+    io::di, io::uo) is det.
+
+    % Ugly.
+:- pred print_errors(io.output_stream::in, io::di, io::uo) is det.
 
 :- pred bio_do_connect(bio::in, maybe_error::out, io::di, io::uo) is det.
 
@@ -57,6 +60,7 @@
 
 :- pragma foreign_decl("C", local, "
     #include <openssl/ssl.h>
+    #include <openssl/err.h>
 ").
 
 %-----------------------------------------------------------------------------%
@@ -87,8 +91,16 @@ method_ptr(tlsv1_client_method) = tlsv1_client_method.
 
 %-----------------------------------------------------------------------------%
 
-setup(Method, Host, Res, !IO) :-
-    setup_2(method_ptr(Method), Host, Ok, Bio, Error, !IO),
+    % XXX perform host name checking, X509_check_host in OpenSSL 1.1
+setup(Method, Host, MaybeCertificateFile, Res, !IO) :-
+    (
+        MaybeCertificateFile = yes(CertificateFileOrEmpty)
+    ;
+        MaybeCertificateFile = no,
+        CertificateFileOrEmpty = ""
+    ),
+    setup_2(method_ptr(Method), Host, CertificateFileOrEmpty, Ok, Bio, Error,
+        !IO),
     (
         Ok = yes,
         Res = ok(Bio)
@@ -97,23 +109,24 @@ setup(Method, Host, Res, !IO) :-
         Res = error(Error)
     ).
 
-:- pred setup_2(method_ptr::in, string::in, bool::out, bio::out,
+:- pred setup_2(method_ptr::in, string::in, string::in, bool::out, bio::out,
     string::out, io::di, io::uo) is det.
 
 :- pragma foreign_proc("C",
-    setup_2(Method::in, Host::in, Ok::out, Bio::out, Error::out,
-        _IO0::di, _IO::uo),
+    setup_2(Method::in, Host::in, CertificateFile::in, Ok::out, Bio::out,
+        Error::out, _IO0::di, _IO::uo),
     [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
         may_not_duplicate],
 "
     Error = MR_make_string_const("""");
-    Bio = do_setup(Method, Host, &Error);
+    Bio = do_setup(Method, Host, CertificateFile, &Error);
     Ok = (Bio != NULL) ? MR_YES : MR_NO;
 ").
 
 :- pragma foreign_decl("C", local, "
 static BIO *
-do_setup(const SSL_METHOD *method, const char *host, MR_String *error)
+do_setup(const SSL_METHOD *method, const char *host,
+    const char *certificate_file, MR_String *error)
 {
     SSL_CTX *ctx;
     SSL *ssl;
@@ -124,6 +137,16 @@ do_setup(const SSL_METHOD *method, const char *host, MR_String *error)
         *error = MR_make_string_const(""SSL_CTX_new failed"");
         return NULL;
     }
+
+    if (strlen(certificate_file) > 0 &&
+        SSL_CTX_load_verify_locations(ctx, certificate_file, NULL) != 1)
+    {
+        SSL_CTX_free(ctx);
+        *error = MR_make_string_const(""SSL_CTX_load_verify_locations failed"");
+        return NULL;
+    }
+
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
 
     bio = BIO_new_ssl_connect(ctx);
     if (bio == NULL) {
@@ -146,6 +169,16 @@ do_setup(const SSL_METHOD *method, const char *host, MR_String *error)
 
     return bio;
 }
+").
+
+%-----------------------------------------------------------------------------%
+
+:- pragma foreign_proc("C",
+    print_errors(Stream::in, _IO0::di, _IO::uo),
+    [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
+        may_not_duplicate],
+"
+    ERR_print_errors_fp(MR_file(* (MercuryFile *) Stream));
 ").
 
 %-----------------------------------------------------------------------------%
@@ -176,7 +209,7 @@ bio_do_handshake(Bio, Res, !IO) :-
     ( RC =< 0 ->
         Res = error("error establishing SSL connection")
     ;
-        Res = ok
+        check_peer_certificate(Bio, Res, !IO)
     ).
 
 :- pred bio_do_handshake_2(bio::in, int::out, io::di, io::uo) is det.
@@ -187,6 +220,47 @@ bio_do_handshake(Bio, Res, !IO) :-
         may_not_duplicate],
 "
     RC = BIO_do_handshake(Bio);
+").
+
+%-----------------------------------------------------------------------------%
+
+    % This is probably not necessary because we set SSL_VERIFY_PEER
+    % but it doesn't hurt to check?
+    %
+:- pred check_peer_certificate(bio::in, maybe_error::out, io::di, io::uo)
+    is det.
+
+check_peer_certificate(Bio, Res, !IO) :-
+    check_peer_certificate_2(Bio, Ok, !IO),
+    (
+        Ok = yes,
+        Res = ok
+    ;
+        Ok = no,
+        Res = error("failed to verify peer certificate")
+    ).
+
+:- pred check_peer_certificate_2(bio::in, bool::out, io::di, io::uo) is det.
+
+:- pragma foreign_proc("C",
+    check_peer_certificate_2(Bio::in, Ok::out, _IO0::di, _IO::uo),
+    [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
+        may_not_duplicate],
+"
+    SSL *ssl;
+    X509 *peer_cert;
+
+    BIO_get_ssl(Bio, &ssl);
+    if (ssl == NULL) {
+        Ok = MR_NO;
+    } else {
+        peer_cert = SSL_get_peer_certificate(ssl);
+        if (peer_cert != NULL && SSL_get_verify_result(ssl) == X509_V_OK) {
+            Ok = MR_YES;
+        } else {
+            Ok = MR_NO;
+        }
+    }
 ").
 
 %-----------------------------------------------------------------------------%

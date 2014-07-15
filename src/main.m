@@ -174,7 +174,8 @@ log_in(Log, Config, Password, Db, !IO) :-
     openssl.library_init(!IO),
     HostPort = Config ^ hostport,
     UserName = Config ^ username,
-    imap.open(HostPort, ResOpen, OpenAlerts, !IO),
+    MaybeCertificateFile = Config ^ certificate_file,
+    imap.open(HostPort, MaybeCertificateFile, ResOpen, OpenAlerts, !IO),
     report_alerts(Log, OpenAlerts, !IO),
     (
         ResOpen = ok(IMAP),

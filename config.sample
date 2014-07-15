@@ -2,6 +2,9 @@
 file = plugsink.log
 level = info
 
+[ssl]
+certificate_file = /etc/ssl/certs/ca-certificates.crt
+
 [local]
 state = /home/user/Maildir/.plugsink/state.db
 maildir = /home/user/Maildir
