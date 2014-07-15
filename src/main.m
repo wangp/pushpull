@@ -94,17 +94,47 @@ main_2(Log, Config, !IO) :-
     open_database(DbFileName, ResOpenDb, !IO),
     (
         ResOpenDb = ok(Db),
-        maybe_prompt_password(Config, ResPassword, !IO),
-        (
-            ResPassword = ok(Password),
-            log_in(Log, Config, Password, Db, !IO)
-        ;
-            ResPassword = error(Error),
-            report_error(Log, Error, !IO)
-        ),
+        main_3(Log, Config, Db, !IO),
         close_database(Db, !IO)
     ;
         ResOpenDb = error(Error),
+        report_error(Log, Error, !IO)
+    ).
+
+:- pred main_3(log::in, prog_config::in, database::in, io::di, io::uo) is det.
+
+main_3(Log, Config, Db, !IO) :-
+    maybe_prompt_password(Config, ResPassword, !IO),
+    (
+        ResPassword = ok(Password),
+        open_connection(Config, ResBio, !IO),
+        (
+            ResBio = ok(Bio),
+            imap.open(Bio, ResOpen, OpenAlerts, !IO),
+            report_alerts(Log, OpenAlerts, !IO),
+            (
+                ResOpen = ok(IMAP),
+                do_login(Log, Config, Password, IMAP, ResLogin, !IO),
+                (
+                    ResLogin = yes,
+                    logged_in(Log, Config, Db, IMAP, !IO)
+                ;
+                    ResLogin = no
+                ),
+                log_notice(Log, "Logging out.\n", !IO),
+                logout(IMAP, ResLogout, !IO),
+                log_debug(Log, string(ResLogout), !IO)
+            ;
+                ResOpen = error(Error),
+                report_error(Log, Error, !IO)
+            )
+            % Bio freed already.
+        ;
+            ResBio = error(Error),
+            report_error(Log, Error, !IO)
+        )
+    ;
+        ResPassword = error(Error),
         report_error(Log, Error, !IO)
     ).
 
@@ -119,6 +149,8 @@ print_error(Error, !IO) :-
     io.stderr_stream(Stream, !IO),
     io.write_string(Stream, Error, !IO),
     io.nl(Stream, !IO).
+
+%-----------------------------------------------------------------------------%
 
 :- pred maybe_prompt_password(prog_config::in, maybe_error(password)::out,
     io::di, io::uo) is det.
@@ -167,41 +199,84 @@ prompt_password(username(UserName), HostPort, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-:- pred log_in(log::in, prog_config::in, password::in, database::in,
-    io::di, io::uo) is det.
+:- pred open_connection(prog_config::in, maybe_error(bio)::out, io::di, io::uo)
+    is det.
 
-log_in(Log, Config, Password, Db, !IO) :-
-    openssl.library_init(!IO),
+open_connection(Config, Res, !IO) :-
     HostPort = Config ^ hostport,
-    UserName = Config ^ username,
     MaybeCertificateFile = Config ^ certificate_file,
-    imap.open(HostPort, MaybeCertificateFile, ResOpen, OpenAlerts, !IO),
-    report_alerts(Log, OpenAlerts, !IO),
+    openssl.library_init(!IO),
+    connect_handshake(tlsv1_client_method, HostPort, MaybeCertificateFile,
+        ResBio, !IO),
     (
-        ResOpen = ok(IMAP),
-        login(IMAP, UserName, Password,
-            result(ResLogin, LoginMessage, LoginAlerts), !IO),
-        report_alerts(Log, LoginAlerts, !IO),
-        (
-            ResLogin = ok,
-            log_info(Log, LoginMessage, !IO),
-            logged_in(Log, Config, Db, IMAP, !IO)
-        ;
-            ( ResLogin = no
-            ; ResLogin = bad
-            ; ResLogin = bye
-            ; ResLogin = continue
-            ; ResLogin = error
-            ),
-            report_error(Log, LoginMessage, !IO)
-        ),
-        log_notice(Log, "Logging out.\n", !IO),
-        logout(IMAP, ResLogout, !IO),
-        log_debug(Log, string(ResLogout), !IO)
+        ResBio = ok(Bio),
+        Res = ok(Bio)
     ;
-        ResOpen = error(Error),
-        report_error(Log, Error, !IO)
+        ResBio = error(Error),
+        Res = error(Error),
+        % XXX ugly
+        openssl.print_errors(io.stderr_stream, !IO)
     ).
+
+:- pred connect_handshake(method::in, string::in, maybe(string)::in,
+    maybe_error(bio)::out, io::di, io::uo) is det.
+
+connect_handshake(Method, HostPort, MaybeCertificateFile, Res, !IO) :-
+    setup(Method, HostPort, MaybeCertificateFile, ResBio, !IO),
+    (
+        ResBio = ok(Bio),
+        bio_do_connect(Bio, ResConnect, !IO),
+        (
+            ResConnect = ok,
+            bio_do_handshake(Bio, ResHandshake, !IO),
+            (
+                ResHandshake = ok,
+                Res = ok(Bio)
+            ;
+                ResHandshake = error(Error),
+                Res = error(Error)
+            )
+        ;
+            ResConnect = error(Error),
+            Res = error(Error)
+        ),
+        (
+            Res = ok(_)
+        ;
+            Res = error(_),
+            bio_free_all(Bio, !IO)
+        )
+    ;
+        ResBio = error(Error),
+        Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
+:- pred do_login(log::in, prog_config::in, password::in, imap::in,
+    bool::out, io::di, io::uo) is det.
+
+do_login(Log, Config, Password, IMAP, Res, !IO) :-
+    UserName = Config ^ username,
+    imap.login(IMAP, UserName, Password,
+        result(ResLogin, LoginMessage, LoginAlerts), !IO),
+    report_alerts(Log, LoginAlerts, !IO),
+    (
+        ResLogin = ok,
+        log_info(Log, LoginMessage, !IO),
+        Res = yes
+    ;
+        ( ResLogin = no
+        ; ResLogin = bad
+        ; ResLogin = bye
+        ; ResLogin = continue
+        ; ResLogin = error
+        ),
+        report_error(Log, LoginMessage, !IO),
+        Res = no
+    ).
+
+%-----------------------------------------------------------------------------%
 
 :- pred logged_in(log::in, prog_config::in, database::in, imap::in,
     io::di, io::uo) is det.

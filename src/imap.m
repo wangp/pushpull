@@ -15,6 +15,7 @@
 
 :- import_module binary_string.
 :- import_module imap.types.
+:- import_module openssl.
 
 %-----------------------------------------------------------------------------%
 
@@ -56,10 +57,10 @@
     ;       nomodseq
     ;       highestmodseq(mod_seq_value).
 
-    % open("host:port", MaybeCertificateFile, Res, Alerts)
+    % The ownership of the BIO handle is transferred.
     %
-:- pred open(string::in, maybe(string)::in, maybe_error(imap)::out,
-    list(alert)::out, io::di, io::uo) is det.
+:- pred open(openssl.bio::in, maybe_error(imap)::out, list(alert)::out,
+    io::di, io::uo) is det.
 
 :- pred login(imap::in, username::in, imap.password::in, imap_result::out,
     io::di, io::uo) is det.
@@ -155,7 +156,6 @@
 :- import_module imap.io.
 :- import_module imap.parsing.
 :- import_module imap.response.
-:- import_module openssl.
 
 :- type imap
     --->    imap(
@@ -243,79 +243,35 @@
 
 %-----------------------------------------------------------------------------%
 
-open(HostPort, MaybeCertificateFile, Res, Alerts, !IO) :-
-    connect_handshake(tlsv1_client_method, HostPort, MaybeCertificateFile,
-        ResBio, !IO),
+open(Bio, Res, Alerts, !IO) :-
+    wait_for_greeting(open(Bio), ResGreeting, !IO),
     (
-        ResBio = ok(Bio),
-        wait_for_greeting(open(Bio), ResGreeting, !IO),
+        ResGreeting = ok(Greeting),
         (
-            ResGreeting = ok(Greeting),
-            (
-                Greeting = ok(RespText),
-                handle_greeting_resp_text(RespText, MaybeCaps, Alerts),
-                make_imap(Bio, not_authenticated, MaybeCaps, IMAP, !IO),
-                Res = ok(IMAP)
-            ;
-                Greeting = preauth(RespText),
-                handle_greeting_resp_text(RespText, MaybeCaps, Alerts),
-                make_imap(Bio, authenticated, MaybeCaps, IMAP, !IO),
-                Res = ok(IMAP)
-            ;
-                Greeting = bye(RespText),
-                handle_greeting_resp_text(RespText, _MaybeCaps, Alerts),
-                Res = error("greeted with BYE")
-            )
+            Greeting = ok(RespText),
+            handle_greeting_resp_text(RespText, MaybeCaps, Alerts),
+            make_imap(Bio, not_authenticated, MaybeCaps, IMAP, !IO),
+            Res = ok(IMAP)
         ;
-            ResGreeting = error(Error),
-            Res = error(Error),
-            Alerts = []
-        ),
-        (
-            Res = ok(_)
+            Greeting = preauth(RespText),
+            handle_greeting_resp_text(RespText, MaybeCaps, Alerts),
+            make_imap(Bio, authenticated, MaybeCaps, IMAP, !IO),
+            Res = ok(IMAP)
         ;
-            Res = error(_),
-            bio_free_all(Bio, !IO)
+            Greeting = bye(RespText),
+            handle_greeting_resp_text(RespText, _MaybeCaps, Alerts),
+            Res = error("greeted with BYE")
         )
     ;
-        ResBio = error(Error),
+        ResGreeting = error(Error),
         Res = error(Error),
-        Alerts = [],
-        % XXX ugly
-        openssl.print_errors(io.stderr_stream, !IO)
-    ).
-
-:- pred connect_handshake(method::in, string::in, maybe(string)::in,
-    maybe_error(bio)::out, io::di, io::uo) is det.
-
-connect_handshake(Method, HostPort, MaybeCertificateFile, Res, !IO) :-
-    setup(Method, HostPort, MaybeCertificateFile, ResBio, !IO),
+        Alerts = []
+    ),
     (
-        ResBio = ok(Bio),
-        bio_do_connect(Bio, ResConnect, !IO),
-        (
-            ResConnect = ok,
-            bio_do_handshake(Bio, ResHandshake, !IO),
-            (
-                ResHandshake = ok,
-                Res = ok(Bio)
-            ;
-                ResHandshake = error(Error),
-                Res = error(Error)
-            )
-        ;
-            ResConnect = error(Error),
-            Res = error(Error)
-        ),
-        (
-            Res = ok(_)
-        ;
-            Res = error(_),
-            bio_free_all(Bio, !IO)
-        )
+        Res = ok(_)
     ;
-        ResBio = error(Error),
-        Res = error(Error)
+        Res = error(_),
+        bio_free_all(Bio, !IO)
     ).
 
 :- pred wait_for_greeting(pipe::in, maybe_error(greeting)::out,
