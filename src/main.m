@@ -17,6 +17,7 @@
 :- import_module integer.
 :- import_module list.
 :- import_module maybe.
+:- import_module pair.
 :- import_module string.
 
 :- import_module database.
@@ -107,7 +108,7 @@ main_3(Log, Config, Db, !IO) :-
     maybe_prompt_password(Config, ResPassword, !IO),
     (
         ResPassword = ok(Password),
-        open_connection(Config, ResBio, !IO),
+        open_connection(Log, Config, ResBio, !IO),
         (
             ResBio = ok(Bio),
             imap.open(Bio, ResOpen, OpenAlerts, !IO),
@@ -199,18 +200,32 @@ prompt_password(username(UserName), HostPort, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-:- pred open_connection(prog_config::in, maybe_error(bio)::out, io::di, io::uo)
-    is det.
+:- pred open_connection(log::in, prog_config::in, maybe_error(bio)::out,
+    io::di, io::uo) is det.
 
-open_connection(Config, Res, !IO) :-
+open_connection(Log, Config, Res, !IO) :-
     HostPort = Config ^ hostport,
     MaybeCertificateFile = Config ^ certificate_file,
+
+    log_info(Log, "Connecting to " ++ HostPort, !IO),
     openssl.library_init(!IO),
     connect_handshake(tlsv1_client_method, HostPort, MaybeCertificateFile,
         ResBio, !IO),
     (
-        ResBio = ok(Bio),
-        Res = ok(Bio)
+        ResBio = ok(Bio - CertificateNames),
+        log_debug(Log, "Verified peer certificate", !IO),
+
+        Expected = Config ^ certificate_match_name,
+        ( match_certificate_name(Expected, CertificateNames) ->
+            Res = ok(Bio),
+            log_info(Log, "Peer certificate matches name '" ++
+                Expected ++ "'", !IO)
+        ;
+            bio_free_all(Bio, !IO),
+            log_certificate_names(Log, CertificateNames, !IO),
+            Res = error("Peer certificate does not match name '" ++
+                Expected ++ "'")
+        )
     ;
         ResBio = error(Error),
         Res = error(Error),
@@ -219,7 +234,7 @@ open_connection(Config, Res, !IO) :-
     ).
 
 :- pred connect_handshake(method::in, string::in, maybe(string)::in,
-    maybe_error(bio)::out, io::di, io::uo) is det.
+    maybe_error(pair(bio, certificate_names))::out, io::di, io::uo) is det.
 
 connect_handshake(Method, HostPort, MaybeCertificateFile, Res, !IO) :-
     setup(Method, HostPort, MaybeCertificateFile, ResBio, !IO),
@@ -230,8 +245,8 @@ connect_handshake(Method, HostPort, MaybeCertificateFile, Res, !IO) :-
             ResConnect = ok,
             bio_do_handshake(Bio, ResHandshake, !IO),
             (
-                ResHandshake = ok,
-                Res = ok(Bio)
+                ResHandshake = ok(CertificateNames),
+                Res = ok(Bio - CertificateNames)
             ;
                 ResHandshake = error(Error),
                 Res = error(Error)
@@ -249,6 +264,29 @@ connect_handshake(Method, HostPort, MaybeCertificateFile, Res, !IO) :-
     ;
         ResBio = error(Error),
         Res = error(Error)
+    ).
+
+:- pred match_certificate_name(string::in, certificate_names::in) is semidet.
+
+match_certificate_name(Expected, certificate_names(CommonName, DnsNames)) :-
+    (
+        member(Expected, DnsNames)
+    ;
+        CommonName = Expected
+    ).
+
+:- pred log_certificate_names(log::in, certificate_names::in, io::di, io::uo)
+    is det.
+
+log_certificate_names(Log, certificate_names(CommonName, DnsNames), !IO) :-
+    log_notice(Log, "Peer certificate has common name (CN): " ++ CommonName,
+        !IO),
+    (
+        DnsNames = []
+    ;
+        DnsNames = [_ | _],
+        log_notice(Log, "Peer certificate has DNS names: "
+            ++ join_list(", ", DnsNames), !IO)
     ).
 
 %-----------------------------------------------------------------------------%

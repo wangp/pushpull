@@ -13,6 +13,7 @@ buckets = no
 
 [imap]
 host = imap.example.com:993
+certificate_match_name = imap.example.com
 username = user
 # Leave empty to prompt for password.
 # password =

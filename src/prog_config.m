@@ -25,6 +25,7 @@
                 buckets :: buckets,
                 local_mailbox_name :: local_mailbox_name,
                 hostport :: string,
+                certificate_match_name :: string,
                 username :: username,
                 password :: maybe(password),
                 mailbox :: mailbox,
@@ -184,6 +185,13 @@ make_prog_config(Config, ProgConfig, !Errors, !IO) :-
         cons("missing imap.host", !Errors)
     ),
 
+    ( nonempty(Config, "imap", "certificate_match_name", CertMatchName0) ->
+        CertMatchName = CertMatchName0
+    ;
+        CertMatchName = "",
+        cons("missing imap.certificate_match_name", !Errors)
+    ),
+
     ( nonempty(Config, "imap", "username", UserName0) ->
         UserName = username(UserName0)
     ;
@@ -258,7 +266,7 @@ make_prog_config(Config, ProgConfig, !Errors, !IO) :-
 
     ProgConfig = prog_config(MaybeLogFileName, LogLevel, DbFileName,
         MaildirRoot, Fsync, Buckets, LocalMailboxName,
-        Host, UserName, MaybePassword, RemoteMailboxName,
+        Host, CertMatchName, UserName, MaybePassword, RemoteMailboxName,
         Idle, IdleTimeoutSecs, SyncOnIdleTimeout, MaybeCertificateFile,
         CommandPostSync).
 

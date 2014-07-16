@@ -4,6 +4,7 @@
 :- interface.
 
 :- import_module io.
+:- import_module list.
 :- import_module maybe.
 
 :- import_module binary_string.
@@ -12,6 +13,14 @@
     --->    tlsv1_client_method.
 
 :- type bio.
+
+:- type certificate_names
+    --->    certificate_names(
+                % CN field.
+                common_name :: string,
+                % SubjectAltNames extension; preferred.
+                dns_names :: list(string)
+            ).
 
 :- pred library_init(io::di, io::uo) is det.
 
@@ -23,7 +32,8 @@
 
 :- pred bio_do_connect(bio::in, maybe_error::out, io::di, io::uo) is det.
 
-:- pred bio_do_handshake(bio::in, maybe_error::out, io::di, io::uo) is det.
+:- pred bio_do_handshake(bio::in, maybe_error(certificate_names)::out,
+    io::di, io::uo) is det.
 
 :- pred bio_free_all(bio::in, io::di, io::uo) is det.
 
@@ -49,7 +59,6 @@
 
 :- import_module bool.
 :- import_module int.
-:- import_module list.
 :- import_module string.
 
 :- type method_ptr.
@@ -61,6 +70,7 @@
 :- pragma foreign_decl("C", local, "
     #include <openssl/ssl.h>
     #include <openssl/err.h>
+    #include <openssl/x509v3.h>
 ").
 
 %-----------------------------------------------------------------------------%
@@ -224,43 +234,132 @@ bio_do_handshake(Bio, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-    % This is probably not necessary because we set SSL_VERIFY_PEER
-    % but it doesn't hurt to check?
-    %
-:- pred check_peer_certificate(bio::in, maybe_error::out, io::di, io::uo)
-    is det.
+:- pred check_peer_certificate(bio::in, maybe_error(certificate_names)::out,
+    io::di, io::uo) is det.
 
 check_peer_certificate(Bio, Res, !IO) :-
-    check_peer_certificate_2(Bio, Ok, !IO),
+    check_peer_certificate_2(Bio, Ok, CommonName, DnsNames, !IO),
     (
         Ok = yes,
-        Res = ok
+        Res = ok(certificate_names(CommonName, DnsNames))
     ;
         Ok = no,
-        Res = error("failed to verify peer certificate")
+        Res = error("failed to verify peer certificate or get names")
     ).
 
-:- pred check_peer_certificate_2(bio::in, bool::out, io::di, io::uo) is det.
+:- pred check_peer_certificate_2(bio::in, bool::out, string::out,
+    list(string)::out, io::di, io::uo) is det.
 
 :- pragma foreign_proc("C",
-    check_peer_certificate_2(Bio::in, Ok::out, _IO0::di, _IO::uo),
+    check_peer_certificate_2(Bio::in, Ok::out, CommonName::out, DnsNames::out,
+        _IO0::di, _IO::uo),
     [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
         may_not_duplicate],
 "
-    SSL *ssl;
-    X509 *peer_cert;
+    X509 *cert;
 
-    BIO_get_ssl(Bio, &ssl);
-    if (ssl == NULL) {
-        Ok = MR_NO;
+    cert = get_peer_certificate(Bio);
+    if (cert != NULL) {
+        Ok = MR_YES;
+        CommonName = get_common_name(cert, MR_ALLOC_ID);
+        DnsNames = get_dns_names(cert, MR_ALLOC_ID);
     } else {
-        peer_cert = SSL_get_peer_certificate(ssl);
-        if (peer_cert != NULL && SSL_get_verify_result(ssl) == X509_V_OK) {
-            Ok = MR_YES;
-        } else {
-            Ok = MR_NO;
+        Ok = MR_NO;
+        CommonName = MR_make_string_const("""");
+        DnsNames = MR_list_empty();
+    }
+").
+
+:- pragma foreign_decl("C", local, "
+static MR_String
+copy_asn1_string_utf8(ASN1_STRING *asn1_string, MR_AllocSiteInfoPtr alloc_id)
+{
+    MR_String s;
+    unsigned char *utf8;
+    int rc;
+
+    rc = ASN1_STRING_to_UTF8(&utf8, asn1_string);
+    if (rc < -1) {
+        return NULL;
+    }
+    MR_make_aligned_string_copy_msg(s, (const char *) utf8, alloc_id);
+    OPENSSL_free(utf8);
+    return s;
+}
+
+static X509 *
+get_peer_certificate(BIO *bio)
+{
+    SSL *ssl;
+    X509 *cert;
+
+    BIO_get_ssl(bio, &ssl);
+    if (ssl != NULL) {
+        cert = SSL_get_peer_certificate(ssl);
+        if (cert != NULL) {
+            if (SSL_get_verify_result(ssl) == X509_V_OK) {
+                return cert;
+            }
         }
     }
+
+    return NULL;
+}
+
+static MR_String
+get_common_name(X509 *cert, MR_AllocSiteInfoPtr alloc_id)
+{
+    X509_NAME *subj_name;
+    int index;
+    X509_NAME_ENTRY *entry;
+    ASN1_STRING *entry_data;
+
+    subj_name = X509_get_subject_name(cert);
+    if (subj_name != NULL) {
+        index = X509_NAME_get_index_by_NID(subj_name, NID_commonName, -1);
+        if (index >= 0) {
+            entry = X509_NAME_get_entry(subj_name, index);
+            if (entry != NULL) {
+                entry_data = X509_NAME_ENTRY_get_data(entry);
+                return copy_asn1_string_utf8(entry_data, alloc_id);
+            }
+        }
+    }
+
+    return NULL;
+}
+
+static MR_Word
+get_dns_names(X509 *cert, MR_AllocSiteInfoPtr alloc_id)
+{
+    GENERAL_NAMES *sans;
+    MR_Word list;
+
+    list = MR_list_empty();
+
+    sans = X509_get_ext_d2i(cert, NID_subject_alt_name, NULL, NULL);
+    if (sans != NULL) {
+        int n;
+        int i;
+
+        n = sk_GENERAL_NAME_num(sans);
+        for (i = n - 1; i >= 0; i--) {
+            GENERAL_NAME *san;
+
+            san = sk_GENERAL_NAME_value(sans, i);
+            if (san->type == GEN_DNS) {
+                MR_String s;
+
+                s = copy_asn1_string_utf8(san->d.dNSName, alloc_id);
+                if (s != NULL) {
+                    list = MR_list_cons((MR_Word) s, list);
+                }
+            }
+        }
+    }
+
+    return list;
+}
 ").
 
 %-----------------------------------------------------------------------------%
