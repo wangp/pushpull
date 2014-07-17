@@ -51,6 +51,25 @@
 
 %-----------------------------------------------------------------------------%
 
+:- typeclass plus_one(T, U) where [
+    func plus_one(T) = U
+].
+
+:- instance plus_one(uid, uid) where [
+    plus_one(uid(N)) = uid(N + one)
+].
+
+:- instance plus_one(mod_seq_valzer, mod_seq_valzer) where [
+    plus_one(mod_seq_valzer(N)) = mod_seq_valzer(N + one)
+].
+
+:- func max(mod_seq_valzer, mod_seq_valzer) = mod_seq_valzer.
+
+max(mod_seq_valzer(X), mod_seq_valzer(Y)) = mod_seq_valzer(Max) :-
+    Max = ( X >= Y -> X ; Y ).
+
+%-----------------------------------------------------------------------------%
+
 update_db_remote_mailbox(Log, _Config, Db, IMAP, MailboxPair, LastModSeqValzer,
         HighestModSeqValue, Res, !IO) :-
     update_db_remote_mailbox_state(Log, Db, IMAP, MailboxPair,
@@ -73,9 +92,6 @@ update_db_remote_mailbox(Log, _Config, Db, IMAP, MailboxPair, LastModSeqValzer,
 
 %-----------------------------------------------------------------------------%
 
-    % Update the database's knowledge of the remote mailbox state,
-    % since the last known mod-sequence-value.
-    %
 :- pred update_db_remote_mailbox_state(log::in, database::in, imap::in,
     mailbox_pair::in, mod_seq_valzer::in, mod_seq_value::in, maybe_error::out,
     io::di, io::uo) is det.
@@ -90,7 +106,7 @@ update_db_remote_mailbox_state(Log, Db, IMAP, MailboxPair, LastModSeqValzer,
     ( LastModSeqValzer = mod_seq_valzer(zero) ->
         SearchKey = (all)
     ;
-        SearchKey = modseq(LastModSeqValzer)
+        SearchKey = modseq(plus_one(LastModSeqValzer))
     ),
     uid_search(IMAP, SearchKey, yes([all]),
         result(ResSearch, Text, Alerts), !IO),
@@ -257,11 +273,14 @@ update_uid_range_batch(Log, Db, IMAP, MailboxPair, BatchMin, BatchMax,
     % messages.
     MessageIdField = header_fields(make_astring("Message-Id"), []),
     Items = atts(flags, [body_peek(msgtext(MessageIdField), no)]),
-    % Fetch changes since SinceModSeqValzer.
-    SinceModSeqValzer = mod_seq_valzer(N),
-    ( N = zero ->
+    % Fetch changes _after_ SinceModSeqValzer.
+    ( SinceModSeqValzer = mod_seq_valzer(zero) ->
         ChangedSinceModifier = no
     ;
+        % RFC 4551: "The information described by message data items is only
+        % returned for messages that have mod-sequence BIGGER than
+        % <mod-sequence>."  (my emphasis)
+        SinceModSeqValzer = mod_seq_valzer(N),
         ChangedSinceModifier = yes(changedsince(mod_seq_value(N)))
     ),
     uid_fetch(IMAP, SequenceSet, Items, ChangedSinceModifier,
@@ -648,15 +667,6 @@ detect_expunge_insert_uid(Db, Stmt, UID, Res0, Res, !IO) :-
         Res0 = error(_),
         Res = Res0
     ).
-
-:- func plus_one(uid) = uid.
-
-plus_one(uid(N)) = uid(N + one).
-
-:- func max(mod_seq_valzer, mod_seq_valzer) = mod_seq_valzer.
-
-max(mod_seq_valzer(X), mod_seq_valzer(Y)) = mod_seq_valzer(Max) :-
-    Max = ( X >= Y -> X ; Y ).
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et
