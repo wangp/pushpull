@@ -4,6 +4,7 @@
 :- interface.
 
 :- import_module assoc_list.
+:- import_module bool.
 :- import_module io.
 :- import_module list.
 :- import_module maybe.
@@ -86,6 +87,10 @@
 :- pred update_selected_mailbox_highest_modseqvalue_from_fetches(imap::in,
     io::di, io::uo) is det.
 
+:- pred set_expunge_seen_flag(imap::in, bool::in, io::di, io::uo) is det.
+
+:- pred clear_expunge_seen_flag(imap::in, bool::out, io::di, io::uo) is det.
+
 :- pred append(imap::in, mailbox::in, list(flag)::in, maybe(date_time)::in,
     binary_string::in, imap_result(maybe(appenduid))::out, io::di, io::uo)
     is det.
@@ -138,7 +143,6 @@
 
 :- implementation.
 
-:- import_module bool.
 :- import_module int.
 :- import_module integer.
 :- import_module maybe.
@@ -172,7 +176,8 @@
     --->    imap_state(
                 connection_state :: connection_state,
                 capabilities :: maybe(capability_data),
-                selected :: maybe(selected_mailbox)
+                selected :: maybe(selected_mailbox),
+                expunge_seen :: bool
             ).
 
 :- type connection_state
@@ -344,7 +349,8 @@ handle_greeting_resp_text(RespText, MaybeCaps, Alerts) :-
 make_imap(Bio, ConnState, MaybeCaps, IMAP, !IO) :-
     store.new_mutvar(open(Bio), PipeMutvar, !IO),
     store.new_mutvar(1, TagMutvar, !IO),
-    store.new_mutvar(imap_state(ConnState, MaybeCaps, no), StateMutvar, !IO),
+    store.new_mutvar(imap_state(ConnState, MaybeCaps, no, no), StateMutvar,
+        !IO),
     IMAP = imap(PipeMutvar, TagMutvar, StateMutvar).
 
 %-----------------------------------------------------------------------------%
@@ -846,6 +852,21 @@ update_selected_mailbox_highest_modseqvalue_from_fetches(IMAP, !IO) :-
     ;
         true
     ).
+
+%-----------------------------------------------------------------------------%
+
+set_expunge_seen_flag(IMAP, ExpungeSeen, !IO) :-
+    IMAP = imap(_PipeMutvar, _TagMutvar, StateMutvar),
+    get_mutvar(StateMutvar, State0, !IO),
+    State = State0 ^ expunge_seen := ExpungeSeen,
+    set_mutvar(StateMutvar, State, !IO).
+
+clear_expunge_seen_flag(IMAP, WasExpungeSeen, !IO) :-
+    IMAP = imap(_PipeMutvar, _TagMutvar, StateMutvar),
+    get_mutvar(StateMutvar, State0, !IO),
+    WasExpungeSeen = State0 ^ expunge_seen,
+    State = State0 ^ expunge_seen := no,
+    set_mutvar(StateMutvar, State, !IO).
 
 %-----------------------------------------------------------------------------%
 
@@ -1562,6 +1583,7 @@ apply_selected_mailbox_response_code(ResponseCode, !Sel) :-
 apply_message_data(MessageData, !State, !R) :-
     (
         MessageData = expunge(_),
+        !State ^ expunge_seen := yes,
         (
             !.State ^ selected = yes(Sel0),
             decrement_exists(Sel0, Sel),

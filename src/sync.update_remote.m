@@ -57,7 +57,15 @@ update_db_remote_mailbox(Log, _Config, Db, IMAP, MailboxPair, LastModSeqValzer,
         LastModSeqValzer, HighestModSeqValue, Res0, !IO),
     (
         Res0 = ok,
-        detect_remote_message_expunges(Log, Db, IMAP, MailboxPair, Res, !IO)
+        clear_expunge_seen_flag(IMAP, WasExpungeSeen, !IO),
+        (
+            WasExpungeSeen = yes,
+            detect_remote_message_expunges(Log, Db, IMAP, MailboxPair, Res,
+                !IO)
+        ;
+            WasExpungeSeen = no,
+            Res = ok
+        )
     ;
         Res0 = error(Error),
         Res = error(Error)

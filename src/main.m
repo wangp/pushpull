@@ -329,6 +329,9 @@ logged_in(Log, Config, Db, IMAP, !IO) :-
         ResExamine = ok,
         log_debug(Log, Text, !IO),
 
+        % Assume that expunges may have occurred since the last run.
+        set_expunge_seen_flag(IMAP, yes, !IO),
+
         get_selected_mailbox_uidvalidity(IMAP, MaybeUIDValidity, !IO),
         get_selected_mailbox_highest_modseqvalue(IMAP,
             MaybeHighestModSeqValue, !IO),
