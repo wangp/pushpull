@@ -9,8 +9,8 @@
     % since the last known mod-sequence-value.
     %
 :- pred update_db_remote_mailbox(log::in, prog_config::in, database::in,
-    imap::in, mailbox_pair::in, mod_seq_valzer::in, mod_seq_value::in,
-    maybe_error::out, io::di, io::uo) is det.
+    imap::in, mailbox_pair::in, mod_seq_valzer::in, maybe_error::out, io::di,
+    io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -63,17 +63,28 @@
     plus_one(mod_seq_valzer(N)) = mod_seq_valzer(N + one)
 ].
 
-:- func max(mod_seq_valzer, mod_seq_valzer) = mod_seq_valzer.
+:- typeclass max(T) where [
+    func max(T, T) = T
+].
 
-max(mod_seq_valzer(X), mod_seq_valzer(Y)) = mod_seq_valzer(Max) :-
-    Max = ( X >= Y -> X ; Y ).
+:- instance max(integer) where [
+    max(X, Y) = ( X >= Y -> X ; Y )
+].
+
+:- instance max(mod_seq_valzer) where [
+    max(mod_seq_valzer(X), mod_seq_valzer(Y)) = mod_seq_valzer(max(X, Y))
+].
+
+:- instance max(mod_seq_value) where [
+    max(mod_seq_value(X), mod_seq_value(Y)) = mod_seq_value(max(X, Y))
+].
 
 %-----------------------------------------------------------------------------%
 
 update_db_remote_mailbox(Log, _Config, Db, IMAP, MailboxPair, LastModSeqValzer,
-        HighestModSeqValue, Res, !IO) :-
+        Res, !IO) :-
     update_db_remote_mailbox_state(Log, Db, IMAP, MailboxPair,
-        LastModSeqValzer, HighestModSeqValue, Res0, !IO),
+        LastModSeqValzer, Res0, !IO),
     (
         Res0 = ok,
         clear_expunge_seen_flag(IMAP, WasExpungeSeen, !IO),
@@ -93,11 +104,11 @@ update_db_remote_mailbox(Log, _Config, Db, IMAP, MailboxPair, LastModSeqValzer,
 %-----------------------------------------------------------------------------%
 
 :- pred update_db_remote_mailbox_state(log::in, database::in, imap::in,
-    mailbox_pair::in, mod_seq_valzer::in, mod_seq_value::in, maybe_error::out,
-    io::di, io::uo) is det.
+    mailbox_pair::in, mod_seq_valzer::in, maybe_error::out, io::di, io::uo)
+    is det.
 
 update_db_remote_mailbox_state(Log, Db, IMAP, MailboxPair, LastModSeqValzer,
-        HighestModSeqValue, Res, !IO) :-
+        Res, !IO) :-
     % Find the UIDs in the mailbox so we can decide how to batch large
     % UID FETCH ranges.
     % The search return option forces the server to return UIDs using
@@ -117,19 +128,10 @@ update_db_remote_mailbox_state(Log, Db, IMAP, MailboxPair, LastModSeqValzer,
         ( get_all_uids_diet(ReturnDatas, KnownUIDs) ->
             ( is_empty(KnownUIDs) ->
                 % Skip redundant search.
-                ResUpdate = ok
+                Res = ok
             ;
-                update_db_remote_mailbox_state_2(Log, Db, IMAP, MailboxPair,
-                    KnownUIDs, LastModSeqValzer, HighestModSeqValue, ResUpdate,
-                    !IO)
-            ),
-            (
-                ResUpdate = ok,
-                update_remote_mailbox_modseqvalue(Db, MailboxPair,
-                    HighestModSeqValue, Res, !IO)
-            ;
-                ResUpdate = error(Error),
-                Res = error(Error)
+                update_db_remote_mailbox_state_1(Log, Db, IMAP, MailboxPair,
+                    LastModSeqValzer, KnownUIDs, ReturnDatas, Res, !IO)
             )
         ;
             Res = error("expected UID SEARCH response ALL sequence-set")
@@ -142,6 +144,41 @@ update_db_remote_mailbox_state(Log, Db, IMAP, MailboxPair, LastModSeqValzer,
         ; ResSearch = error
         ),
         Res = error("unexpected response to UID SEARCH: " ++ Text)
+    ).
+
+:- pred update_db_remote_mailbox_state_1(log::in, database::in, imap::in,
+    mailbox_pair::in, mod_seq_valzer::in, diet(uid)::in,
+    list(search_return_data(uid))::in, maybe_error::out, io::di, io::uo)
+    is det.
+
+update_db_remote_mailbox_state_1(Log, Db, IMAP, MailboxPair, LastModSeqValzer,
+        KnownUIDs, ReturnDatas, Res, !IO) :-
+    % Get the highest MODSEQ value that we know of now.
+    get_selected_mailbox_highest_modseqvalue(IMAP, MaybeHighestModSeq, !IO),
+    ( MaybeHighestModSeq = yes(highestmodseq(HighestModSeqValue0)) ->
+        ( get_modseq(ReturnDatas, HighestModSeqValue1) ->
+            HighestModSeqValue =
+                max(HighestModSeqValue0, HighestModSeqValue1)
+        ;
+            HighestModSeqValue = HighestModSeqValue0
+        ),
+        update_db_remote_mailbox_state_2(Log, Db, IMAP, MailboxPair,
+            KnownUIDs, LastModSeqValzer, HighestModSeqValue,
+            ResUpdate, !IO),
+        (
+            ResUpdate = ok,
+            HighestModSeqValue = mod_seq_value(N),
+            log_debug(Log,
+                format("Recording MODSEQ %s for remote mailbox",
+                    [s(to_string(N))]), !IO),
+            update_remote_mailbox_modseqvalue(Db, MailboxPair,
+                HighestModSeqValue, Res, !IO)
+        ;
+            ResUpdate = error(Error),
+            Res = error(Error)
+        )
+    ;
+        Res = error("Cannot support this server (no HIGHESTMODSEQ)")
     ).
 
 :- pred update_db_remote_mailbox_state_2(log::in, database::in, imap::in,
@@ -650,6 +687,13 @@ sequence_set_element_to_diet(Elem, Diet) :-
             Diet = diet.make_interval_set(uid(Y), uid(X))
         )
     ).
+
+:- pred get_modseq(list(search_return_data(uid))::in, mod_seq_value::out)
+    is semidet.
+
+get_modseq(ReturnDatas, ModSeqValue) :-
+    solutions((pred(X::out) is nondet :- member(modseq(X), ReturnDatas)),
+        [ModSeqValue]).
 
 :- pred detect_expunge_insert_uid(database::in,
     insert_into_detect_expunge_stmt::in, uid::in, maybe_error::in,

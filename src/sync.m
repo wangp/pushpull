@@ -25,9 +25,9 @@
     ;       skip.
 
 :- pred sync_mailboxes(log::in, prog_config::in, database::in, imap::in,
-    inotify(S)::in, mailbox_pair::in, mod_seq_valzer::in, mod_seq_value::in,
-    shortcut::in, update_method::in, maybe_error::out, dir_cache::in,
-    dir_cache::out, io::di, io::uo) is det.
+    inotify(S)::in, mailbox_pair::in, mod_seq_valzer::in, shortcut::in,
+    update_method::in, maybe_error::out, dir_cache::in, dir_cache::out,
+    io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -60,7 +60,7 @@
 %-----------------------------------------------------------------------------%
 
 sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
-        HighestModSeqValue, Shortcut, DirCacheUpdate, !:Res, !DirCache, !IO) :-
+        Shortcut, DirCacheUpdate, !:Res, !DirCache, !IO) :-
     Shortcut = shortcut(CheckLocal0, CheckRemote),
     % It might be better to get set of valid UIDs first, then use that
     % as part of update_db_remote_mailbox and for detecting expunges.
@@ -68,7 +68,7 @@ sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
         CheckRemote = check,
         log_debug(Log, "Update remote mailbox state", !IO),
         update_db_remote_mailbox(Log, Config, Db, IMAP, MailboxPair,
-            LastModSeqValzer, HighestModSeqValue, !:Res, !IO)
+            LastModSeqValzer, !:Res, !IO)
     ;
         CheckRemote = skip,
         !:Res = ok

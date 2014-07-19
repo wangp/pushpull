@@ -392,71 +392,60 @@ sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, Shortcut0,
     lookup_remote_mailbox_modseqvalzer(Db, MailboxPair, ResLastModSeqValzer,
         !IO),
     (
-        ResLastModSeqValzer = ok(LastModSeqValzer),
-        % This is the highest MODSEQ value that we know of, which could be
-        % higher by now.
-        get_selected_mailbox_highest_modseqvalue(IMAP, MaybeHighestModSeqValue,
-            !IO),
-        ( MaybeHighestModSeqValue = yes(highestmodseq(HighestModSeqValue)) ->
-            LastModSeqValzer = mod_seq_valzer(Low),
-            HighestModSeqValue = mod_seq_value(High),
-            log_info(Log,
-                format("Synchronising from MODSEQ %s (highest MODSEQ >= %s)\n",
-                    [s(to_string(Low)), s(to_string(High))]), !IO),
+        ResLastModSeqValzer = ok(LastModSeqValzer @ mod_seq_valzer(Low)),
+        log_info(Log,
+            format("Synchronising from MODSEQ %s", [s(to_string(Low))]), !IO),
 
-            sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair,
-                LastModSeqValzer, HighestModSeqValue, Shortcut0,
-                DirCacheUpdate0, ResSync, !DirCache, !IO),
-            (
-                ResSync = ok,
-                get_sigint_count(SigInt, !IO),
-                ( SigInt > 0 ->
-                    true
-                ; Config ^ idle = no ->
-                    true
-                ;
-                    % Clear inotify events prior to idling.  There may be
-                    % events in the queue, particularly those induced by
-                    % renamings performed during the sync cycle, which would
-                    % cause us to wake immediately.
-                    AddNewWatches = Config ^ idle,
-                    update_dir_cache(Log, Inotify,
-                        scan_from_inotify_events(no), AddNewWatches, ResCache,
-                        !DirCache, !IO),
-                    (
-                        ResCache = ok(yes),
-                        ResIdle = ok(sync(shortcut(check, skip))),
-                        DirCacheUpdate1 = scan_from_inotify_events(yes)
-                    ;
-                        ResCache = ok(no),
-                        idle_until_sync(Log, Config, IMAP, Inotify, ResIdle,
-                            !IO),
-                        DirCacheUpdate1 = scan_from_inotify_events(no)
-                    ;
-                        ResCache = error(Error0),
-                        ResIdle = error(Error0),
-                        DirCacheUpdate1 = scan_from_inotify_events(no)
-                    ),
-                    (
-                        ResIdle = ok(sync(Shortcut1)),
-                        update_selected_mailbox_highest_modseqvalue_from_fetches(
-                            IMAP, !IO),
-                        sync_and_repeat(Log, Config, Db, IMAP, Inotify,
-                            MailboxPair, Shortcut1, DirCacheUpdate1,
-                            !DirCache, !IO)
-                    ;
-                        ResIdle = ok(quit)
-                    ;
-                        ResIdle = error(Error),
-                        report_error(Log, Error, !IO)
-                    )
-                )
+        sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair,
+            LastModSeqValzer, Shortcut0, DirCacheUpdate0, ResSync,
+            !DirCache, !IO),
+        (
+            ResSync = ok,
+            get_sigint_count(SigInt, !IO),
+            ( SigInt > 0 ->
+                true
+            ; Config ^ idle = no ->
+                true
             ;
-                ResSync = error(Error),
-                report_error(Log, Error, !IO)
+                % Clear inotify events prior to idling.  There may be
+                % events in the queue, particularly those induced by
+                % renamings performed during the sync cycle, which would
+                % cause us to wake immediately.
+                AddNewWatches = Config ^ idle,
+                update_dir_cache(Log, Inotify,
+                    scan_from_inotify_events(no), AddNewWatches, ResCache,
+                    !DirCache, !IO),
+                (
+                    ResCache = ok(yes),
+                    ResIdle = ok(sync(shortcut(check, skip))),
+                    DirCacheUpdate1 = scan_from_inotify_events(yes)
+                ;
+                    ResCache = ok(no),
+                    idle_until_sync(Log, Config, IMAP, Inotify, ResIdle,
+                        !IO),
+                    DirCacheUpdate1 = scan_from_inotify_events(no)
+                ;
+                    ResCache = error(Error0),
+                    ResIdle = error(Error0),
+                    DirCacheUpdate1 = scan_from_inotify_events(no)
+                ),
+                (
+                    ResIdle = ok(sync(Shortcut1)),
+                    update_selected_mailbox_highest_modseqvalue_from_fetches(
+                        IMAP, !IO),
+                    sync_and_repeat(Log, Config, Db, IMAP, Inotify,
+                        MailboxPair, Shortcut1, DirCacheUpdate1,
+                        !DirCache, !IO)
+                ;
+                    ResIdle = ok(quit)
+                ;
+                    ResIdle = error(Error),
+                    report_error(Log, Error, !IO)
+                )
             )
         ;
-            report_error(Log, "Cannot support this server.", !IO)
+            ResSync = error(Error),
+            report_error(Log, Error, !IO)
         )
     ;
         ResLastModSeqValzer = error(Error),
