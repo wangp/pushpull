@@ -428,26 +428,33 @@ sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, Shortcut0,
                         CheckLocal = skip,
                         DirCacheUpdate1 = scan_from_inotify_events(no)
                     ),
-                    % XXX should CheckRemote if server sent RECENT or EXPUNGE
-                    CheckRemote = skip,
+                    % NOOP lets the server update us before we IDLE.
+                    noop(Log, IMAP, ResNoop, !IO),
                     (
-                        CheckLocal = skip,
-                        CheckRemote = skip
-                    ->
-                        idle_until_sync(Log, Config, IMAP, Inotify, ResIdle,
-                            !IO)
+                        ResNoop = ok,
+                        should_check_remote(IMAP, CheckRemote, !IO),
+                        (
+                            CheckLocal = skip,
+                            CheckRemote = skip
+                        ->
+                            idle_until_sync(Log, Config, IMAP, Inotify,
+                                ResIdle, !IO)
+                        ;
+                            ResIdle = sync(shortcut(CheckLocal, CheckRemote))
+                        ),
+                        (
+                            ResIdle = sync(Shortcut1),
+                            sync_and_repeat(Log, Config, Db, IMAP, Inotify,
+                                MailboxPair, Shortcut1, DirCacheUpdate1,
+                                !DirCache, !IO)
+                        ;
+                            ResIdle = quit
+                        ;
+                            ResIdle = error(Error),
+                            report_error(Log, Error, !IO)
+                        )
                     ;
-                        ResIdle = sync(shortcut(CheckLocal, CheckRemote))
-                    ),
-                    (
-                        ResIdle = sync(Shortcut1),
-                        sync_and_repeat(Log, Config, Db, IMAP, Inotify,
-                            MailboxPair, Shortcut1, DirCacheUpdate1,
-                            !DirCache, !IO)
-                    ;
-                        ResIdle = quit
-                    ;
-                        ResIdle = error(Error),
+                        ResNoop = error(Error),
                         report_error(Log, Error, !IO)
                     )
                 ;
@@ -462,6 +469,42 @@ sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, Shortcut0,
     ;
         ResLastModSeqValzer = error(Error),
         report_error(Log, Error, !IO)
+    ).
+
+:- pred noop(log::in, imap::in, maybe_error::out, io::di, io::uo) is det.
+
+noop(Log, IMAP, Res, !IO) :-
+    noop(IMAP, result(Res0, Text, Alerts), !IO),
+    report_alerts(Log, Alerts, !IO),
+    (
+        Res0 = ok,
+        log_debug(Log, Text, !IO),
+        Res = ok
+    ;
+        ( Res0 = no
+        ; Res0 = bad
+        ; Res0 = bye
+        ; Res0 = continue
+        ; Res0 = error
+        ),
+        Res = error("unexpected response to NOOP: " ++ Text)
+    ).
+
+:- pred should_check_remote(imap::in, check::out, io::di, io::uo) is det.
+
+should_check_remote(IMAP, CheckRemote, !IO) :-
+    % If either EXISTS or EXPUNGE responses were seen from the server then
+    % immediately sync again instead of entering IDLE.  The EXPUNGE seen flag
+    % must be left intact for expunge detection to be run.
+    clear_exists_seen_flag(IMAP, ExistsSeen, !IO),
+    read_expunge_seen_flag(IMAP, ExpungeSeen, !IO),
+    (
+        ExistsSeen = no,
+        ExpungeSeen = no
+    ->
+        CheckRemote = skip
+    ;
+        CheckRemote = check
     ).
 
 :- pred idle_until_sync(log::in, prog_config::in, imap::in, inotify(S)::in,

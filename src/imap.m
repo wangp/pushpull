@@ -87,8 +87,10 @@
 :- pred update_selected_mailbox_highest_modseqvalue_from_fetches(imap::in,
     io::di, io::uo) is det.
 
-:- pred set_expunge_seen_flag(imap::in, bool::in, io::di, io::uo) is det.
+:- pred clear_exists_seen_flag(imap::in, bool::out, io::di, io::uo) is det.
 
+:- pred set_expunge_seen_flag(imap::in, bool::in, io::di, io::uo) is det.
+:- pred read_expunge_seen_flag(imap::in, bool::out, io::di, io::uo) is det.
 :- pred clear_expunge_seen_flag(imap::in, bool::out, io::di, io::uo) is det.
 
 :- pred append(imap::in, mailbox::in, list(flag)::in, maybe(date_time)::in,
@@ -192,26 +194,27 @@
     --->    selected_mailbox(
                 selected_mailbox :: mailbox,
                 access :: access,
-                flags :: list(flag),
                 % Defined flags in the mailbox.
-                exists :: integer,
+                flags :: list(flag),
                 % The number of messages in the mailbox.
-                recent :: integer,
+                exists :: integer,
+                exists_seen :: bool,
                 % The number of messages with the \Recent flag set.
-                unseen :: maybe(message_seq_nr),
+                recent :: integer,
                 % If this is missing, the client can not make any
                 % assumptions about the first unseen message in the
                 % mailbox.
-                permanent_flags :: maybe(permanent_flags),
+                unseen :: maybe(message_seq_nr),
                 % If this is missing, the client should assume that
                 % all flags can be changed permanently.
-                uidnext :: maybe(uid),
+                permanent_flags :: maybe(permanent_flags),
                 % If this is missing, the client can not make any
                 % assumptions about the next unique identifier
                 % value.
-                uidvalidity :: maybe(uidvalidity),
+                uidnext :: maybe(uid),
                 % If this is missing, the server does not support
                 % unique identifiers.
+                uidvalidity :: maybe(uidvalidity),
                 highestmodseq :: highestmodseq,
 
                 % [RFC 5162] Whenever the client receives a tagged response to
@@ -792,7 +795,7 @@ apply_select_or_examine_response(Mailbox, Response, unit, !State, !Alerts, !IO)
 :- func new_selected_mailbox(mailbox) = selected_mailbox.
 
 new_selected_mailbox(Mailbox) =
-    selected_mailbox(Mailbox, read_only, [], zero, zero, no, no, no, no,
+    selected_mailbox(Mailbox, read_only, [], zero, no, zero, no, no, no, no,
         unknown, no).
 
 %-----------------------------------------------------------------------------%
@@ -856,11 +859,32 @@ update_selected_mailbox_highest_modseqvalue_from_fetches(IMAP, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
+clear_exists_seen_flag(IMAP, WasExistsSeen, !IO) :-
+    IMAP = imap(_PipeMutvar, _TagMutvar, StateMutvar),
+    get_mutvar(StateMutvar, State0, !IO),
+    (
+        State0 ^ selected = yes(Sel0),
+        WasExistsSeen = Sel0 ^ exists_seen,
+        Sel = Sel0 ^ exists_seen := no,
+        State = State0 ^ selected := yes(Sel),
+        set_mutvar(StateMutvar, State, !IO)
+    ;
+        State0 ^ selected = no,
+        WasExistsSeen = no
+    ).
+
+%-----------------------------------------------------------------------------%
+
 set_expunge_seen_flag(IMAP, ExpungeSeen, !IO) :-
     IMAP = imap(_PipeMutvar, _TagMutvar, StateMutvar),
     get_mutvar(StateMutvar, State0, !IO),
     State = State0 ^ expunge_seen := ExpungeSeen,
     set_mutvar(StateMutvar, State, !IO).
+
+read_expunge_seen_flag(IMAP, WasExpungeSeen, !IO) :-
+    IMAP = imap(_PipeMutvar, _TagMutvar, StateMutvar),
+    get_mutvar(StateMutvar, State0, !IO),
+    WasExpungeSeen = State0 ^ expunge_seen.
 
 clear_expunge_seen_flag(IMAP, WasExpungeSeen, !IO) :-
     IMAP = imap(_PipeMutvar, _TagMutvar, StateMutvar),
@@ -1522,7 +1546,8 @@ apply_mailbox_data(MailboxData, State0, State, !R) :-
     ;
         MailboxData = exists(Exists),
         % This is not supposed to decrease except after EXPUNGE.
-        Sel = Sel0 ^ exists := Exists
+        Sel1 = Sel0 ^ exists := Exists,
+        Sel = Sel1 ^ exists_seen := yes
     ;
         MailboxData = recent(Recent),
         Sel = Sel0 ^ recent := Recent

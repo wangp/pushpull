@@ -83,6 +83,9 @@
 
 update_db_remote_mailbox(Log, _Config, Db, IMAP, MailboxPair, LastModSeqValzer,
         Res, !IO) :-
+    % Clear the EXISTS seen flag so we can tell if the remote mailbox changed
+    % after now, and hence warrants another synchronisation cycle.
+    clear_exists_seen_flag(IMAP, _, !IO),
     update_db_remote_mailbox_state(Log, Db, IMAP, MailboxPair,
         LastModSeqValzer, Res0, !IO),
     (
