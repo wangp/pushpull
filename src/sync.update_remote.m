@@ -115,8 +115,22 @@ update_db_remote_mailbox_state(Log, Db, IMAP, MailboxPair, LastModSeqValzer,
         ResSearch = ok_with_data(uid_search_result(_UIDs,
             _HighestModSeqValueOfFound, ReturnDatas)),
         ( get_all_uids_diet(ReturnDatas, KnownUIDs) ->
-            update_db_remote_mailbox_state_2(Log, Db, IMAP, MailboxPair,
-                KnownUIDs, LastModSeqValzer, HighestModSeqValue, Res, !IO)
+            ( is_empty(KnownUIDs) ->
+                % Skip redundant search.
+                ResUpdate = ok
+            ;
+                update_db_remote_mailbox_state_2(Log, Db, IMAP, MailboxPair,
+                    KnownUIDs, LastModSeqValzer, HighestModSeqValue, ResUpdate,
+                    !IO)
+            ),
+            (
+                ResUpdate = ok,
+                update_remote_mailbox_modseqvalue(Db, MailboxPair,
+                    HighestModSeqValue, Res, !IO)
+            ;
+                ResUpdate = error(Error),
+                Res = error(Error)
+            )
         ;
             Res = error("expected UID SEARCH response ALL sequence-set")
         )
@@ -167,7 +181,7 @@ update_db_remote_mailbox_state_2(Log, Db, IMAP, MailboxPair, KnownUIDs,
             (
                 ResMinModSeq = ok(MinModSeq),
                 SinceModSeq = max(LastModSeqValzer, MinModSeq),
-                update_uid_range_then_finalise(Log, Db, IMAP, MailboxPair,
+                update_uid_range(Log, Db, IMAP, MailboxPair,
                     KnownUIDs, uid(one), yes(MidUID), SinceModSeq,
                     HighestModSeqValue, Res, !IO)
             ;
@@ -181,28 +195,10 @@ update_db_remote_mailbox_state_2(Log, Db, IMAP, MailboxPair, KnownUIDs,
     ;
         ResMidUID = ok(no),
         % Previous update pass was completed.  Update 1:*
-        update_uid_range_then_finalise(Log, Db, IMAP, MailboxPair, KnownUIDs,
+        update_uid_range(Log, Db, IMAP, MailboxPair, KnownUIDs,
             uid(one), no, LastModSeqValzer, HighestModSeqValue, Res, !IO)
     ;
         ResMidUID = error(Error),
-        Res = error(Error)
-    ).
-
-:- pred update_uid_range_then_finalise(log::in, database::in, imap::in,
-    mailbox_pair::in, diet(uid)::in, uid::in, maybe(uid)::in,
-    mod_seq_valzer::in, mod_seq_value::in, maybe_error::out, io::di, io::uo)
-    is det.
-
-update_uid_range_then_finalise(Log, Db, IMAP, MailboxPair, KnownUIDs,
-        RangeMin, RangeMax, SinceModSeqValzer, HighestModSeqValue, Res, !IO) :-
-    update_uid_range(Log, Db, IMAP, MailboxPair, KnownUIDs, RangeMin, RangeMax,
-        SinceModSeqValzer, HighestModSeqValue, Res0, !IO),
-    (
-        Res0 = ok,
-        update_remote_mailbox_modseqvalue(Db, MailboxPair, HighestModSeqValue,
-            Res, !IO)
-    ;
-        Res0 = error(Error),
         Res = error(Error)
     ).
 
