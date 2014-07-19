@@ -1308,6 +1308,10 @@ search_return_data(Src, ReturnData, !PS, !IO) :-
     ; Atom = atom("COUNT") ->
         detify(number, Src, Number, !PS),
         ReturnData = count(Number)
+    ; Atom = atom("MODSEQ") ->
+        % RFC 4731
+        detify(mod_seq_value, Src, ModSeqValue, !PS),
+        ReturnData = modseq(ModSeqValue)
     ;
         tagged_ext_val(Src, Value, !PS, !IO),
         ReturnData = other(Name, Value)

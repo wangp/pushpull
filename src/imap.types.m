@@ -123,6 +123,7 @@
     ;       max(integer)
     ;       all(sequence_set(T))
     ;       count(integer)
+    ;       modseq(mod_seq_value)
     ;       other(tagged_ext_label, tagged_ext_val(T)).
 
 :- type tagged_ext_label
