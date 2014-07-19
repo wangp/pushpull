@@ -154,6 +154,7 @@ update_db_remote_mailbox_state(Log, Db, IMAP, MailboxPair, LastModSeqValzer,
 update_db_remote_mailbox_state_1(Log, Db, IMAP, MailboxPair, LastModSeqValzer,
         KnownUIDs, ReturnDatas, Res, !IO) :-
     % Get the highest MODSEQ value that we know of now.
+    update_selected_mailbox_highest_modseqvalue_from_fetches(IMAP, !IO),
     get_selected_mailbox_highest_modseqvalue(IMAP, MaybeHighestModSeq, !IO),
     ( MaybeHighestModSeq = yes(highestmodseq(HighestModSeqValue0)) ->
         ( get_modseq(ReturnDatas, HighestModSeqValue1) ->

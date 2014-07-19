@@ -38,12 +38,14 @@
 
 :- type idle_next_outer
     --->    quit
-    ;       sync(shortcut).
+    ;       sync(shortcut)
+    ;       error(string).
 
 :- type idle_next_inner
     --->    quit
     ;       sync(shortcut)
-    ;       restart_idle.
+    ;       restart_idle
+    ;       error(string).
 
 %-----------------------------------------------------------------------------%
 
@@ -416,30 +418,40 @@ sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, Shortcut0,
                     scan_from_inotify_events(no), AddNewWatches, ResCache,
                     !DirCache, !IO),
                 (
-                    ResCache = ok(yes),
-                    ResIdle = ok(sync(shortcut(check, skip))),
-                    DirCacheUpdate1 = scan_from_inotify_events(yes)
+                    ResCache = ok(Changed),
+                    (
+                        Changed = yes,
+                        CheckLocal = check,
+                        DirCacheUpdate1 = scan_from_inotify_events(yes)
+                    ;
+                        Changed = no,
+                        CheckLocal = skip,
+                        DirCacheUpdate1 = scan_from_inotify_events(no)
+                    ),
+                    % XXX should CheckRemote if server sent RECENT or EXPUNGE
+                    CheckRemote = skip,
+                    (
+                        CheckLocal = skip,
+                        CheckRemote = skip
+                    ->
+                        idle_until_sync(Log, Config, IMAP, Inotify, ResIdle,
+                            !IO)
+                    ;
+                        ResIdle = sync(shortcut(CheckLocal, CheckRemote))
+                    ),
+                    (
+                        ResIdle = sync(Shortcut1),
+                        sync_and_repeat(Log, Config, Db, IMAP, Inotify,
+                            MailboxPair, Shortcut1, DirCacheUpdate1,
+                            !DirCache, !IO)
+                    ;
+                        ResIdle = quit
+                    ;
+                        ResIdle = error(Error),
+                        report_error(Log, Error, !IO)
+                    )
                 ;
-                    ResCache = ok(no),
-                    idle_until_sync(Log, Config, IMAP, Inotify, ResIdle,
-                        !IO),
-                    DirCacheUpdate1 = scan_from_inotify_events(no)
-                ;
-                    ResCache = error(Error0),
-                    ResIdle = error(Error0),
-                    DirCacheUpdate1 = scan_from_inotify_events(no)
-                ),
-                (
-                    ResIdle = ok(sync(Shortcut1)),
-                    update_selected_mailbox_highest_modseqvalue_from_fetches(
-                        IMAP, !IO),
-                    sync_and_repeat(Log, Config, Db, IMAP, Inotify,
-                        MailboxPair, Shortcut1, DirCacheUpdate1,
-                        !DirCache, !IO)
-                ;
-                    ResIdle = ok(quit)
-                ;
-                    ResIdle = error(Error),
+                    ResCache = error(Error),
                     report_error(Log, Error, !IO)
                 )
             )
@@ -453,7 +465,7 @@ sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, Shortcut0,
     ).
 
 :- pred idle_until_sync(log::in, prog_config::in, imap::in, inotify(S)::in,
-    maybe_error(idle_next_outer)::out, io::di, io::uo) is det.
+    idle_next_outer::out, io::di, io::uo) is det.
 
 idle_until_sync(Log, Config, IMAP, Inotify, Res, !IO) :-
     % Send IDLE command.
@@ -466,15 +478,15 @@ idle_until_sync(Log, Config, IMAP, Inotify, Res, !IO) :-
         log_debug(Log, IdleText, !IO),
         idle_until_done(Log, Config, IMAP, Inotify, StartTime, Res1, !IO),
         (
-            Res1 = ok(sync(Shortcut)),
+            Res1 = sync(Shortcut),
             sleep(1, !IO),
-            Res = ok(sync(Shortcut))
+            Res = sync(Shortcut)
         ;
-            Res1 = ok(restart_idle),
+            Res1 = restart_idle,
             idle_until_sync(Log, Config, IMAP, Inotify, Res, !IO)
         ;
-            Res1 = ok(quit),
-            Res = ok(quit)
+            Res1 = quit,
+            Res = quit
         ;
             Res1 = error(Error),
             Res = error(Error)
@@ -492,18 +504,21 @@ idle_until_sync(Log, Config, IMAP, Inotify, Res, !IO) :-
     ).
 
 :- pred idle_until_done(log::in, prog_config::in, imap::in, inotify(S)::in,
-    int::in, maybe_error(idle_next_inner)::out, io::di, io::uo) is det.
+    int::in, idle_next_inner::out, io::di, io::uo) is det.
 
 idle_until_done(Log, Config, IMAP, Inotify, StartTime, Res, !IO) :-
     idle_loop(Log, Config, IMAP, Inotify, StartTime, Res0, !IO),
     (
-        Res0 = ok(Next),
+        ( Res0 = quit
+        ; Res0 = sync(_)
+        ; Res0 = restart_idle
+        ),
         % Send IDLE DONE.
         idle_done(IMAP, result(ResDone, DoneText, DoneAlerts), !IO),
         report_alerts(Log, DoneAlerts, !IO),
         (
             ResDone = ok,
-            Res = ok(Next)
+            Res = Res0
         ;
             ( ResDone = no
             ; ResDone = bad
@@ -519,7 +534,7 @@ idle_until_done(Log, Config, IMAP, Inotify, StartTime, Res, !IO) :-
     ).
 
 :- pred idle_loop(log::in, prog_config::in, imap::in, inotify(S)::in, int::in,
-    maybe_error(idle_next_inner)::out, io::di, io::uo) is det.
+    idle_next_inner::out, io::di, io::uo) is det.
 
 idle_loop(Log, Config, IMAP, Inotify, StartTime, Res, !IO) :-
     gettimeofday(Now, _, !IO),
@@ -551,7 +566,7 @@ idle_loop(Log, Config, IMAP, Inotify, StartTime, Res, !IO) :-
                 ->
                     idle_loop(Log, Config, IMAP, Inotify, StartTime, Res, !IO)
                 ;
-                    Res = ok(sync(shortcut(CheckLocal, CheckRemote)))
+                    Res = sync(shortcut(CheckLocal, CheckRemote))
                 )
             ;
                 Res2 = error(Error),
@@ -562,15 +577,15 @@ idle_loop(Log, Config, IMAP, Inotify, StartTime, Res, !IO) :-
             SyncOnIdleTimeout = Config ^ sync_on_idle_timeout,
             (
                 SyncOnIdleTimeout = yes,
-                Res = ok(sync(shortcut(skip, check)))
+                Res = sync(shortcut(skip, check))
             ;
                 SyncOnIdleTimeout = no,
-                Res = ok(restart_idle)
+                Res = restart_idle
             )
         ;
             Res0 = interrupt,
             log_notice(Log, "Interrupted.\n", !IO),
-            Res = ok(quit)
+            Res = quit
         ;
             Res0 = error(Error),
             Res = error(Error)

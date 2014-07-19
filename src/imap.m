@@ -823,6 +823,7 @@ get_selected_mailbox_highest_modseqvalue(IMAP, Res, !IO) :-
         Res = no
     ).
 
+    % XXX maybe we can do this implicitly now
 update_selected_mailbox_highest_modseqvalue_from_fetches(IMAP, !IO) :-
     IMAP = imap(_PipeMutvar, _TagMutvar, StateMutvar),
     get_mutvar(StateMutvar, State0, !IO),
