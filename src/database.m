@@ -55,13 +55,12 @@
     local_mailbox_name::in, remote_mailbox_name::in, uidvalidity::in,
     maybe_error::out, io::di, io::uo) is det.
 
-:- type lookup_mailbox_pair_result
-    --->    found(mailbox_pair, mod_seq_valzer)
-    ;       error(string).
-
 :- pred lookup_mailbox_pair(database::in,
     local_mailbox_name::in, remote_mailbox_name::in, uidvalidity::in,
-    lookup_mailbox_pair_result::out, io::di, io::uo) is det.
+    maybe_error(mailbox_pair)::out, io::di, io::uo) is det.
+
+:- pred lookup_remote_mailbox_modseqvalzer(database::in, mailbox_pair::in,
+    maybe_error(mod_seq_valzer)::out, io::di, io::uo) is det.
 
 :- pred update_remote_mailbox_modseqvalue(database::in, mailbox_pair::in,
     mod_seq_value::in, maybe_error::out, io::di, io::uo) is det.
@@ -713,7 +712,7 @@ insert_or_ignore_local_mailbox_2(Db, Stmt, Res, !IO) :-
 lookup_mailbox_pair(Db, LocalMailboxName, RemoteMailboxName, UIDValidity, Res,
         !IO) :-
     Stmt =
-        "SELECT mailbox_pair_id, last_modseqvalzer FROM mailbox_pair
+        "SELECT mailbox_pair_id FROM mailbox_pair
           WHERE local_mailbox = :local_mailbox
             AND remote_mailbox = :remote_mailbox
             AND uidvalidity = :uidvalidity",
@@ -728,7 +727,7 @@ lookup_mailbox_pair(Db, LocalMailboxName, RemoteMailboxName, UIDValidity, Res,
         Db, Stmt, Bindings, Res, !IO).
 
 :- pred lookup_mailbox_pair_2(local_mailbox_name::in, remote_mailbox_name::in,
-    uidvalidity::in, db(rw)::in, stmt::in, lookup_mailbox_pair_result::out,
+    uidvalidity::in, db(rw)::in, stmt::in, maybe_error(mailbox_pair)::out,
     io::di, io::uo) is det.
 
 lookup_mailbox_pair_2(LocalMailboxName, RemoteMailboxName, UIDValidity,
@@ -740,14 +739,45 @@ lookup_mailbox_pair_2(LocalMailboxName, RemoteMailboxName, UIDValidity,
     ;
         StepResult = row,
         column_int(Stmt, column(0), X0, !IO),
-        column_text(Stmt, column(1), X1, !IO),
-        (
-            convert(X0, MailboxPairId),
-            convert(X1, ModSeqValzer)
-        ->
+        ( convert(X0, MailboxPairId) ->
             MailboxPair = mailbox_pair(MailboxPairId, LocalMailboxName,
                 RemoteMailboxName, UIDValidity),
-            Res = found(MailboxPair, ModSeqValzer)
+            Res = ok(MailboxPair)
+        ;
+            Res = error("database error")
+        )
+    ;
+        StepResult = error(Error),
+        Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
+lookup_remote_mailbox_modseqvalzer(Db, MailboxPair, Res, !IO) :-
+    MailboxPair = mailbox_pair(MailboxPairId, _, _, _),
+    Stmt =
+        "SELECT last_modseqvalzer FROM mailbox_pair
+          WHERE mailbox_pair_id = :mailbox_pair_id",
+    Bindings = [
+        name(":mailbox_pair_id") - bind_value(MailboxPairId)
+    ],
+    with_stmt(
+        lookup_remote_mailbox_modseqvalzer_2,
+        Db, Stmt, Bindings, Res, !IO).
+
+:- pred lookup_remote_mailbox_modseqvalzer_2(db(rw)::in, stmt::in,
+    maybe_error(mod_seq_valzer)::out, io::di, io::uo) is det.
+
+lookup_remote_mailbox_modseqvalzer_2(Db, Stmt, Res, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
+    (
+        StepResult = done,
+        Res = error("mailbox_pair not found")
+    ;
+        StepResult = row,
+        column_text(Stmt, column(0), X1, !IO),
+        ( convert(X1, ModSeqValzer) ->
+            Res = ok(ModSeqValzer)
         ;
             Res = error("database error")
         )
