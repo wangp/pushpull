@@ -62,7 +62,7 @@
     --->    ok(prog_config)
     ;       errors(list(string)).
 
-:- pred load_prog_config(string::in, load_prog_config_result::out,
+:- pred load_prog_config(string::in, string::in, load_prog_config_result::out,
     io::di, io::uo) is cc_multi.
 
 %-----------------------------------------------------------------------------%
@@ -72,6 +72,7 @@
 
 :- import_module dir.
 :- import_module int.
+:- import_module map.
 :- import_module parsing_utils.
 :- import_module string.
 
@@ -86,33 +87,27 @@ make_local_mailbox_path(Config, local_mailbox_name(MailboxName)) = Path :-
 
 %-----------------------------------------------------------------------------%
 
-load_prog_config(FileName, Res, !IO) :-
+load_prog_config(FileName, PairingName, Res, !IO) :-
     load_config_file(FileName, LoadRes, !IO),
     (
         LoadRes = ok(Config),
-        load_prog_config_2(Config, Res, !IO)
+        make_prog_config(Config, PairingName, ProgConfig, [], RevErrors, !IO),
+        (
+            RevErrors = [],
+            Res = ok(ProgConfig)
+        ;
+            RevErrors = [_ | _],
+            Res = errors(reverse(RevErrors))
+        )
     ;
         LoadRes = error(Error),
         Res = errors([io.error_message(Error)])
     ).
 
-:- pred load_prog_config_2(config::in, load_prog_config_result::out,
-    io::di, io::uo) is cc_multi.
-
-load_prog_config_2(Config, Res, !IO) :-
-    make_prog_config(Config, ProgConfig, [], RevErrors, !IO),
-    (
-        RevErrors = [],
-        Res = ok(ProgConfig)
-    ;
-        RevErrors = [_ | _],
-        Res = errors(reverse(RevErrors))
-    ).
-
-:- pred make_prog_config(config::in, prog_config::out,
+:- pred make_prog_config(config::in, string::in, prog_config::out,
     list(string)::in, list(string)::out, io::di, io::uo) is cc_multi.
 
-make_prog_config(Config, ProgConfig, !Errors, !IO) :-
+make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
     ( nonempty(Config, "log", "file", LogFileName) ->
         MaybeLogFileName = yes(LogFileName)
     ;
@@ -244,18 +239,25 @@ make_prog_config(Config, ProgConfig, !Errors, !IO) :-
         MaybeCertificateFile = no
     ),
 
-    ( nonempty(Config, "pairing", "local", LocalMailboxName0) ->
-        LocalMailboxName = local_mailbox_name(LocalMailboxName0)
+    PairingSectionName = "pairing " ++ PairingName,
+    ( search(Config, PairingSectionName, PairingSection) ->
+        ( nonempty(PairingSection, "local", LocalMailboxName0) ->
+            LocalMailboxName = local_mailbox_name(LocalMailboxName0)
+        ;
+            LocalMailboxName = local_mailbox_name(""),
+            cons("missing local in section: " ++ PairingSectionName, !Errors)
+        ),
+
+        ( nonempty(PairingSection, "remote", RemoteMailboxName0) ->
+            RemoteMailboxName = mailbox(RemoteMailboxName0)
+        ;
+            RemoteMailboxName = mailbox(""),
+            cons("missing remote in section: " ++ PairingSectionName, !Errors)
+        )
     ;
         LocalMailboxName = local_mailbox_name(""),
-        cons("missing pairing.local", !Errors)
-    ),
-
-    ( nonempty(Config, "pairing", "remote", RemoteMailboxName0) ->
-        RemoteMailboxName = mailbox(RemoteMailboxName0)
-    ;
         RemoteMailboxName = mailbox(""),
-        cons("missing pairing.remote", !Errors)
+        cons("missing section: " ++ PairingSectionName, !Errors)
     ),
 
     ( nonempty(Config, "command", "post_sync", Command0) ->
@@ -274,7 +276,13 @@ make_prog_config(Config, ProgConfig, !Errors, !IO) :-
     string::out) is semidet.
 
 nonempty(Config, Section, Key, Value) :-
-    search_config(Config, Section, Key, Value),
+    search_config_section(Config, Section, SectionMap),
+    nonempty(SectionMap, Key, Value).
+
+:- pred nonempty(section_map::in, string::in, string::out) is semidet.
+
+nonempty(SectionMap, Key, Value) :-
+    search_section(SectionMap, Key, Value),
     Value \= "".
 
 :- pred positive_int(string::in, int::out) is semidet.

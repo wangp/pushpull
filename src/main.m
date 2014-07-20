@@ -51,8 +51,8 @@
 
 main(!IO) :-
     io.command_line_arguments(Args, !IO),
-    ( Args = [ConfigFileName] ->
-        load_prog_config(ConfigFileName, LoadRes, !IO),
+    ( Args = [ConfigFileName, PairingName] ->
+        load_prog_config(ConfigFileName, PairingName, LoadRes, !IO),
         (
             LoadRes = ok(Config),
             main_1(Config, !IO)
@@ -63,7 +63,9 @@ main(!IO) :-
             io.set_exit_status(1, !IO)
         )
     ;
-        print_error("Expected configuration file.", !IO),
+        io.progname_base("plugsink", ProgName, !IO),
+        print_error(format("Usage: %s config-file pairing", [s(ProgName)]),
+            !IO),
         io.set_exit_status(1, !IO)
     ).
 
