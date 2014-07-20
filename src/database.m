@@ -104,8 +104,8 @@
     maybe_error::out, io::di, io::uo) is det.
 
 :- pred set_pairing_local_message(database::in, pairing_id::in,
-    uniquename::in, flag_deltas(local_mailbox)::in, maybe_error::out,
-    io::di, io::uo) is det.
+    uniquename::in, flag_deltas(local_mailbox)::in, bool::in,
+    maybe_error::out, io::di, io::uo) is det.
 
 :- pred set_pairing_remote_message(database::in, pairing_id::in,
     uid::in, flag_deltas(remote_mailbox)::in, mod_seq_value::in,
@@ -120,11 +120,18 @@
 :- pred lookup_local_message_flags(database::in, pairing_id::in,
     maybe_error(flag_deltas(local_mailbox))::out, io::di, io::uo) is det.
 
+:- pred lookup_remote_message_flags(database::in, pairing_id::in,
+    maybe_error(flag_deltas(remote_mailbox))::out, io::di, io::uo) is det.
+
 :- pred update_local_message_flags(database::in, pairing_id::in,
     flag_deltas(local_mailbox)::in, bool::in, maybe_error::out,
     io::di, io::uo) is det.
 
 :- pred update_remote_message_flags(database::in, pairing_id::in,
+    flag_deltas(remote_mailbox)::in, bool::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+:- pred update_remote_message_flags_modseq(database::in, pairing_id::in,
     flag_deltas(remote_mailbox)::in, bool::in, mod_seq_value::in,
     maybe_error::out, io::di, io::uo) is det.
 
@@ -1039,15 +1046,18 @@ delete_pairing_2(Db, Stmt, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-set_pairing_local_message(Db, PairingId, UniqueName, FlagDeltas, Res, !IO) :-
+set_pairing_local_message(Db, PairingId, UniqueName, FlagDeltas, Attn, Res,
+        !IO) :-
     Stmt = "UPDATE pairing"
         ++ " SET local_uniquename = :local_uniquename,"
         ++ "     local_expunged = 0,"
-        ++ "     local_flags = :local_flags"
+        ++ "     local_flags = :local_flags,"
+        ++ "     local_flags_attn = :local_flags_attn"
         ++ " WHERE pairing_id = :pairing_id",
     with_stmt(set_pairing_local_message_2, Db, Stmt, [
         name(":local_uniquename") - bind_value(UniqueName),
         name(":local_flags") - bind_value(FlagDeltas),
+        name(":local_flags_attn") - bind_value(Attn),
         name(":pairing_id") - bind_value(PairingId)
     ], Res, !IO).
 
@@ -1173,6 +1183,36 @@ lookup_local_message_flags_2(Db, Stmt, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
+lookup_remote_message_flags(Db, PairingId, Res, !IO) :-
+    Stmt = "SELECT remote_flags FROM pairing"
+        ++ " WHERE pairing_id = :pairing_id",
+    with_stmt(lookup_remote_message_flags_2, Db, Stmt, [
+        name(":pairing_id") - bind_value(PairingId)
+    ], Res, !IO).
+
+:- pred lookup_remote_message_flags_2(db(rw)::in, stmt::in,
+    maybe_error(flag_deltas(remote_mailbox))::out, io::di, io::uo) is det.
+
+lookup_remote_message_flags_2(Db, Stmt, Res, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
+    (
+        StepResult = done,
+        Res = error("pairing not found")
+    ;
+        StepResult = row,
+        column_text(Stmt, column(0), X0, !IO),
+        ( convert(X0, Flags) ->
+            Res = ok(Flags)
+        ;
+            Res = error("database error")
+        )
+    ;
+        StepResult = error(Error),
+        Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
 update_local_message_flags(Db, PairingId, Flags, Attn, Res, !IO) :-
     Stmt = "UPDATE pairing"
         ++ " SET local_flags = :local_flags,"
@@ -1202,8 +1242,19 @@ update_local_message_flags_2(Db, Stmt, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-update_remote_message_flags(Db, PairingId, Flags, Attn, ModSeqValue, Res,
-        !IO) :-
+update_remote_message_flags(Db, PairingId, Flags, Attn, Res, !IO) :-
+    Stmt = "UPDATE pairing"
+        ++ " SET remote_flags = :remote_flags,"
+        ++ "     remote_flags_attn = :remote_flags_attn"
+        ++ " WHERE pairing_id = :pairing_id",
+    with_stmt(update_remote_message_flags_2, Db, Stmt, [
+        name(":pairing_id") - bind_value(PairingId),
+        name(":remote_flags") - bind_value(Flags),
+        name(":remote_flags_attn") - bind_value(Attn)
+    ], Res, !IO).
+
+update_remote_message_flags_modseq(Db, PairingId, Flags, Attn, ModSeqValue,
+        Res, !IO) :-
     Stmt = "UPDATE pairing"
         ++ " SET remote_flags = :remote_flags,"
         ++ "     remote_flags_attn = :remote_flags_attn,"

@@ -297,7 +297,7 @@ save_message_and_pair(Log, Config, Database, MailboxPair, LocalMailboxPath,
                 update_for_new_file(DirName, BaseName, !DirCache)
             ->
                 set_pairing_local_message(Database, PairingId, Unique,
-                    init_flags(Flags), Res, !IO)
+                    init_flags(Flags), no, Res, !IO)
             ;
                 Res = error("update_for_new_file failed")
             )
@@ -308,30 +308,21 @@ save_message_and_pair(Log, Config, Database, MailboxPair, LocalMailboxPath,
     ;
         ResMatch = ok(yes(UnpairedLocal)),
         UnpairedLocal = unpaired_local_message(OtherPairingId, Unique),
-        lookup_local_message_flags(Database, OtherPairingId, ResLocalFlags,
-            !IO),
+        % Delete OtherPairingId, keep PairingId.
+        transaction(
+            merge_pair(Database, OtherPairingId, PairingId, Unique),
+            Database, ResTxn, !IO),
         (
-            ResLocalFlags = ok(LocalFlags),
-            % Delete OtherPairingId, keep PairingId.
-            transaction(
-                delete_pairing_set_pairing_local_message(Database,
-                    OtherPairingId, PairingId, Unique, LocalFlags),
-                Database, ResTxn, !IO),
-            (
-                ResTxn = ok(commit(_ : unit)),
-                Res = ok
-            ;
-                ResTxn = ok(rollback(Error)),
-                Res = error(Error)
-            ;
-                ResTxn = ok(rollback_exception(Univ)),
-                Res = error("exception thrown: " ++ string(Univ))
-            ;
-                ResTxn = error(Error),
-                Res = error(Error)
-            )
+            ResTxn = ok(commit(_ : unit)),
+            Res = ok
         ;
-            ResLocalFlags = error(Error),
+            ResTxn = ok(rollback(Error)),
+            Res = error(Error)
+        ;
+            ResTxn = ok(rollback_exception(Univ)),
+            Res = error("exception thrown: " ++ string(Univ))
+        ;
+            ResTxn = error(Error),
             Res = error(Error)
         )
     ;
@@ -358,26 +349,60 @@ match_unpaired_local_message(Log, Database, MailboxPair, DirCache,
         Res = error(Error)
     ).
 
-:- pred delete_pairing_set_pairing_local_message(database::in, pairing_id::in,
-    pairing_id::in, uniquename::in, flag_deltas(local_mailbox)::in,
-    transaction_result(unit, string)::out, io::di, io::uo) is det.
+    % Within database transaction.
+:- pred merge_pair(database::in, pairing_id::in, pairing_id::in,
+    uniquename::in, transaction_result(unit, string)::out,
+    io::di, io::uo) is det.
 
-delete_pairing_set_pairing_local_message(Database, UnwantedPairingId,
-        KeepPairingId, Unique, LocalFlags, Res, !IO) :-
-    delete_pairing(Database, UnwantedPairingId, ResDelete, !IO),
+merge_pair(Database, UnwantedPairingId, KeepPairingId, Unique, Res, !IO) :-
+    lookup_local_message_flags(Database, UnwantedPairingId, ResLocalFlags,
+        !IO),
     (
-        ResDelete = ok,
-        set_pairing_local_message(Database, KeepPairingId, Unique, LocalFlags,
-            ResSetPairingLocal, !IO),
+        ResLocalFlags = ok(LocalFlagDeltas0),
+        lookup_remote_message_flags(Database, KeepPairingId, ResRemoteFlags,
+            !IO),
         (
-            ResSetPairingLocal = ok,
-            Res = commit(unit)
+            ResRemoteFlags = ok(RemoteFlagDeltas0),
+            % The remote message has flags and the local message has flags,
+            % so we try to take the union of both, with one exception:
+            % if either side is missing the Deleted flag then we prefer
+            % to remove the Deleted flag on the other side.
+            imply_minus_deleted_flag(LocalFlagDeltas0, LocalFlagDeltas1),
+            imply_minus_deleted_flag(RemoteFlagDeltas0, RemoteFlagDeltas1),
+            merge_flag_deltas(LocalFlagDeltas1, LocalFlagDeltas,
+                RemoteFlagDeltas1, RemoteFlagDeltas),
+            delete_pairing(Database, UnwantedPairingId, ResDelete, !IO),
+            (
+                ResDelete = ok,
+                set_pairing_local_message(Database, KeepPairingId, Unique,
+                    LocalFlagDeltas, require_attn(LocalFlagDeltas),
+                    ResSetLocal, !IO),
+                (
+                    ResSetLocal = ok,
+                    update_remote_message_flags(Database, KeepPairingId,
+                        RemoteFlagDeltas, require_attn(RemoteFlagDeltas),
+                        ResSetRemote, !IO),
+                    (
+                        ResSetRemote = ok,
+                        Res = commit(unit)
+                    ;
+                        ResSetRemote = error(Error),
+                        Res = rollback(Error)
+                    )
+                ;
+                    ResSetLocal = error(Error),
+                    Res = rollback(Error)
+                )
+            ;
+                ResDelete = error(Error),
+                Res = rollback(Error)
+            )
         ;
-            ResSetPairingLocal = error(Error),
+            ResRemoteFlags = error(Error),
             Res = rollback(Error)
         )
     ;
-        ResDelete = error(Error),
+        ResLocalFlags = error(Error),
         Res = rollback(Error)
     ).
 

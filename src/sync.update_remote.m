@@ -530,7 +530,7 @@ do_update_db_with_remote_message_info(Db, MailboxPair, HighestModSeqValue,
         update_flags(Flags, FlagDeltas0, FlagDeltas, IsChanged),
         (
             IsChanged = yes,
-            update_remote_message_flags(Db, PairingId, FlagDeltas,
+            update_remote_message_flags_modseq(Db, PairingId, FlagDeltas,
                 require_attn(FlagDeltas), HighestModSeqValue, MaybeError, !IO)
         ;
             IsChanged = no,
