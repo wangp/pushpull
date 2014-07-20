@@ -122,20 +122,21 @@
     %
 :- pred idle(imap::in, imap_result::out, io::di, io::uo) is det.
 
-:- type idle_response_result
-    --->    stop_idling(list(alert))
-    ;       continue_idling(list(alert))
-    ;       error(string).
+:- type stop_or_continue
+    --->    stop_idling
+    ;       continue_idling.
 
     % Read an untagged message that the server may send while in IDLE state.
     %
-:- pred read_single_idle_response(imap::in, idle_response_result::out,
-    io::di, io::uo) is det.
+:- pred read_single_idle_response(imap::in,
+    io.result(pair(stop_or_continue, list(alert)))::out, io::di, io::uo)
+    is det.
 
     % Must call this after successful idle,
     % before issuing another command.
     %
-:- pred idle_done(imap::in, imap_result::out, io::di, io::uo) is det.
+:- pred idle_done(imap::in, io.result(imap_result)::out, io::di, io::uo)
+    is det.
 
 :- pred get_read_filedes(imap::in, maybe_error(int)::out, io::di, io::uo)
     is det.
@@ -1211,36 +1212,37 @@ read_single_idle_response(IMAP, Res, !IO) :-
         parse_response_single(Pipe, Bytes, ParseResult, !IO),
         (
             ParseResult = yes(continue_req(_)),
-            Res = error("unexpected continue request")
+            Res = error(make_io_error("unexpected continue request"))
         ;
             ParseResult = yes(untagged(ResponseData)),
             update_state(apply_idle_untagged_response, IMAP, ResponseData,
-                Res, unit, _ : unit, !IO)
+                Stop - Alerts, unit, _ : unit, !IO),
+            Res = ok(Stop - Alerts)
         ;
             ParseResult = yes(tagged(_, _, _)),
-            Res = error("unexpected tagged response")
+            Res = error(make_io_error("unexpected tagged response"))
         ;
             ParseResult = no,
-            Res = error("failed to parse response")
+            Res = error(make_io_error("failed to parse response"))
         )
     ;
         ResRead = eof,
-        Res = error("unexpected eof")
+        Res = eof
     ;
         ResRead = error(Error),
-        Res = error(io.error_message(Error))
+        Res = error(Error)
     ).
 
 :- pred apply_idle_untagged_response(untagged_response_data::in,
-    idle_response_result::out, imap_state::in, imap_state::out,
+    pair(stop_or_continue, list(alert))::out, imap_state::in, imap_state::out,
     unit::in, unit::out, io::di, io::uo) is det.
 
-apply_idle_untagged_response(ResponseData, Res, !State, !R, !IO) :-
+apply_idle_untagged_response(ResponseData, Stop - Alerts, !State, !R, !IO) :-
     apply_untagged_response(ResponseData, !State, [], Alerts, !R),
     ( stop_idling(ResponseData) ->
-        Res = stop_idling(Alerts)
+        Stop = stop_idling
     ;
-        Res = continue_idling(Alerts)
+        Stop = continue_idling
     ).
 
 :- pred stop_idling(untagged_response_data::in) is semidet.
@@ -1279,29 +1281,38 @@ idle_done(IMAP, Res, !IO) :-
         ; ConnState = selected
         ; ConnState = logout
         ),
-        Res = error_result(wrong_state_message(ConnState))
+        Res = error(make_io_error(wrong_state_message(ConnState)))
     ).
 
 :- pred do_idle_done(imap::in, tag::in, connection_state::in,
-    imap_result::out, io::di, io::uo) is det.
+    io.result(imap_result)::out, io::di, io::uo) is det.
 
 do_idle_done(IMAP, Tag, ResumeConnState, Res, !IO) :-
     get_pipe(IMAP, Pipe, !IO),
-    write_command_stream(Pipe, Tag, idle_done_command_stream, Res0, !IO),
+    Sensitive = no,
+    write_command_stream_inner(Pipe, Tag, idle_done_command_stream, Sensitive,
+        Res0, !IO),
     (
         Res0 = ok,
-        wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
+        wait_for_complete_response_inner(Pipe, Tag, MaybeResponse, !IO),
         (
             MaybeResponse = ok(Response),
             update_state(apply_idle_done_response(ResumeConnState),
-                IMAP, Response, Res, unit, _ : unit, !IO)
+                IMAP, Response, Result, unit, _ : unit, !IO),
+            Res = ok(Result)
+        ;
+            MaybeResponse = eof,
+            Res = eof
         ;
             MaybeResponse = error(Error),
-            Res = error_result(Error)
+            Res = error(Error)
         )
     ;
+        Res0 = eof,
+        Res = eof
+    ;
         Res0 = error(Error),
-        Res = error_result(Error)
+        Res = error(Error)
     ).
 
 :- pred apply_idle_done_response(connection_state::in, complete_response::in,
@@ -1352,13 +1363,29 @@ get_read_filedes(IMAP, Res, !IO) :-
     maybe_error(complete_response)::out, io::di, io::uo) is det.
 
 wait_for_complete_response(Pipe, Tag, Res, !IO) :-
-    wait_for_complete_response_2(Pipe, Tag, [], Res, !IO).
+    wait_for_complete_response_inner(Pipe, Tag, Res0, !IO),
+    (
+        Res0 = ok(Result),
+        Res = ok(Result)
+    ;
+        Res0 = eof,
+        Res = error("unexpected eof")
+    ;
+        Res0 = error(Error),
+        Res = error(error_message(Error))
+    ).
 
-:- pred wait_for_complete_response_2(pipe::in, tag::in,
-    list(untagged_response_data)::in, maybe_error(complete_response)::out,
+:- pred wait_for_complete_response_inner(pipe::in, tag::in,
+    io.result(complete_response)::out, io::di, io::uo) is det.
+
+wait_for_complete_response_inner(Pipe, Tag, Res, !IO) :-
+    wait_for_complete_response_inner_2(Pipe, Tag, [], Res, !IO).
+
+:- pred wait_for_complete_response_inner_2(pipe::in, tag::in,
+    list(untagged_response_data)::in, io.result(complete_response)::out,
     io::di, io::uo) is det.
 
-wait_for_complete_response_2(Pipe, Tag, RevUntagged0, Res, !IO) :-
+wait_for_complete_response_inner_2(Pipe, Tag, RevUntagged0, Res, !IO) :-
     read_crlf_line_chop(Pipe, ResRead, !IO),
     (
         ResRead = ok(Bytes),
@@ -1372,7 +1399,7 @@ wait_for_complete_response_2(Pipe, Tag, RevUntagged0, Res, !IO) :-
         ;
             ParseResult = yes(untagged(ResponseData)),
             RevUntagged = [ResponseData | RevUntagged0],
-            wait_for_complete_response_2(Pipe, Tag, RevUntagged, Res, !IO)
+            wait_for_complete_response_inner_2(Pipe, Tag, RevUntagged, Res, !IO)
         ;
             ParseResult = yes(tagged(ResponseTag, Cond, RespText)),
             ( Tag = ResponseTag ->
@@ -1389,7 +1416,7 @@ wait_for_complete_response_2(Pipe, Tag, RevUntagged0, Res, !IO) :-
             )
         ;
             ParseResult = no,
-            Res = error("failed to parse response")
+            Res = error(make_io_error("failed to parse response"))
         )
     ;
         ResRead = eof,
@@ -1401,12 +1428,12 @@ wait_for_complete_response_2(Pipe, Tag, RevUntagged0, Res, !IO) :-
             list.reverse(RevUntagged1, Untagged),
             Res = ok(complete_response(Untagged, bye, ByeRespText))
         ;
-            Res = error("unexpected eof")
+            Res = eof
         )
     ;
         ResRead = error(Error),
         % XXX do we need to do anything with the RevUntagged0?
-        Res = error(io.error_message(Error))
+        Res = error(Error)
     ).
 
 %-----------------------------------------------------------------------------%
