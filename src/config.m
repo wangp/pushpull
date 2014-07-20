@@ -7,9 +7,11 @@
 :- import_module io.
 :- import_module map.
 
-:- type config == map(section, map(string, string)).
+:- type config == map(section, section_map).
 
 :- type section == string.
+
+:- type section_map == map(string, string).
 
 :- func init_config = config.
 
@@ -18,6 +20,11 @@
 
 :- pred search_config(config::in, section::in, string::in, string::out)
     is semidet.
+
+:- pred search_config_section(config::in, section::in, section_map::out)
+    is semidet.
+
+:- pred search_section(section_map::in, string::in, string::out) is semidet.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -100,7 +107,13 @@ parse_line(Line, !Section, !Config) :-
     ).
 
 search_config(Config, Section, Key, Value) :-
-    map.search(Config, Section, SectionMap),
+    search_config_section(Config, Section, SectionMap),
+    search_section(SectionMap, Key, Value).
+
+search_config_section(Config, Section, SectionMap) :-
+    map.search(Config, Section, SectionMap).
+
+search_section(SectionMap, Key, Value) :-
     map.search(SectionMap, Key, Value).
 
 %-----------------------------------------------------------------------------%
