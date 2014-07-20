@@ -110,7 +110,16 @@ sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
         !.Res = ok,
         log_debug(Log, "Download remote messages", !IO),
         download_unpaired_remote_messages(Log, Config, Db, IMAP, MailboxPair,
-            !:Res, !DirCache, !IO)
+            !:Res, !DirCache, !IO),
+        (
+            !.Res = ok,
+            % When a remote message is paired with an existing local message
+            % then their flags may need to be propagated either way.
+            propagate_flag_deltas(Log, Config, Db, IMAP, MailboxPair, !:Res,
+                !DirCache, !IO)
+        ;
+            !.Res = error(_)
+        )
     ;
         !.Res = error(_)
     ),
@@ -162,6 +171,23 @@ force_check_local(Inotify, CheckLocal0, CheckLocal, Res0, Res, !IO) :-
         Res0 = error(Error),
         Res = error(Error),
         CheckLocal = CheckLocal0
+    ).
+
+:- pred propagate_flag_deltas(log::in, prog_config::in, database::in,
+    imap::in, mailbox_pair::in, maybe_error::out,
+    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+
+propagate_flag_deltas(Log, Config, Db, IMAP, MailboxPair, Res,
+        !DirCache, !IO) :-
+    propagate_flag_deltas_from_remote(Log, Config, Db, MailboxPair,
+        Res0, !DirCache, !IO),
+    (
+        Res0 = ok,
+        propagate_flag_deltas_from_local(Log, Config, Db, IMAP, MailboxPair,
+            Res, !IO)
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
     ).
 
 :- pred call_command_post_sync(log::in, prog_config::in,
