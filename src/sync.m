@@ -4,7 +4,6 @@
 :- interface.
 
 :- import_module io.
-:- import_module maybe.
 
 :- import_module database.
 :- import_module dir_cache.
@@ -12,6 +11,7 @@
 :- import_module imap.types.
 :- import_module inotify.
 :- import_module log.
+:- import_module maybe_result.
 :- import_module prog_config.
 
 :- type shortcut
@@ -26,7 +26,7 @@
 
 :- pred sync_mailboxes(log::in, prog_config::in, database::in, imap::in,
     inotify(S)::in, mailbox_pair::in, mod_seq_valzer::in, shortcut::in,
-    update_method::in, maybe_error::out, dir_cache::in, dir_cache::out,
+    update_method::in, maybe_result::out, dir_cache::in, dir_cache::out,
     io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
@@ -36,6 +36,7 @@
 
 :- import_module int.
 :- import_module list.
+:- import_module maybe.
 :- import_module std_util.
 :- import_module string.
 
@@ -80,7 +81,8 @@ sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
     ->
         log_debug(Log, "Update local mailbox state", !IO),
         update_db_local_mailbox(Log, Config, Db, Inotify, MailboxPair,
-            DirCacheUpdate, !:Res, !DirCache, !IO)
+            DirCacheUpdate, ResUpdateLocal, !DirCache, !IO),
+        !:Res = from_maybe_error(ResUpdateLocal)
     ;
         true
     ),
@@ -92,7 +94,8 @@ sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
         % messages to be be reset, and thus downloaded in the following steps.
         log_debug(Log, "Propagate flag deltas from remote mailbox", !IO),
         propagate_flag_deltas_from_remote(Log, Config, Db, MailboxPair,
-            !:Res, !DirCache, !IO)
+            ResPropFlagsFromRemote, !DirCache, !IO),
+        !:Res = from_maybe_error(ResPropFlagsFromRemote)
     ;
         true
     ),
@@ -106,75 +109,74 @@ sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
     ;
         true
     ),
-    (
-        !.Res = ok,
+    ( !.Res = ok ->
         log_debug(Log, "Download remote messages", !IO),
         download_unpaired_remote_messages(Log, Config, Db, IMAP, MailboxPair,
             !:Res, !DirCache, !IO),
-        (
-            !.Res = ok,
+        ( !.Res = ok ->
             % When a remote message is paired with an existing local message
             % then their flags may need to be propagated either way.
             propagate_flag_deltas(Log, Config, Db, IMAP, MailboxPair, !:Res,
                 !DirCache, !IO)
         ;
-            !.Res = error(_)
+            true
         )
     ;
-        !.Res = error(_)
+        true
     ),
-    (
-        !.Res = ok,
+    ( !.Res = ok ->
         log_debug(Log, "Upload local messages", !IO),
         upload_unpaired_local_messages(Log, Config, Db, IMAP, MailboxPair,
             !.DirCache, !:Res, !IO)
     ;
-        !.Res = error(_)
+        true
     ),
-    (
-        !.Res = ok,
+    ( !.Res = ok ->
         log_debug(Log, "Delete expunged pairings", !IO),
-        delete_expunged_pairings(Db, !:Res, !IO)
+        delete_expunged_pairings(Db, ResDelete, !IO),
+        !:Res = from_maybe_error(ResDelete)
     ;
-        !.Res = error(_)
+        true
     ),
-    (
-        !.Res = ok,
+    ( !.Res = ok ->
         call_command_post_sync(Log, Config, !:Res, !IO)
     ;
-        !.Res = error(_)
+        true
     ).
 
 :- pred force_check_local(inotify(S)::in, check::in, check::out,
-    maybe_error::in, maybe_error::out, io::di, io::uo) is det.
+    maybe_result::in, maybe_result::out, io::di, io::uo) is det.
 
 force_check_local(Inotify, CheckLocal0, CheckLocal, Res0, Res, !IO) :-
     (
         Res0 = ok,
-        CheckLocal0 = skip,
-        get_queue_length(Inotify, ResQueue, !IO),
         (
-            ResQueue = ok(Length),
-            Res = ok,
-            CheckLocal = ( Length > 0 -> check ; skip )
+            CheckLocal0 = skip,
+            get_queue_length(Inotify, ResQueue, !IO),
+            (
+                ResQueue = ok(Length),
+                Res = ok,
+                CheckLocal = ( Length > 0 -> check ; skip )
+            ;
+                ResQueue = error(Error),
+                Res = error(Error),
+                CheckLocal = skip
+            )
         ;
-            ResQueue = error(Error),
-            Res = error(Error),
-            CheckLocal = skip
+            CheckLocal0 = check,
+            CheckLocal = check,
+            Res = ok
         )
     ;
-        Res0 = ok,
-        Res = ok,
-        CheckLocal0 = check,
-        CheckLocal = check
-    ;
-        Res0 = error(Error),
-        Res = error(Error),
+        ( Res0 = eof
+        ; Res0 = error(_)
+        ),
+        Res = Res0,
         CheckLocal = CheckLocal0
     ).
 
 :- pred propagate_flag_deltas(log::in, prog_config::in, database::in,
-    imap::in, mailbox_pair::in, maybe_error::out,
+    imap::in, mailbox_pair::in, maybe_result::out,
     dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
 propagate_flag_deltas(Log, Config, Db, IMAP, MailboxPair, Res,
@@ -191,7 +193,7 @@ propagate_flag_deltas(Log, Config, Db, IMAP, MailboxPair, Res,
     ).
 
 :- pred call_command_post_sync(log::in, prog_config::in,
-    maybe_error::out, io::di, io::uo) is det.
+    maybe_result::out, io::di, io::uo) is det.
 
 call_command_post_sync(Log, Config, Res, !IO) :-
     MaybeCommand = Config ^ command_post_sync,

@@ -4,6 +4,7 @@
 :- interface.
 
 :- import_module io.
+:- import_module maybe.
 
 :- import_module dir_cache.
 

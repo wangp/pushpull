@@ -28,6 +28,7 @@
 :- import_module inotify.
 :- import_module log.
 :- import_module log_help.
+:- import_module maybe_result.
 :- import_module openssl.
 :- import_module path.
 :- import_module prog_config.
@@ -36,22 +37,14 @@
 :- import_module sync.
 :- import_module terminal_attr.
 
-:- type quit_or_restart
-    --->    quit
-    ;       restart.
-
-:- type idle_next_outer
+:- type idle_next
     --->    quit
     ;       sync(shortcut)
-    ;       eof_restart
-    ;       error(string).
+    ;       restart_idle.
 
-:- type idle_next_inner
+:- inst idle_next_outer
     --->    quit
-    ;       sync(shortcut)
-    ;       restart_idle
-    ;       eof_restart
-    ;       error(string).
+    ;       sync(ground).
 
 %-----------------------------------------------------------------------------%
 
@@ -135,26 +128,31 @@ main_3(Log, Config, Password, Db, !IO) :-
                 ResLogin = yes,
                 logged_in(Log, Config, Db, IMAP, Res, !IO),
                 (
-                    Res = ok(Restart)
+                    Res = ok,
+                    Restart = no
+                ;
+                    Res = eof,
+                    report_error(Log, "unexpected eof", !IO),
+                    Restart = yes
                 ;
                     Res = error(Error),
                     report_error(Log, Error, !IO),
-                    Restart = quit
+                    Restart = no
                 )
             ;
                 ResLogin = no,
-                Restart = quit
+                Restart = no
             ),
             % XXX skip logout if connection already closed
             log_notice(Log, "Logging out.\n", !IO),
             logout(IMAP, ResLogout, !IO),
             log_debug(Log, string(ResLogout), !IO),
             (
-                Restart = restart,
+                Restart = yes,
                 log_notice(Log, "Restarting.\n", !IO),
                 main_3(Log, Config, Password, Db, !IO)
             ;
-                Restart = quit
+                Restart = no
             )
         ;
             ResOpen = error(Error),
@@ -323,97 +321,113 @@ log_certificate_names(Log, certificate_names(CommonName, DnsNames), !IO) :-
 
 do_login(Log, Config, Password, IMAP, Res, !IO) :-
     UserName = Config ^ username,
-    imap.login(IMAP, UserName, Password,
-        result(ResLogin, LoginMessage, LoginAlerts), !IO),
-    report_alerts(Log, LoginAlerts, !IO),
+    imap.login(IMAP, UserName, Password, Res0, !IO),
     (
-        ResLogin = ok,
-        log_info(Log, LoginMessage, !IO),
-        Res = yes
+        Res0 = ok(result(ResLogin, LoginMessage, LoginAlerts)),
+        report_alerts(Log, LoginAlerts, !IO),
+        (
+            ResLogin = ok,
+            log_info(Log, LoginMessage, !IO),
+            Res = yes
+        ;
+            ( ResLogin = no
+            ; ResLogin = bad
+            ; ResLogin = bye
+            ; ResLogin = continue
+            ),
+            report_error(Log, LoginMessage, !IO),
+            Res = no
+        )
     ;
-        ( ResLogin = no
-        ; ResLogin = bad
-        ; ResLogin = bye
-        ; ResLogin = continue
-        ; ResLogin = error
-        ),
-        report_error(Log, LoginMessage, !IO),
+        Res0 = eof,
+        report_error(Log, "unexpected eof", !IO),
+        Res = no
+    ;
+        Res0 = error(Error),
+        report_error(Log, Error, !IO),
         Res = no
     ).
 
 %-----------------------------------------------------------------------------%
 
 :- pred logged_in(log::in, prog_config::in, database::in, imap::in,
-    maybe_error(quit_or_restart)::out, io::di, io::uo) is det.
+    maybe_result::out, io::di, io::uo) is det.
 
 logged_in(Log, Config, Db, IMAP, Res, !IO) :-
     % For now.
     LocalMailboxName = Config ^ local_mailbox_name,
     RemoteMailboxName = Config ^ mailbox,
-    select(IMAP, RemoteMailboxName, result(ResExamine, Text, Alerts), !IO),
-    report_alerts(Log, Alerts, !IO),
+    select(IMAP, RemoteMailboxName, Res0, !IO),
     (
-        ResExamine = ok,
-        log_debug(Log, Text, !IO),
-
-        % Assume that expunges may have occurred since the last run.
-        set_expunge_seen_flag(IMAP, yes, !IO),
-
-        get_selected_mailbox_uidvalidity(IMAP, MaybeUIDValidity, !IO),
-        get_selected_mailbox_highest_modseqvalue(IMAP,
-            MaybeHighestModSeqValue, !IO),
+        Res0 = ok(result(Status, Text, Alerts)),
+        report_alerts(Log, Alerts, !IO),
         (
-            MaybeUIDValidity = yes(UIDValidity),
-            MaybeHighestModSeqValue = yes(highestmodseq(_))
-        ->
-            insert_or_ignore_mailbox_pair(Db, LocalMailboxName,
-                RemoteMailboxName, UIDValidity, ResInsert, !IO),
-            (
-                ResInsert = ok,
-                lookup_mailbox_pair(Db, LocalMailboxName, RemoteMailboxName,
-                    UIDValidity, ResLookup, !IO),
-                (
-                    ResLookup = ok(MailboxPair),
-                    inotify.init(ResInotify, !IO),
-                    (
-                        ResInotify = ok(Inotify),
-                        LocalMailboxPath = make_local_mailbox_path(Config,
-                            LocalMailboxName),
-                        LocalMailboxPath = local_mailbox_path(DirName),
-                        DirCache0 = dir_cache.init(dirname(DirName)),
+            Status = ok,
+            log_debug(Log, Text, !IO),
 
-                        sync_and_repeat(Log, Config, Db, IMAP, Inotify,
-                            MailboxPair, shortcut(check, check), scan_all,
-                            Res, DirCache0, _DirCache, !IO)
+            % Assume that expunges may have occurred since the last run.
+            set_expunge_seen_flag(IMAP, yes, !IO),
+
+            get_selected_mailbox_uidvalidity(IMAP, MaybeUIDValidity, !IO),
+            get_selected_mailbox_highest_modseqvalue(IMAP,
+                MaybeHighestModSeqValue, !IO),
+            (
+                MaybeUIDValidity = yes(UIDValidity),
+                MaybeHighestModSeqValue = yes(highestmodseq(_))
+            ->
+                insert_or_ignore_mailbox_pair(Db, LocalMailboxName,
+                    RemoteMailboxName, UIDValidity, ResInsert, !IO),
+                (
+                    ResInsert = ok,
+                    lookup_mailbox_pair(Db, LocalMailboxName,
+                        RemoteMailboxName, UIDValidity, ResLookup, !IO),
+                    (
+                        ResLookup = ok(MailboxPair),
+                        inotify.init(ResInotify, !IO),
+                        (
+                            ResInotify = ok(Inotify),
+                            LocalMailboxPath = make_local_mailbox_path(Config,
+                                LocalMailboxName),
+                            LocalMailboxPath = local_mailbox_path(DirName),
+                            DirCache0 = dir_cache.init(dirname(DirName)),
+
+                            sync_and_repeat(Log, Config, Db, IMAP, Inotify,
+                                MailboxPair, shortcut(check, check), scan_all,
+                                Res, DirCache0, _DirCache, !IO)
+                        ;
+                            ResInotify = error(Error),
+                            Res = error(Error)
+                        )
                     ;
-                        ResInotify = error(Error),
+                        ResLookup = error(Error),
                         Res = error(Error)
                     )
                 ;
-                    ResLookup = error(Error),
+                    ResInsert = error(Error),
                     Res = error(Error)
                 )
             ;
-                ResInsert = error(Error),
-                Res = error(Error)
+                Res = error("Cannot support this server.")
             )
         ;
-            Res = error("Cannot support this server.")
+            ( Status = no
+            ; Status = bad
+            ; Status = bye
+            ; Status = continue
+            ),
+            Res = error(Text)
         )
     ;
-        ( ResExamine = no
-        ; ResExamine = bad
-        ; ResExamine = bye
-        ; ResExamine = continue
-        ; ResExamine = error
-        ),
-        Res = error(Text)
+        Res0 = eof,
+        Res = eof
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
     ).
 
 :- pred sync_and_repeat(log::in, prog_config::in, database::in, imap::in,
     inotify(S)::in, mailbox_pair::in, shortcut::in, update_method::in,
-    maybe_error(quit_or_restart)::out, dir_cache::in, dir_cache::out,
-    io::di, io::uo) is det.
+    maybe_result::out, dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
 sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, Shortcut0,
         DirCacheUpdate0, Res, !DirCache, !IO) :-
@@ -423,7 +437,6 @@ sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, Shortcut0,
         ResLastModSeqValzer = ok(LastModSeqValzer @ mod_seq_valzer(Low)),
         log_info(Log,
             format("Synchronising from MODSEQ %s", [s(to_string(Low))]), !IO),
-
         sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair,
             LastModSeqValzer, Shortcut0, DirCacheUpdate0, ResSync,
             !DirCache, !IO),
@@ -431,93 +444,113 @@ sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, Shortcut0,
             ResSync = ok,
             get_sigint_count(SigInt, !IO),
             ( SigInt > 0 ->
-                Res = ok(quit)
+                Res = ok
             ; Config ^ idle = no ->
-                Res = ok(quit)
+                Res = ok
             ;
-                % Clear inotify events prior to idling.  There may be
-                % events in the queue, particularly those induced by
-                % renamings performed during the sync cycle, which would
-                % cause us to wake immediately.
-                AddNewWatches = Config ^ idle,
-                update_dir_cache(Log, Inotify,
-                    scan_from_inotify_events(no), AddNewWatches, ResCache,
-                    !DirCache, !IO),
+                sync_and_repeat_2(Log, Config, IMAP, Inotify, Res1,
+                    DirCacheUpdate1, !DirCache, !IO),
                 (
-                    ResCache = ok(Changed),
-                    (
-                        Changed = yes,
-                        CheckLocal = check,
-                        DirCacheUpdate1 = scan_from_inotify_events(yes)
-                    ;
-                        Changed = no,
-                        CheckLocal = skip,
-                        DirCacheUpdate1 = scan_from_inotify_events(no)
-                    ),
-                    % NOOP lets the server update us before we IDLE.
-                    noop(Log, IMAP, ResNoop, !IO),
-                    (
-                        ResNoop = ok,
-                        should_check_remote(IMAP, CheckRemote, !IO),
-                        (
-                            CheckLocal = skip,
-                            CheckRemote = skip
-                        ->
-                            idle_until_sync(Log, Config, IMAP, Inotify,
-                                ResIdle, !IO)
-                        ;
-                            ResIdle = sync(shortcut(CheckLocal, CheckRemote))
-                        ),
-                        (
-                            ResIdle = sync(Shortcut1),
-                            sync_and_repeat(Log, Config, Db, IMAP, Inotify,
-                                MailboxPair, Shortcut1, DirCacheUpdate1,
-                                Res, !DirCache, !IO)
-                        ;
-                            ResIdle = quit,
-                            Res = ok(quit)
-                        ;
-                            ResIdle = eof_restart,
-                            Res = ok(restart)
-                        ;
-                            ResIdle = error(Error),
-                            Res = error(Error)
-                        )
-                    ;
-                        ResNoop = error(Error),
-                        Res = error(Error)
-                    )
+                    Res1 = ok(sync(Shortcut1)),
+                    sync_and_repeat(Log, Config, Db, IMAP, Inotify,
+                        MailboxPair, Shortcut1, DirCacheUpdate1,
+                        Res, !DirCache, !IO)
                 ;
-                    ResCache = error(Error),
-                    Res = error(Error)
+                    Res1 = ok(quit),
+                    Res = ok
+                ;
+                    ( Res1 = eof
+                    ; Res1 = error(_)
+                    ),
+                    Res = convert(Res1)
                 )
             )
         ;
-            ResSync = error(Error),
-            Res = error(Error)
+            ( ResSync = eof
+            ; ResSync = error(_)
+            ),
+            Res = ResSync
         )
     ;
         ResLastModSeqValzer = error(Error),
         Res = error(Error)
     ).
 
-:- pred noop(log::in, imap::in, maybe_error::out, io::di, io::uo) is det.
+:- pred sync_and_repeat_2(log::in, prog_config::in, imap::in, inotify(S)::in,
+    maybe_result(idle_next)::out(maybe_result(idle_next_outer)),
+    dir_cache.update_method::out, dir_cache::in, dir_cache::out,
+    io::di, io::uo) is det.
+
+sync_and_repeat_2(Log, Config, IMAP, Inotify, Res, DirCacheUpdate1, !DirCache,
+        !IO) :-
+    % Clear inotify events prior to idling.  There may be events in the queue,
+    % particularly those induced by renamings performed during the sync cycle,
+    % which would cause us to wake immediately.
+    AddNewWatches = Config ^ idle,
+    update_dir_cache(Log, Inotify, scan_from_inotify_events(no), AddNewWatches,
+        ResCache, !DirCache, !IO),
+    (
+        ResCache = ok(Changed),
+        (
+            Changed = yes,
+            CheckLocal = check,
+            DirCacheUpdate1 = scan_from_inotify_events(yes)
+        ;
+            Changed = no,
+            CheckLocal = skip,
+            DirCacheUpdate1 = scan_from_inotify_events(no)
+        ),
+        % NOOP lets the server update us before we IDLE.
+        noop(Log, IMAP, ResNoop, !IO),
+        (
+            ResNoop = ok,
+            should_check_remote(IMAP, CheckRemote, !IO),
+            (
+                CheckLocal = skip,
+                CheckRemote = skip
+            ->
+                idle_until_sync(Log, Config, IMAP, Inotify, Res, !IO)
+            ;
+                Res = ok(sync(shortcut(CheckLocal, CheckRemote)))
+            )
+        ;
+            ResNoop = eof,
+            Res = eof
+        ;
+            ResNoop = error(Error),
+            Res = error(Error)
+        )
+    ;
+        ResCache = error(Error),
+        Res = error(Error),
+        DirCacheUpdate1 = scan_from_inotify_events(no)
+    ).
+
+:- pred noop(log::in, imap::in, maybe_result::out, io::di, io::uo) is det.
 
 noop(Log, IMAP, Res, !IO) :-
-    noop(IMAP, result(Res0, Text, Alerts), !IO),
-    report_alerts(Log, Alerts, !IO),
+    noop(IMAP, Res0, !IO),
     (
-        Res0 = ok,
-        log_debug(Log, Text, !IO),
-        Res = ok
+        Res0 = ok(result(Status, Text, Alerts)),
+        report_alerts(Log, Alerts, !IO),
+        (
+            Status = ok,
+            log_debug(Log, Text, !IO),
+            Res = ok
+        ;
+            ( Status = no
+            ; Status = bad
+            ; Status = bye
+            ; Status = continue
+            ),
+            Res = error("unexpected response to NOOP: " ++ Text)
+        )
     ;
-        ( Res0 = no
-        ; Res0 = bad
-        ; Res0 = bye
-        ; Res0 = continue
-        ; Res0 = error
-        ),
-        Res = error("unexpected response to NOOP: " ++ Text)
+        Res0 = eof,
+        Res = eof
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
     ).
 
 :- pred should_check_remote(imap::in, check::out, io::di, io::uo) is det.
@@ -538,91 +571,96 @@ should_check_remote(IMAP, CheckRemote, !IO) :-
     ).
 
 :- pred idle_until_sync(log::in, prog_config::in, imap::in, inotify(S)::in,
-    idle_next_outer::out, io::di, io::uo) is det.
+    maybe_result(idle_next)::out(maybe_result(idle_next_outer)),
+    io::di, io::uo) is det.
 
 idle_until_sync(Log, Config, IMAP, Inotify, Res, !IO) :-
     % Send IDLE command.
     log_info(Log, "Idling", !IO),
     gettimeofday(StartTime, _StartUsec, !IO),
-    idle(IMAP, result(Res0, IdleText, IdleAlerts), !IO),
-    report_alerts(Log, IdleAlerts, !IO),
+    idle(IMAP, Res0, !IO),
     (
-        Res0 = continue,
-        log_debug(Log, IdleText, !IO),
-        idle_until_done(Log, Config, IMAP, Inotify, StartTime, Res1, !IO),
+        Res0 = ok(result(Status, IdleText, IdleAlerts)),
+        report_alerts(Log, IdleAlerts, !IO),
         (
-            Res1 = sync(Shortcut),
-            sleep(1, !IO),
-            Res = sync(Shortcut)
+            Status = continue,
+            log_debug(Log, IdleText, !IO),
+            idle_until_done(Log, Config, IMAP, Inotify, StartTime, Res1, !IO),
+            (
+                Res1 = ok(sync(Shortcut)),
+                sleep(1, !IO),
+                Res = ok(sync(Shortcut))
+            ;
+                Res1 = ok(restart_idle),
+                idle_until_sync(Log, Config, IMAP, Inotify, Res, !IO)
+            ;
+                Res1 = ok(quit),
+                Res = ok(quit)
+            ;
+                Res1 = eof,
+                Res = eof
+            ;
+                Res1 = error(Error),
+                Res = error(Error)
+            )
         ;
-            Res1 = restart_idle,
-            idle_until_sync(Log, Config, IMAP, Inotify, Res, !IO)
+            Status = no,
+            Res = error("IDLE not supported: " ++ IdleText)
         ;
-            Res1 = quit,
-            Res = quit
-        ;
-            Res1 = eof_restart,
-            Res = eof_restart
-        ;
-            Res1 = error(Error),
-            Res = error(Error)
+            ( Status = ok
+            ; Status = bad
+            ; Status = bye
+            ),
+            Res = error("unexpected response to IDLE: " ++ IdleText)
         )
     ;
-        Res0 = no,
-        Res = error("IDLE not supported: " ++ IdleText)
+        Res0 = eof,
+        Res = eof
     ;
-        ( Res0 = ok
-        ; Res0 = bad
-        ; Res0 = bye
-        ; Res0 = error
-        ),
-        Res = error("unexpected response to IDLE: " ++ IdleText)
+        Res0 = error(Error),
+        Res = error(Error)
     ).
 
 :- pred idle_until_done(log::in, prog_config::in, imap::in, inotify(S)::in,
-    int::in, idle_next_inner::out, io::di, io::uo) is det.
+    int::in, maybe_result(idle_next)::out, io::di, io::uo) is det.
 
 idle_until_done(Log, Config, IMAP, Inotify, StartTime, Res, !IO) :-
     idle_loop(Log, Config, IMAP, Inotify, StartTime, Res0, !IO),
     (
-        ( Res0 = quit
-        ; Res0 = sync(_)
-        ; Res0 = restart_idle
-        ),
+        Res0 = ok(_),
         % Send IDLE DONE.
         idle_done(IMAP, Res1, !IO),
         (
-            Res1 = ok(result(ResDone, DoneText, DoneAlerts)),
+            Res1 = ok(result(Status, DoneText, DoneAlerts)),
             report_alerts(Log, DoneAlerts, !IO),
             (
-                ResDone = ok,
+                Status = ok,
                 Res = Res0
-            ;
-                ( ResDone = no
-                ; ResDone = bad
-                ; ResDone = bye
-                ; ResDone = continue
-                ; ResDone = error
+           ;
+                ( Status = no
+                ; Status = bad
+                ; Status = bye
+                ; Status = continue
                 ),
                 Res = error("unexpected response to IDLE DONE: " ++ DoneText)
             )
         ;
             Res1 = eof,
-            Res = eof_restart
+            Res = eof
         ;
             Res1 = error(Error),
-            Res = error(error_message(Error))
+            Res = error(Error)
         )
     ;
-        Res0 = eof_restart,
-        Res = eof_restart
+        Res0 = eof,
+        Res = eof
     ;
         Res0 = error(Error),
         Res = error(Error)
     ).
 
 :- pred idle_loop(log::in, prog_config::in, imap::in, inotify(S)::in, int::in,
-    idle_next_inner::out, io::di, io::uo) is det.
+    maybe_result(idle_next)::out, io::di, io::uo) is det.
 
 idle_loop(Log, Config, IMAP, Inotify, StartTime, Res, !IO) :-
     gettimeofday(Now, _, !IO),
@@ -654,30 +692,29 @@ idle_loop(Log, Config, IMAP, Inotify, StartTime, Res, !IO) :-
                 ->
                     idle_loop(Log, Config, IMAP, Inotify, StartTime, Res, !IO)
                 ;
-                    Res = sync(shortcut(CheckLocal, CheckRemote))
+                    Res = ok(sync(shortcut(CheckLocal, CheckRemote)))
                 )
             ;
                 Res2 = eof,
-                log_notice(Log, "Unexpected eof.\n", !IO),
-                Res = eof_restart
+                Res = eof
             ;
                 Res2 = error(Error),
-                Res = error(io.error_message(Error))
+                Res = error(Error)
             )
         ;
             Res0 = timeout,
             SyncOnIdleTimeout = Config ^ sync_on_idle_timeout,
             (
                 SyncOnIdleTimeout = yes,
-                Res = sync(shortcut(skip, check))
+                Res = ok(sync(shortcut(skip, check)))
             ;
                 SyncOnIdleTimeout = no,
-                Res = restart_idle
+                Res = ok(restart_idle)
             )
         ;
             Res0 = interrupt,
             log_notice(Log, "Interrupted.\n", !IO),
-            Res = quit
+            Res = ok(quit)
         ;
             Res0 = error(Error),
             Res = error(Error)
@@ -687,7 +724,7 @@ idle_loop(Log, Config, IMAP, Inotify, StartTime, Res, !IO) :-
         Res = error(Error)
     ).
 
-:- pred do_read_idle_response(log::in, imap::in, io.result::out, check::out,
+:- pred do_read_idle_response(log::in, imap::in, maybe_result::out, check::out,
     io::di, io::uo) is det.
 
 do_read_idle_response(Log, IMAP, Res, CheckRemote, !IO) :-

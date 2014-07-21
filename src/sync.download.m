@@ -8,7 +8,7 @@
 :- import_module dir_cache.
 
 :- pred download_unpaired_remote_messages(log::in, prog_config::in,
-    database::in, imap::in, mailbox_pair::in, maybe_error::out,
+    database::in, imap::in, mailbox_pair::in, maybe_result::out,
     dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
@@ -74,7 +74,7 @@ download_unpaired_remote_messages(Log, Config, Database, IMAP, MailboxPair,
 
 :- pred download_messages(log::in, prog_config::in, database::in, imap::in,
     mailbox_pair::in, int::in, list(unpaired_remote_message)::in,
-    maybe_error::out, int::in, int::out, dir_cache::in, dir_cache::out,
+    maybe_result::out, int::in, int::out, dir_cache::in, dir_cache::out,
     io::di, io::uo) is det.
 
 download_messages(Log, Config, Database, IMAP, MailboxPair, Total, Unpaireds,
@@ -87,13 +87,11 @@ download_messages(Log, Config, Database, IMAP, MailboxPair, Total, Unpaireds,
         list.split_upto(max_batch_messages, Unpaireds, Heads, Tails),
         download_message_batch(Log, Config, Database, IMAP, MailboxPair, Total,
             Heads, Res0, !Count, !DirCache, !IO),
-        (
-            Res0 = ok,
+        ( Res0 = ok ->
             download_messages(Log, Config, Database, IMAP, MailboxPair, Total,
                 Tails, Res, !Count, !DirCache, !IO)
         ;
-            Res0 = error(Error),
-            Res = error(Error)
+            Res = Res0
         )
     ).
 
@@ -103,7 +101,7 @@ max_batch_messages = 50.
 
 :- pred download_message_batch(log::in, prog_config::in, database::in,
     imap::in, mailbox_pair::in, int::in, list(unpaired_remote_message)::in,
-    maybe_error::out, int::in, int::out, dir_cache::in, dir_cache::out,
+    maybe_result::out, int::in, int::out, dir_cache::in, dir_cache::out,
     io::di, io::uo) is det.
 
 download_message_batch(Log, Config, Database, IMAP, MailboxPair,
@@ -120,29 +118,37 @@ download_message_batch(Log, Config, Database, IMAP, MailboxPair,
         % We will use this to update our highest mod-seq-value.
         Items = atts(body_peek(entire_message, no),
             [flags, modseq, internaldate]),
-        uid_fetch(IMAP, SequenceSet, Items, no,
-            result(ResFetch, Text, Alerts), !IO),
-        report_alerts(Log, Alerts, !IO)
+        uid_fetch(IMAP, SequenceSet, Items, no, ResFetch, !IO)
     ;
         % Empty sequence.
-        ResFetch = ok_with_data([]),
-        Text = ""
+        ResFetch = ok(result(ok_with_data([]), "", []))
     ),
     (
-        ResFetch = ok_with_data(FetchResults),
-        LocalMailboxName = get_local_mailbox_name(MailboxPair),
-        LocalMailboxPath = make_local_mailbox_path(Config, LocalMailboxName),
-        handle_downloaded_messages(Log, Config, Database,
-            MailboxPair, LocalMailboxPath, Total, FetchResults,
-            UnpairedRemotes, Res, !Count, !DirCache, !IO)
+        ResFetch = ok(result(Status, Text, Alerts)),
+        report_alerts(Log, Alerts, !IO),
+        (
+            Status = ok_with_data(FetchResults),
+            LocalMailboxName = get_local_mailbox_name(MailboxPair),
+            LocalMailboxPath = make_local_mailbox_path(Config,
+                LocalMailboxName),
+            handle_downloaded_messages(Log, Config, Database,
+                MailboxPair, LocalMailboxPath, Total, FetchResults,
+                UnpairedRemotes, Res0, !Count, !DirCache, !IO),
+            Res = from_maybe_error(Res0)
+        ;
+            ( Status = no
+            ; Status = bad
+            ; Status = bye
+            ; Status = continue
+            ),
+            Res = error("unexpected response to UID FETCH: " ++ Text)
+        )
     ;
-        ( ResFetch = no
-        ; ResFetch = bad
-        ; ResFetch = bye
-        ; ResFetch = continue
-        ; ResFetch = error
-        ),
-        Res = error("unexpected response to UID FETCH: " ++ Text)
+        ResFetch = eof,
+        Res = eof
+    ;
+        ResFetch = error(Error),
+        Res = error(Error)
     ).
 
 :- pred handle_downloaded_messages(log::in, prog_config::in, database::in,

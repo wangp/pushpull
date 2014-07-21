@@ -4,10 +4,11 @@
 :- interface.
 
 :- import_module log.
+:- import_module maybe_result.
 
 :- pred propagate_flag_deltas_from_local(log::in, prog_config::in,
-    database::in, imap::in, mailbox_pair::in, maybe_error::out, io::di, io::uo)
-    is det.
+    database::in, imap::in, mailbox_pair::in, maybe_result::out,
+    io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -39,7 +40,7 @@ propagate_flag_deltas_from_local(Log, _Config, Db, IMAP, MailboxPair, Res, !IO)
     ).
 
 :- pred propagate_flag_deltas_from_local_2(log::in, database::in, imap::in,
-    int::in, pending_flag_deltas::in, maybe_error::in, maybe_error::out,
+    int::in, pending_flag_deltas::in, maybe_result::in, maybe_result::out,
     int::in, int::out, io::di, io::uo) is det.
 
 propagate_flag_deltas_from_local_2(Log, Db, IMAP, Total, Pending, Res0, Res,
@@ -49,12 +50,14 @@ propagate_flag_deltas_from_local_2(Log, Db, IMAP, Total, Pending, Res0, Res,
         propagate_flag_deltas_from_local_3(Log, Db, IMAP, Pending, Count,
             Total, Res, !IO)
     ;
-        Res0 = error(Error),
-        Res = error(Error)
+        ( Res0 = eof
+        ; Res0 = error(_)
+        ),
+        Res = Res0
     ).
 
 :- pred propagate_flag_deltas_from_local_3(log::in, database::in, imap::in,
-    pending_flag_deltas::in, int::in, int::in, maybe_error::out,
+    pending_flag_deltas::in, int::in, int::in, maybe_result::out,
     io::di, io::uo) is det.
 
 propagate_flag_deltas_from_local_3(Log, Db, IMAP, Pending, Count, Total, Res,
@@ -82,13 +85,12 @@ propagate_flag_deltas_from_local_3(Log, Db, IMAP, Pending, Count, Total, Res,
             store_remote_flags_add_rm(Log, IMAP, UID, AddFlags, RemoveFlags,
                 Res0, !IO)
         ),
-        (
-            Res0 = ok,
+        ( Res0 = ok ->
             record_local_flag_deltas_applied_to_remote(Db, PairingId,
-                LocalFlags, RemoteFlags, Res, !IO)
+                LocalFlags, RemoteFlags, Res1, !IO),
+            Res = from_maybe_error(Res1)
         ;
-            Res0 = error(Error),
-            Res = error(Error)
+            Res = Res0
         )
     ;
         MaybeUID = no,
@@ -101,11 +103,12 @@ propagate_flag_deltas_from_local_3(Log, Db, IMAP, Pending, Count, Total, Res,
             contains(RemoveFlags, system(deleted))
         ->
             log_notice(Log, "Resurrecting message " ++ Unique, !IO),
-            reset_pairing_remote_message(Db, PairingId, Res, !IO)
+            reset_pairing_remote_message(Db, PairingId, Res0, !IO)
         ;
             record_local_flag_deltas_inapplicable_to_remote(Db,
-                PairingId, LocalFlags, Res, !IO)
-        )
+                PairingId, LocalFlags, Res0, !IO)
+        ),
+        Res = from_maybe_error(Res0)
     ).
 
 :- pred log_remote_flag_update(log::in, uid::in, int::in, int::in,
@@ -117,21 +120,19 @@ log_remote_flag_update(Log, uid(UID), Count, Total, !IO) :-
             [s(to_string(UID)), i(Count), i(Total)]), !IO).
 
 :- pred store_remote_flags_add_rm(log::in, imap::in, uid::in,
-    set(flag)::in, set(flag)::in, maybe_error::out, io::di, io::uo) is det.
+    set(flag)::in, set(flag)::in, maybe_result::out, io::di, io::uo) is det.
 
 store_remote_flags_add_rm(Log, IMAP, UID, AddFlags, RemoveFlags, Res, !IO) :-
     % Would it be preferable to read back the actual flags from the server?
     store_remote_flags_change(Log, IMAP, UID, remove, RemoveFlags, Res0, !IO),
-    (
-        Res0 = ok,
+    ( Res0 = ok ->
         store_remote_flags_change(Log, IMAP, UID, add, AddFlags, Res, !IO)
     ;
-        Res0 = error(Error),
-        Res = error(Error)
+        Res = Res0
     ).
 
 :- pred store_remote_flags_change(log::in, imap::in, uid::in,
-    store_operation::in, set(flag)::in, maybe_error::out, io::di, io::uo)
+    store_operation::in, set(flag)::in, maybe_result::out, io::di, io::uo)
     is det.
 
 store_remote_flags_change(Log, IMAP, UID, Operation, ChangeFlags, Res, !IO) :-
@@ -139,19 +140,27 @@ store_remote_flags_change(Log, IMAP, UID, Operation, ChangeFlags, Res, !IO) :-
         Res = ok
     ;
         uid_store(IMAP, singleton_sequence_set(UID), Operation, silent,
-            to_sorted_list(ChangeFlags), result(ResAdd, Text, Alerts), !IO),
-        report_alerts(Log, Alerts, !IO),
+            to_sorted_list(ChangeFlags), Res0, !IO),
         (
-            ResAdd = ok_with_data(_),
-            Res = ok
+            Res0 = ok(result(Status, Text, Alerts)),
+            report_alerts(Log, Alerts, !IO),
+            (
+                Status = ok_with_data(_),
+                Res = ok
+            ;
+                ( Status = no
+                ; Status = bad
+                ; Status = bye
+                ; Status = continue
+                ),
+                Res = error("unexpected response to UID STORE: " ++ Text)
+            )
         ;
-            ( ResAdd = no
-            ; ResAdd = bad
-            ; ResAdd = bye
-            ; ResAdd = continue
-            ; ResAdd = error
-            ),
-            Res = error("unexpected response to UID STORE: " ++ Text)
+            Res0 = eof,
+            Res = eof
+        ;
+            Res0 = error(Error),
+            Res = error(Error)
         )
     ).
 

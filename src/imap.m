@@ -16,6 +16,7 @@
 
 :- import_module binary_string.
 :- import_module imap.types.
+:- import_module maybe_result.
 :- import_module openssl.
 
 %-----------------------------------------------------------------------------%
@@ -28,27 +29,29 @@
 :- type password
     --->    password(string).
 
-:- type imap_result
-    --->    result(imap_res, string, list(alert)).
+:- type imap_result == maybe_result(imap_res).
 
 :- type imap_res
+    --->    result(status, string, list(alert)).
+
+:- type status
     --->    ok
     ;       no
     ;       bad
     ;       bye
-    ;       continue
-    ;       error.
+    ;       continue.
 
-:- type imap_result(T)
-    --->    result(imap_res(T), string, list(alert)).
+:- type imap_result(T) == maybe_result(imap_res(T)).
 
 :- type imap_res(T)
+    --->    result(status(T), string, list(alert)).
+
+:- type status(T)
     --->    ok_with_data(T)
     ;       no
     ;       bad
     ;       bye
-    ;       continue
-    ;       error.
+    ;       continue.
 
 :- type alert
     --->    alert(string).
@@ -129,14 +132,13 @@
     % Read an untagged message that the server may send while in IDLE state.
     %
 :- pred read_single_idle_response(imap::in,
-    io.result(pair(stop_or_continue, list(alert)))::out, io::di, io::uo)
+    maybe_result(pair(stop_or_continue, list(alert)))::out, io::di, io::uo)
     is det.
 
     % Must call this after successful idle,
     % before issuing another command.
     %
-:- pred idle_done(imap::in, io.result(imap_result)::out, io::di, io::uo)
-    is det.
+:- pred idle_done(imap::in, imap_result::out, io::di, io::uo) is det.
 
 :- pred get_read_filedes(imap::in, maybe_error(int)::out, io::di, io::uo)
     is det.
@@ -272,6 +274,10 @@ open(Bio, Res, Alerts, !IO) :-
             Res = error("greeted with BYE")
         )
     ;
+        ResGreeting = eof,
+        Res = error("unexpected eof"),
+        Alerts = []
+    ;
         ResGreeting = error(Error),
         Res = error(Error),
         Alerts = []
@@ -283,7 +289,7 @@ open(Bio, Res, Alerts, !IO) :-
         bio_free_all(Bio, !IO)
     ).
 
-:- pred wait_for_greeting(pipe::in, maybe_error(greeting)::out,
+:- pred wait_for_greeting(pipe::in, maybe_result(greeting)::out,
     io::di, io::uo) is det.
 
 wait_for_greeting(Pipe, Res, !IO) :-
@@ -302,7 +308,7 @@ wait_for_greeting(Pipe, Res, !IO) :-
         )
     ;
         ResRead = eof,
-        Res = error("unexpected eof")
+        Res = eof
     ;
         ResRead = error(Error),
         Res = error(io.error_message(Error))
@@ -385,7 +391,7 @@ command_wrapper(Pred, ValidConnectionStates, IMAP, Res, !IO) :-
         Pred(IMAP, Res, !IO),
         close_pipe_on_logout(IMAP, !IO)
     ;
-        Res = error_result(wrong_state_message(ConnState))
+        Res = error(wrong_state_message(ConnState))
     ).
 
 :- pred close_pipe_on_logout(imap::in, io::di, io::uo) is det.
@@ -475,11 +481,7 @@ make_result(MaybeTagCond, RespText, Alerts, Result) :-
         Res = continue
     ),
     RespText = resp_text(_MaybeResponseCode, Text),
-    Result = result(Res, Text, Alerts).
-
-:- func error_result(string) = imap_result.
-
-error_result(Text) = result(error, Text, []).
+    Result = ok(result(Res, Text, Alerts)).
 
 :- func wrong_state_message(connection_state) = string.
 
@@ -516,12 +518,16 @@ do_capability(IMAP, Res, !IO) :-
             Response = complete_response(_, FinalMaybeTag, FinalRespText),
             make_result(FinalMaybeTag, FinalRespText, Alerts, Res)
         ;
-            MaybeResponse = error(Error),
-            Res = result(error, Error, [])
+            ( MaybeResponse = eof
+            ; MaybeResponse = error(_)
+            ),
+            Res = convert(MaybeResponse)
         )
     ;
-        Res0 = error(Error),
-        Res = result(error, Error, [])
+        ( Res0 = eof
+        ; Res0 = error(_)
+        ),
+        Res = convert(Res0)
     ).
 
 :- pred apply_capability_response(complete_response::in, unit::out,
@@ -543,7 +549,7 @@ login(IMAP, UserName, Password, Res, !IO) :-
         capability(IMAP, Res0, !IO),
         (
             % I guess we should try to preserve Alerts0 through to the login.
-            Res0 = result(ok, _Text, _Alerts0)
+            Res0 = ok(result(ok, _Text, _Alerts0))
         ->
             get_capabilities(IMAP, MaybeCaps, !IO),
             (
@@ -568,7 +574,7 @@ check_login(IMAP, Caps, UserName, Password, Res, !IO) :-
     ->
         do_login(UserName, Password, IMAP, Res, !IO)
     ;
-        Res = error_result("cannot login due to capabilities")
+        Res = error("cannot login due to capabilities")
     ).
 
 :- pred do_login(username::in, password::in, imap::in, imap_result::out,
@@ -589,12 +595,16 @@ do_login(username(UserName), password(Password), IMAP, Res, !IO) :-
             Response = complete_response(_, FinalMaybeTag, FinalRespText),
             make_result(FinalMaybeTag, FinalRespText, Alerts, Res)
         ;
-            MaybeResponse = error(Error),
-            Res = result(error, Error, [])
+            ( MaybeResponse = eof
+            ; MaybeResponse = error(_)
+            ),
+            Res = convert(MaybeResponse)
         )
     ;
-        Res0 = error(Error),
-        Res = result(error, Error, [])
+        ( Res0 = eof
+        ; Res0 = error(_)
+        ),
+        Res = convert(Res0)
     ).
 
 :- pred apply_login_response(complete_response::in, unit::out,
@@ -640,12 +650,16 @@ do_noop(IMAP, Res, !IO) :-
             Response = complete_response(_, FinalMaybeTag, FinalRespText),
             make_result(FinalMaybeTag, FinalRespText, Alerts, Res)
         ;
-            MaybeResponse = error(Error),
-            Res = result(error, Error, [])
+            ( MaybeResponse = eof
+            ; MaybeResponse = error(_)
+            ),
+            Res = convert(MaybeResponse)
         )
     ;
-        Res0 = error(Error),
-        Res = result(error, Error, [])
+        ( Res0 = eof
+        ; Res0 = error(_)
+        ),
+        Res = convert(Res0)
     ).
 
 :- pred apply_noop_response(complete_response::in, unit::out,
@@ -690,12 +704,16 @@ do_logout(IMAP, Res, !IO) :-
             Response = complete_response(_, FinalMaybeTag, FinalRespText),
             make_result(FinalMaybeTag, FinalRespText, Alerts, Res)
         ;
-            MaybeResponse = error(Error),
-            Res = result(error, Error, [])
+            ( MaybeResponse = eof
+            ; MaybeResponse = error(_)
+            ),
+            Res = convert(MaybeResponse)
         )
     ;
-        Res0 = error(Error),
-        Res = result(error, Error, [])
+        ( Res0 = eof
+        ; Res0 = error(_)
+        ),
+        Res = convert(Res0)
     ).
 
 :- pred apply_logout_response(complete_response::in, unit::out,
@@ -760,12 +778,16 @@ do_select_or_examine(DoSelect, Mailbox, IMAP, Res, !IO) :-
             Response = complete_response(_, FinalMaybeTag, FinalRespText),
             make_result(FinalMaybeTag, FinalRespText, Alerts, Res)
         ;
-            MaybeResponse = error(Error),
-            Res = result(error, Error, [])
+            ( MaybeResponse = eof
+            ; MaybeResponse = error(_)
+            ),
+            Res = convert(MaybeResponse)
         )
     ;
-        Res0 = error(Error),
-        Res = result(error, Error, [])
+        ( Res0 = eof
+        ; Res0 = error(_)
+        ),
+        Res = convert(Res0)
     ).
 
 :- pred apply_select_or_examine_response(mailbox::in, complete_response::in,
@@ -903,7 +925,7 @@ append(IMAP, Mailbox, Flags, MaybeDateTime, Content, Res, !IO) :-
         MaybeRes = ok(Res)
     ;
         MaybeRes = error(Error),
-        Res = result(error, Error, [])
+        Res = error(Error)
     ).
 
 :- pred do_append(mailbox::in, list(flag)::in, maybe(date_time)::in,
@@ -923,12 +945,16 @@ do_append(Mailbox, Flags, MaybeDateTime, Content, IMAP, Res, !IO) :-
             update_state(apply_append_response, IMAP, Response, Res,
                 unit, _ : unit, !IO)
         ;
-            MaybeResponse = error(Error),
-            Res = result(error, Error, [])
+            ( MaybeResponse = eof
+            ; MaybeResponse = error(_)
+            ),
+            Res = convert(MaybeResponse)
         )
     ;
-        Res0 = error(Error),
-        Res = result(error, Error, [])
+        ( Res0 = eof
+        ; Res0 = error(_)
+        ),
+        Res = convert(Res0)
     ).
 
 :- pred apply_append_response(complete_response::in,
@@ -941,22 +967,22 @@ apply_append_response(Response, Result, !State, unit, unit, !IO) :-
     Response = complete_response(_, FinalMaybeTag, FinalRespText),
     (
         FinalMaybeTag = tagged(_, ok),
-        Res = ok_with_data(MaybeAppendUID)
+        Status = ok_with_data(MaybeAppendUID)
     ;
         FinalMaybeTag = tagged(_, no),
-        Res = no
+        Status = no
     ;
         FinalMaybeTag = tagged(_, bad),
-        Res = bad
+        Status = bad
     ;
         FinalMaybeTag = bye,
-        Res = bye
+        Status = bye
     ;
         FinalMaybeTag = continue,
-        Res = continue
+        Status = continue
     ),
     FinalRespText = resp_text(_MaybeResponseCode, Text),
-    Result = result(Res, Text, Alerts).
+    Result = ok(result(Status, Text, Alerts)).
 
 %-----------------------------------------------------------------------------%
 
@@ -967,7 +993,7 @@ uid_search(IMAP, SearchKey, MaybeResultOptions, Res, !IO) :-
         MaybeRes = ok(Res)
     ;
         MaybeRes = error(Error),
-        Res = result(error, Error, [])
+        Res = error(Error)
     ).
 
 :- pred do_uid_search(search_key::in, maybe(list(search_return_option))::in,
@@ -986,12 +1012,16 @@ do_uid_search(SearchKey, MaybeResultOptions, IMAP, Res, !IO) :-
             update_state(apply_uid_search_response, IMAP, Response, Res,
                 unit, _ : unit, !IO)
         ;
-            MaybeResponse = error(Error),
-            Res = result(error, Error, [])
+            ( MaybeResponse = eof
+            ; MaybeResponse = error(_)
+            ),
+            Res = convert(MaybeResponse)
         )
     ;
-        Res0 = error(Error),
-        Res = result(error, Error, [])
+        ( Res0 = eof
+        ; Res0 = error(_)
+        ),
+        Res = convert(Res0)
     ).
 
 :- pred apply_uid_search_response(complete_response::in,
@@ -1004,22 +1034,22 @@ apply_uid_search_response(Response, Result, !State, unit, unit, !IO) :-
     Response = complete_response(_, FinalMaybeTag, FinalRespText),
     (
         FinalMaybeTag = tagged(_, ok),
-        Res = ok_with_data(SearchResult)
+        Status = ok_with_data(SearchResult)
     ;
         FinalMaybeTag = tagged(_, no),
-        Res = no
+        Status = no
     ;
         FinalMaybeTag = tagged(_, bad),
-        Res = bad
+        Status = bad
     ;
         FinalMaybeTag = bye,
-        Res = bye
+        Status = bye
     ;
         FinalMaybeTag = continue,
-        Res = continue
+        Status = continue
     ),
     FinalRespText = resp_text(_MaybeResponseCode, Text),
-    Result = result(Res, Text, Alerts).
+    Result = ok(result(Status, Text, Alerts)).
 
 %-----------------------------------------------------------------------------%
 
@@ -1030,7 +1060,7 @@ uid_fetch(IMAP, SequenceSet, Items, MaybeModifier, Res, !IO) :-
         MaybeRes = ok(Res)
     ;
         MaybeRes = error(Error),
-        Res = result(error, Error, [])
+        Res = error(Error)
     ).
 
 :- pred do_uid_fetch(sequence_set(uid)::in, fetch_items::in,
@@ -1048,19 +1078,24 @@ do_uid_fetch(SequenceSet, Items, MaybeModifier, IMAP, Res, !IO) :-
         wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
         (
             MaybeResponse = ok(Response),
-            update_state(apply_uid_fetch_response, IMAP, Response, Res,
-                unit, _ : unit, !IO)
+            update_state(apply_uid_fetch_response, IMAP, Response, Result,
+                unit, _ : unit, !IO),
+            Res = ok(Result)
         ;
-            MaybeResponse = error(Error),
-            Res = result(error, Error, [])
+            ( MaybeResponse = eof
+            ; MaybeResponse = error(_)
+            ),
+            Res = convert(MaybeResponse)
         )
     ;
-        Res0 = error(Error),
-        Res = result(error, Error, [])
+        ( Res0 = eof
+        ; Res0 = error(_)
+        ),
+        Res = convert(Res0)
     ).
 
 :- pred apply_uid_fetch_response(complete_response::in,
-    imap_result(assoc_list(message_seq_nr, msg_atts))::out,
+    imap_res(assoc_list(message_seq_nr, msg_atts))::out,
     imap_state::in, imap_state::out, unit::in, unit::out, io::di, io::uo)
     is det.
 
@@ -1071,22 +1106,22 @@ apply_uid_fetch_response(Response, Result, !State, unit, unit, !IO) :-
     (
         FinalMaybeTag = tagged(_, ok),
         list.reverse(RevFetchResults, FetchResults),
-        Res = ok_with_data(FetchResults)
+        Status = ok_with_data(FetchResults)
     ;
         FinalMaybeTag = tagged(_, no),
-        Res = no
+        Status = no
     ;
         FinalMaybeTag = tagged(_, bad),
-        Res = bad
+        Status = bad
     ;
         FinalMaybeTag = bye,
-        Res = bye
+        Status = bye
     ;
         FinalMaybeTag = continue,
-        Res = continue
+        Status = continue
     ),
     FinalRespText = resp_text(_MaybeResponseCode, Text),
-    Result = result(Res, Text, Alerts).
+    Result = result(Status, Text, Alerts).
 
 %-----------------------------------------------------------------------------%
 
@@ -1097,7 +1132,7 @@ uid_store(IMAP, SequenceSet, Operation, Silence, Flags, Res, !IO) :-
         MaybeRes = ok(Res)
     ;
         MaybeRes = error(Error),
-        Res = result(error, Error, [])
+        Res = error(Error)
     ).
 
 :- pred do_uid_store(sequence_set(uid)::in, store_operation::in,
@@ -1115,15 +1150,20 @@ do_uid_store(SequenceSet, Operation, Silence, Flags, IMAP, Res, !IO) :-
         wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
         (
             MaybeResponse = ok(Response),
-            update_state(apply_uid_fetch_response, IMAP, Response, Res,
-                unit, _ : unit, !IO)
+            update_state(apply_uid_fetch_response, IMAP, Response, Result,
+                unit, _ : unit, !IO),
+            Res = ok(Result)
         ;
-            MaybeResponse = error(Error),
-            Res = result(error, Error, [])
+            ( MaybeResponse = eof
+            ; MaybeResponse = error(_)
+            ),
+            Res = convert(MaybeResponse)
         )
     ;
-        Res0 = error(Error),
-        Res = result(error, Error, [])
+        ( Res0 = eof
+        ; Res0 = error(_)
+        ),
+        Res = convert(Res0)
     ).
 
 %-----------------------------------------------------------------------------%
@@ -1134,7 +1174,7 @@ idle(IMAP, Res, !IO) :-
         Res0 = ok(Res)
     ;
         Res0 = error(Error),
-        Res = error_result(Error)
+        Res = error(Error)
     ).
 
 :- pred do_idle(imap::in, imap_result::out, io::di, io::uo) is det.
@@ -1148,18 +1188,23 @@ do_idle(IMAP, Res, !IO) :-
         wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
         (
             MaybeResponse = ok(Response),
-            update_state(apply_idle_response(Tag), IMAP, Response, Res,
-                unit, _ : unit, !IO)
+            update_state(apply_idle_response(Tag), IMAP, Response, Result,
+                unit, _ : unit, !IO),
+            Res = ok(Result)
         ;
-            MaybeResponse = error(Error),
-            Res = error_result(Error)
+            ( MaybeResponse = eof
+            ; MaybeResponse = error(_)
+            ),
+            Res = convert(MaybeResponse)
         )
     ;
-        Res0 = error(Error),
-        Res = error_result(Error)
+        ( Res0 = eof
+        ; Res0 = error(_)
+        ),
+        Res = convert(Res0)
     ).
 
-:- pred apply_idle_response(tag::in, complete_response::in, imap_result::out,
+:- pred apply_idle_response(tag::in, complete_response::in, imap_res::out,
     imap_state::in, imap_state::out, unit::in, unit::out, io::di, io::uo)
     is det.
 
@@ -1169,20 +1214,20 @@ apply_idle_response(Tag, Response, Result, !State, unit, unit, !IO) :-
     (
         % Unexpected response.
         FinalMaybeTag = tagged(_, ok),
-        Res = ok
+        Status = ok
     ;
         FinalMaybeTag = tagged(_, no),
-        Res = no
+        Status = no
     ;
         FinalMaybeTag = tagged(_, bad),
-        Res = bad
+        Status = bad
     ;
         FinalMaybeTag = bye,
-        Res = bye
+        Status = bye
     ;
         % Expected response.
         FinalMaybeTag = continue,
-        Res = continue,
+        Status = continue,
         ConnState = !.State ^ connection_state,
         (
             ConnState = authenticated,
@@ -1200,7 +1245,7 @@ apply_idle_response(Tag, Response, Result, !State, unit, unit, !IO) :-
         )
     ),
     FinalRespText = resp_text(_MaybeResponseCode, Text),
-    Result = result(Res, Text, Alerts).
+    Result = result(Status, Text, Alerts).
 
 %-----------------------------------------------------------------------------%
 
@@ -1212,7 +1257,7 @@ read_single_idle_response(IMAP, Res, !IO) :-
         parse_response_single(Pipe, Bytes, ParseResult, !IO),
         (
             ParseResult = yes(continue_req(_)),
-            Res = error(make_io_error("unexpected continue request"))
+            Res = error("unexpected continue request")
         ;
             ParseResult = yes(untagged(ResponseData)),
             update_state(apply_idle_untagged_response, IMAP, ResponseData,
@@ -1220,17 +1265,17 @@ read_single_idle_response(IMAP, Res, !IO) :-
             Res = ok(Stop - Alerts)
         ;
             ParseResult = yes(tagged(_, _, _)),
-            Res = error(make_io_error("unexpected tagged response"))
+            Res = error("unexpected tagged response")
         ;
             ParseResult = no,
-            Res = error(make_io_error("failed to parse response"))
+            Res = error("failed to parse response")
         )
     ;
         ResRead = eof,
         Res = eof
     ;
         ResRead = error(Error),
-        Res = error(Error)
+        Res = error(io.error_message(Error))
     ).
 
 :- pred apply_idle_untagged_response(untagged_response_data::in,
@@ -1281,11 +1326,11 @@ idle_done(IMAP, Res, !IO) :-
         ; ConnState = selected
         ; ConnState = logout
         ),
-        Res = error(make_io_error(wrong_state_message(ConnState)))
+        Res = error(wrong_state_message(ConnState))
     ).
 
 :- pred do_idle_done(imap::in, tag::in, connection_state::in,
-    io.result(imap_result)::out, io::di, io::uo) is det.
+    imap_result::out, io::di, io::uo) is det.
 
 do_idle_done(IMAP, Tag, ResumeConnState, Res, !IO) :-
     get_pipe(IMAP, Pipe, !IO),
@@ -1294,29 +1339,27 @@ do_idle_done(IMAP, Tag, ResumeConnState, Res, !IO) :-
         Res0, !IO),
     (
         Res0 = ok,
-        wait_for_complete_response_inner(Pipe, Tag, MaybeResponse, !IO),
+        wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
         (
             MaybeResponse = ok(Response),
             update_state(apply_idle_done_response(ResumeConnState),
                 IMAP, Response, Result, unit, _ : unit, !IO),
             Res = ok(Result)
         ;
-            MaybeResponse = eof,
-            Res = eof
-        ;
-            MaybeResponse = error(Error),
-            Res = error(Error)
+            ( MaybeResponse = eof
+            ; MaybeResponse = error(_)
+            ),
+            Res = convert(MaybeResponse)
         )
     ;
-        Res0 = eof,
-        Res = eof
-    ;
-        Res0 = error(Error),
-        Res = error(Error)
+        ( Res0 = eof
+        ; Res0 = error(_)
+        ),
+        Res = convert(Res0)
     ).
 
 :- pred apply_idle_done_response(connection_state::in, complete_response::in,
-    imap_result::out, imap_state::in, imap_state::out, unit::in, unit::out,
+    imap_res::out, imap_state::in, imap_state::out, unit::in, unit::out,
     io::di, io::uo) is det.
 
 apply_idle_done_response(ResumeConnState, Response, Result, !State, unit, unit,
@@ -1326,24 +1369,24 @@ apply_idle_done_response(ResumeConnState, Response, Result, !State, unit, unit,
     (
         (
             FinalMaybeTag = tagged(_, ok),
-            Res = ok
+            Status = ok
         ;
             FinalMaybeTag = tagged(_, no),
-            Res = no
+            Status = no
         ;
             FinalMaybeTag = tagged(_, bad),
-            Res = bad
+            Status = bad
         ),
         !State ^ connection_state := ResumeConnState
     ;
         FinalMaybeTag = bye,
-        Res = bye
+        Status = bye
     ;
         FinalMaybeTag = continue, % unexpected
-        Res = continue
+        Status = continue
     ),
     FinalRespText = resp_text(_MaybeResponseCode, Text),
-    Result = result(Res, Text, Alerts).
+    Result = result(Status, Text, Alerts).
 
 %-----------------------------------------------------------------------------%
 
@@ -1360,32 +1403,16 @@ get_read_filedes(IMAP, Res, !IO) :-
 %-----------------------------------------------------------------------------%
 
 :- pred wait_for_complete_response(pipe::in, tag::in,
-    maybe_error(complete_response)::out, io::di, io::uo) is det.
+    maybe_result(complete_response)::out, io::di, io::uo) is det.
 
 wait_for_complete_response(Pipe, Tag, Res, !IO) :-
-    wait_for_complete_response_inner(Pipe, Tag, Res0, !IO),
-    (
-        Res0 = ok(Result),
-        Res = ok(Result)
-    ;
-        Res0 = eof,
-        Res = error("unexpected eof")
-    ;
-        Res0 = error(Error),
-        Res = error(error_message(Error))
-    ).
+    wait_for_complete_response_2(Pipe, Tag, [], Res, !IO).
 
-:- pred wait_for_complete_response_inner(pipe::in, tag::in,
-    io.result(complete_response)::out, io::di, io::uo) is det.
-
-wait_for_complete_response_inner(Pipe, Tag, Res, !IO) :-
-    wait_for_complete_response_inner_2(Pipe, Tag, [], Res, !IO).
-
-:- pred wait_for_complete_response_inner_2(pipe::in, tag::in,
-    list(untagged_response_data)::in, io.result(complete_response)::out,
+:- pred wait_for_complete_response_2(pipe::in, tag::in,
+    list(untagged_response_data)::in, maybe_result(complete_response)::out,
     io::di, io::uo) is det.
 
-wait_for_complete_response_inner_2(Pipe, Tag, RevUntagged0, Res, !IO) :-
+wait_for_complete_response_2(Pipe, Tag, RevUntagged0, Res, !IO) :-
     read_crlf_line_chop(Pipe, ResRead, !IO),
     (
         ResRead = ok(Bytes),
@@ -1399,7 +1426,7 @@ wait_for_complete_response_inner_2(Pipe, Tag, RevUntagged0, Res, !IO) :-
         ;
             ParseResult = yes(untagged(ResponseData)),
             RevUntagged = [ResponseData | RevUntagged0],
-            wait_for_complete_response_inner_2(Pipe, Tag, RevUntagged, Res, !IO)
+            wait_for_complete_response_2(Pipe, Tag, RevUntagged, Res, !IO)
         ;
             ParseResult = yes(tagged(ResponseTag, Cond, RespText)),
             ( Tag = ResponseTag ->
@@ -1416,7 +1443,7 @@ wait_for_complete_response_inner_2(Pipe, Tag, RevUntagged0, Res, !IO) :-
             )
         ;
             ParseResult = no,
-            Res = error(make_io_error("failed to parse response"))
+            Res = error("failed to parse response")
         )
     ;
         ResRead = eof,
@@ -1433,7 +1460,7 @@ wait_for_complete_response_inner_2(Pipe, Tag, RevUntagged0, Res, !IO) :-
     ;
         ResRead = error(Error),
         % XXX do we need to do anything with the RevUntagged0?
-        Res = error(Error)
+        Res = error(error_message(Error))
     ).
 
 %-----------------------------------------------------------------------------%

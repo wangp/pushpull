@@ -3,6 +3,8 @@
 :- module sync.flags_local.
 :- interface.
 
+:- import_module maybe.
+
 :- import_module dir_cache.
 
 :- pred propagate_flag_deltas_from_remote(log::in, prog_config::in,
@@ -23,6 +25,7 @@
 :- import_module flag_delta.
 :- import_module lowio.
 :- import_module maildir.
+:- import_module maybe_result.
 :- import_module path.
 
 %-----------------------------------------------------------------------------%

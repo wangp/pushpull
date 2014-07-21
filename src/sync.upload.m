@@ -8,7 +8,7 @@
 :- import_module dir_cache.
 
 :- pred upload_unpaired_local_messages(log::in, prog_config::in, database::in,
-    imap::in, mailbox_pair::in, dir_cache::in, maybe_error::out,
+    imap::in, mailbox_pair::in, dir_cache::in, maybe_result::out,
     io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
@@ -29,6 +29,7 @@
 :- import_module log.
 :- import_module log_help.
 :- import_module maildir.
+:- import_module maybe_result.
 :- import_module message_file.
 :- import_module path.
 
@@ -58,7 +59,7 @@ upload_unpaired_local_messages(Log, _Config, Database, IMAP, MailboxPair,
 
 :- pred upload_messages(log::in, database::in, imap::in, mailbox_pair::in,
     dir_cache::in, list(unpaired_local_message)::in, int::in, int::in,
-    maybe_error::out, io::di, io::uo) is det.
+    maybe_result::out, io::di, io::uo) is det.
 
 upload_messages(Log, Database, IMAP, MailboxPair, DirCache, UnpairedLocals,
         Count0, Total, Res, !IO) :-
@@ -69,19 +70,17 @@ upload_messages(Log, Database, IMAP, MailboxPair, DirCache, UnpairedLocals,
         UnpairedLocals = [H | T],
         upload_message(Log, Database, IMAP, MailboxPair, DirCache, H,
             Count0, Total, Res0, !IO),
-        (
-            Res0 = ok,
+        ( Res0 = ok ->
             upload_messages(Log, Database, IMAP, MailboxPair, DirCache, T,
                 Count0 + 1, Total, Res, !IO)
         ;
-            Res0 = error(Error),
-            Res = error(Error)
+            Res = Res0
         )
     ).
 
 :- pred upload_message(log::in, database::in, imap::in, mailbox_pair::in,
     dir_cache::in, unpaired_local_message::in, int::in, int::in,
-    maybe_error::out, io::di, io::uo) is det.
+    maybe_result::out, io::di, io::uo) is det.
 
 upload_message(Log, Database, IMAP, MailboxPair, DirCache, UnpairedLocal,
         Count, Total, Res, !IO) :-
@@ -124,7 +123,8 @@ upload_message(Log, Database, IMAP, MailboxPair, DirCache, UnpairedLocal,
                             ModSeqValue = mod_seq_value(one)
                         ),
                         set_pairing_remote_message(Database, PairingId, UID,
-                            RemoteFlags, ModSeqValue, Res, !IO)
+                            RemoteFlags, ModSeqValue, ResSet, !IO),
+                        Res = from_maybe_error(ResSet)
                     ;
                         MaybeUID = no,
                         % We don't know the UID of the appended message.
@@ -133,6 +133,9 @@ upload_message(Log, Database, IMAP, MailboxPair, DirCache, UnpairedLocal,
                         % message.
                         Res = ok
                     )
+                ;
+                    ResUpload = eof,
+                    Res = eof
                 ;
                     ResUpload = error(Error),
                     Res = error(Error)
@@ -183,7 +186,7 @@ get_file_data(path(Path), Res, !IO) :-
     ).
 
 :- pred do_upload_message(log::in, imap::in, mailbox_pair::in, file_data::in,
-    set(flag)::in, maybe_error(maybe(uid))::out, io::di, io::uo) is det.
+    set(flag)::in, maybe_result(maybe(uid))::out, io::di, io::uo) is det.
 
 do_upload_message(Log, IMAP, MailboxPair, FileData, Flags, Res, !IO) :-
     MailboxName = get_remote_mailbox_name(MailboxPair),
@@ -204,26 +207,34 @@ do_upload_message(Log, IMAP, MailboxPair, FileData, Flags, Res, !IO) :-
     FileData = file_data(Message @ message(ContentLf), ModTime),
     DateTime = make_date_time(ModTime),
     append(IMAP, MailboxName, to_sorted_list(Flags), yes(DateTime), ContentLf,
-        result(ResAppend, Text, Alerts), !IO),
-    report_alerts(Log, Alerts, !IO),
+        Res0, !IO),
     (
-        ResAppend = ok_with_data(MaybeAppendUID),
-        log_debug(Log, Text, !IO),
-        get_appended_uid(Log, IMAP, UIDValidity, MaybeAppendUID, Message,
-            PriorModSeqValue, Res, !IO)
+        Res0 = ok(result(Status, Text, Alerts)),
+        report_alerts(Log, Alerts, !IO),
+        (
+            Status = ok_with_data(MaybeAppendUID),
+            log_debug(Log, Text, !IO),
+            get_appended_uid(Log, IMAP, UIDValidity, MaybeAppendUID, Message,
+                PriorModSeqValue, Res, !IO)
+        ;
+            ( Status = no
+            ; Status = bad
+            ; Status = bye
+            ; Status = continue
+            ),
+            Res = error("unexpected response to APPEND: " ++ Text)
+        )
     ;
-        ( ResAppend = no
-        ; ResAppend = bad
-        ; ResAppend = bye
-        ; ResAppend = continue
-        ; ResAppend = error
-        ),
-        Res = error("unexpected response to APPEND: " ++ Text)
+        Res0 = eof,
+        Res = eof
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
     ).
 
 :- pred get_appended_uid(log::in, imap::in, uidvalidity::in,
     maybe(appenduid)::in, message(lf)::in, maybe(mod_seq_value)::in,
-    maybe_error(maybe(uid))::out, io::di, io::uo) is det.
+    maybe_result(maybe(uid))::out, io::di, io::uo) is det.
 
 get_appended_uid(Log, IMAP, MailboxUIDValidity, MaybeAppendUID, Message,
         PriorModSeqValue, Res, !IO) :-
@@ -241,7 +252,7 @@ get_appended_uid(Log, IMAP, MailboxUIDValidity, MaybeAppendUID, Message,
     ).
 
 :- pred get_appended_uid_fallback(log::in, imap::in, message(lf)::in,
-    maybe(mod_seq_value)::in, maybe_error(maybe(uid))::out, io::di, io::uo)
+    maybe(mod_seq_value)::in, maybe_result(maybe(uid))::out, io::di, io::uo)
     is det.
 
 get_appended_uid_fallback(Log, IMAP, Message, PriorModSeqValue, Res, !IO) :-
@@ -259,25 +270,33 @@ get_appended_uid_fallback(Log, IMAP, Message, PriorModSeqValue, Res, !IO) :-
             PriorModSeqValue = no,
             SearchKey = SearchKey0
         ),
-        uid_search(IMAP, SearchKey, no, result(ResSearch, Text, Alerts), !IO),
-        report_alerts(Log, Alerts, !IO),
+        uid_search(IMAP, SearchKey, no, ResSearch, !IO),
         (
-            ResSearch = ok_with_data(uid_search_result(UIDs,
-                _HighestModSeqValueOfFound, _ReturnDatas)),
-            log_debug(Log, Text, !IO),
-            ( UIDs = [UID] ->
-                Res = ok(yes(UID))
+            ResSearch = ok(result(Status, Text, Alerts)),
+            report_alerts(Log, Alerts, !IO),
+            (
+                Status = ok_with_data(uid_search_result(UIDs,
+                    _HighestModSeqValueOfFound, _ReturnDatas)),
+                log_debug(Log, Text, !IO),
+                ( UIDs = [UID] ->
+                    Res = ok(yes(UID))
+                ;
+                    Res = ok(no)
+                )
             ;
-                Res = ok(no)
+                ( Status = no
+                ; Status = bad
+                ; Status = bye
+                ; Status = continue
+                ),
+                Res = error("unexpected response to UID SEARCH: " ++ Text)
             )
         ;
-            ( ResSearch = no
-            ; ResSearch = bad
-            ; ResSearch = bye
-            ; ResSearch = continue
-            ; ResSearch = error
-            ),
-            Res = error("unexpected response to UID SEARCH: " ++ Text)
+            ResSearch = eof,
+            Res = eof
+        ;
+            ResSearch = error(Error),
+            Res = error(Error)
         )
     ;
         ( ReadMessageId = no

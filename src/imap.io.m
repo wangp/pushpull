@@ -10,13 +10,13 @@
     io::di, io::uo) is det.
 
 :- pred write_command_stream(pipe::in, tag::in, list(chunk)::in,
-    maybe_error::out, io::di, io::uo) is det.
+    maybe_result::out, io::di, io::uo) is det.
 
 :- pred write_command_stream_sensitive(pipe::in, tag::in, list(chunk)::in,
-    maybe_error::out, io::di, io::uo) is det.
+    maybe_result::out, io::di, io::uo) is det.
 
 :- pred write_command_stream_inner(pipe::in, tag::in, list(chunk)::in,
-    bool::in, io.result::out, io::di, io::uo) is det.
+    bool::in, maybe_result::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -107,18 +107,18 @@ read_bytes(closed, _NumOctets, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-write_command_stream(Pipe, Tag, Xs, adapt(Res), !IO) :-
+write_command_stream(Pipe, Tag, Xs, Res, !IO) :-
     Sensitive = no,
     write_command_stream_inner(Pipe, Tag, Xs, Sensitive, Res, !IO).
 
-write_command_stream_sensitive(Pipe, Tag, Xs, adapt(Res), !IO) :-
+write_command_stream_sensitive(Pipe, Tag, Xs, Res, !IO) :-
     Sensitive = yes,
     write_command_stream_inner(Pipe, Tag, Xs, Sensitive, Res, !IO).
 
 write_command_stream_inner(Pipe, Tag, Xs, Sensitive, Res, !IO) :-
     (
         Pipe = closed,
-        Res = error(make_io_error("session closed"))
+        Res = error("session closed")
     ;
         Pipe = open(Bio),
         trace [runtime(env("DEBUG_IMAP")), io(!IO2)] (
@@ -135,17 +135,23 @@ write_command_stream_inner(Pipe, Tag, Xs, Sensitive, Res, !IO) :-
     ).
 
 :- pred write_command_stream_chunks(bio::in, tag::in, list(chunk)::in,
-    io.result::out, io::di, io::uo) is det.
+    maybe_result::out, io::di, io::uo) is det.
 
 write_command_stream_chunks(Bio, _Tag, [], Res, !IO) :-
     bio_write_string(Bio, crlf, Res0, !IO),
     (
         Res0 = ok,
         bio_flush(Bio, Res1, !IO),
-        Res = adapt_io(Res1)
+        (
+            Res1 = ok,
+            Res = ok
+        ;
+            Res1 = error(Error),
+            Res = error(Error)
+        )
     ;
         Res0 = error(Error),
-        Res = error(make_io_error(Error))
+        Res = error(Error)
     ).
 write_command_stream_chunks(Bio, Tag, [X | Xs], Res, !IO) :-
     write_chunk(Bio, X, Res0, !IO),
@@ -173,12 +179,12 @@ write_command_stream_chunks(Bio, Tag, [X | Xs], Res, !IO) :-
                 )
             ;
                 Res1 = error(Error),
-                Res = error(make_io_error(Error))
+                Res = error(Error)
             )
         )
     ;
         Res0 = error(Error),
-        Res = error(make_io_error(Error))
+        Res = error(Error)
     ).
 
 :- pred write_chunk(bio::in, chunk::in, maybe_error::out, io::di, io::uo)
@@ -196,11 +202,11 @@ write_chunk(Bio, Chunk, Res, !IO) :-
         bio_write_string(Bio, crlf, Res, !IO)
     ).
 
-:- pred wait_for_continuation_request(bio::in, tag::in, io.result::out,
+:- pred wait_for_continuation_request(bio::in, tag::in, maybe_result::out,
     io::di, io::uo) is det.
 
 wait_for_continuation_request(Bio, Tag, Res, !IO) :-
-    wait_for_complete_response_inner(open(Bio), Tag, Res0, !IO),
+    wait_for_complete_response(open(Bio), Tag, Res0, !IO),
     (
         Res0 = ok(Response),
         % XXX do something with the rest of the response
@@ -213,17 +219,16 @@ wait_for_continuation_request(Bio, Tag, Res, !IO) :-
             ; FinalMaybeTag = tagged(_, no)
             ; FinalMaybeTag = tagged(_, bad)
             ),
-            Res = error(make_io_error("expected continuation request"))
+            Res = error("expected continuation request")
         ;
             FinalMaybeTag = bye,
-            Res = error(make_io_error("received BYE"))
+            Res = error("received BYE")
         )
     ;
-        Res0 = eof,
-        Res = eof
-    ;
-        Res0 = error(Error),
-        Res = error(Error)
+        ( Res0 = eof
+        ; Res0 = error(_)
+        ),
+        Res = convert(Res0)
     ).
 
 :- func crlf = string.
@@ -253,19 +258,6 @@ debug_chunk(Stream, X, !IO) :-
         X = crlf_wait,
         io.write_string(Stream, "<wait>", !IO)
     ).
-
-%-----------------------------------------------------------------------------%
-
-:- func adapt(io.result) = maybe_error.
-
-adapt(ok) = ok.
-adapt(eof) = error("unexpected eof").
-adapt(error(E)) = error(io.error_message(E)).
-
-:- func adapt_io(maybe_error) = io.result.
-
-adapt_io(ok) = ok.
-adapt_io(error(E)) = error(io.make_io_error(E)).
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

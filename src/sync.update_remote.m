@@ -9,8 +9,8 @@
     % since the last known mod-sequence-value.
     %
 :- pred update_db_remote_mailbox(log::in, prog_config::in, database::in,
-    imap::in, mailbox_pair::in, mod_seq_valzer::in, maybe_error::out, io::di,
-    io::uo) is det.
+    imap::in, mailbox_pair::in, mod_seq_valzer::in, maybe_result::out,
+    io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -88,8 +88,7 @@ update_db_remote_mailbox(Log, _Config, Db, IMAP, MailboxPair, LastModSeqValzer,
     clear_exists_seen_flag(IMAP, _, !IO),
     update_db_remote_mailbox_state(Log, Db, IMAP, MailboxPair,
         LastModSeqValzer, Res0, !IO),
-    (
-        Res0 = ok,
+    ( Res0 = ok ->
         clear_expunge_seen_flag(IMAP, WasExpungeSeen, !IO),
         (
             WasExpungeSeen = yes,
@@ -100,14 +99,13 @@ update_db_remote_mailbox(Log, _Config, Db, IMAP, MailboxPair, LastModSeqValzer,
             Res = ok
         )
     ;
-        Res0 = error(Error),
-        Res = error(Error)
+        Res = Res0
     ).
 
 %-----------------------------------------------------------------------------%
 
 :- pred update_db_remote_mailbox_state(log::in, database::in, imap::in,
-    mailbox_pair::in, mod_seq_valzer::in, maybe_error::out, io::di, io::uo)
+    mailbox_pair::in, mod_seq_valzer::in, maybe_result::out, io::di, io::uo)
     is det.
 
 update_db_remote_mailbox_state(Log, Db, IMAP, MailboxPair, LastModSeqValzer,
@@ -122,36 +120,44 @@ update_db_remote_mailbox_state(Log, Db, IMAP, MailboxPair, LastModSeqValzer,
     ;
         SearchKey = modseq(plus_one(LastModSeqValzer))
     ),
-    uid_search(IMAP, SearchKey, yes([all]),
-        result(ResSearch, Text, Alerts), !IO),
-    report_alerts(Log, Alerts, !IO),
+    uid_search(IMAP, SearchKey, yes([all]), ResSearch, !IO),
     (
-        ResSearch = ok_with_data(uid_search_result(_UIDs,
-            _HighestModSeqValueOfFound, ReturnDatas)),
-        ( get_all_uids_diet(ReturnDatas, KnownUIDs) ->
-            ( is_empty(KnownUIDs) ->
-                % Skip redundant search.
-                Res = ok
+        ResSearch = ok(result(Status, Text, Alerts)),
+        report_alerts(Log, Alerts, !IO),
+        (
+            Status = ok_with_data(uid_search_result(_UIDs,
+                _HighestModSeqValueOfFound, ReturnDatas)),
+            ( get_all_uids_diet(ReturnDatas, KnownUIDs) ->
+                ( is_empty(KnownUIDs) ->
+                    % Skip redundant search.
+                    Res = ok
+                ;
+                    update_db_remote_mailbox_state_1(Log, Db, IMAP,
+                        MailboxPair, LastModSeqValzer, KnownUIDs, ReturnDatas,
+                        Res, !IO)
+                )
             ;
-                update_db_remote_mailbox_state_1(Log, Db, IMAP, MailboxPair,
-                    LastModSeqValzer, KnownUIDs, ReturnDatas, Res, !IO)
+                Res = error("expected UID SEARCH response ALL sequence-set")
             )
         ;
-            Res = error("expected UID SEARCH response ALL sequence-set")
+            ( Status = no
+            ; Status = bad
+            ; Status = bye
+            ; Status = continue
+            ),
+            Res = error("unexpected response to UID SEARCH: " ++ Text)
         )
     ;
-        ( ResSearch = no
-        ; ResSearch = bad
-        ; ResSearch = bye
-        ; ResSearch = continue
-        ; ResSearch = error
-        ),
-        Res = error("unexpected response to UID SEARCH: " ++ Text)
+        ResSearch = eof,
+        Res = eof
+    ;
+        ResSearch = error(Error),
+        Res = error(Error)
     ).
 
 :- pred update_db_remote_mailbox_state_1(log::in, database::in, imap::in,
     mailbox_pair::in, mod_seq_valzer::in, diet(uid)::in,
-    list(search_return_data(uid))::in, maybe_error::out, io::di, io::uo)
+    list(search_return_data(uid))::in, maybe_result::out, io::di, io::uo)
     is det.
 
 update_db_remote_mailbox_state_1(Log, Db, IMAP, MailboxPair, LastModSeqValzer,
@@ -169,17 +175,16 @@ update_db_remote_mailbox_state_1(Log, Db, IMAP, MailboxPair, LastModSeqValzer,
         update_db_remote_mailbox_state_2(Log, Db, IMAP, MailboxPair,
             KnownUIDs, LastModSeqValzer, HighestModSeqValue,
             ResUpdate, !IO),
-        (
-            ResUpdate = ok,
+        ( ResUpdate = ok ->
             HighestModSeqValue = mod_seq_value(N),
             log_debug(Log,
                 format("Recording MODSEQ %s for remote mailbox",
                     [s(to_string(N))]), !IO),
             update_remote_mailbox_modseqvalue(Db, MailboxPair,
-                HighestModSeqValue, Res, !IO)
+                HighestModSeqValue, ResDb, !IO),
+            Res = from_maybe_error(ResDb)
         ;
-            ResUpdate = error(Error),
-            Res = error(Error)
+            Res = ResUpdate
         )
     ;
         Res = error("Cannot support this server (no HIGHESTMODSEQ)")
@@ -187,7 +192,7 @@ update_db_remote_mailbox_state_1(Log, Db, IMAP, MailboxPair, LastModSeqValzer,
 
 :- pred update_db_remote_mailbox_state_2(log::in, database::in, imap::in,
     mailbox_pair::in, diet(uid)::in, mod_seq_valzer::in, mod_seq_value::in,
-    maybe_error::out, io::di, io::uo) is det.
+    maybe_result::out, io::di, io::uo) is det.
 
 update_db_remote_mailbox_state_2(Log, Db, IMAP, MailboxPair, KnownUIDs,
         LastModSeqValzer, HighestModSeqValue, Res, !IO) :-
@@ -211,8 +216,7 @@ update_db_remote_mailbox_state_2(Log, Db, IMAP, MailboxPair, KnownUIDs,
         update_uid_range(Log, Db, IMAP, MailboxPair, KnownUIDs,
             plus_one(MidUID), no, LastModSeqValzer, HighestModSeqValue,
             ResUpdate0, !IO),
-        (
-            ResUpdate0 = ok,
+        ( ResUpdate0 = ok ->
             % Update 1:MidUID
             % Changes may have occurred after (multiple) interruptions.
             % The messages are at least as up-to-date as LastModSeqValzer,
@@ -230,8 +234,7 @@ update_db_remote_mailbox_state_2(Log, Db, IMAP, MailboxPair, KnownUIDs,
                 Res = error(Error)
             )
         ;
-            ResUpdate0 = error(Error),
-            Res = error(Error)
+            Res = ResUpdate0
         )
     ;
         ResMidUID = ok(no),
@@ -245,15 +248,14 @@ update_db_remote_mailbox_state_2(Log, Db, IMAP, MailboxPair, KnownUIDs,
 
 :- pred update_uid_range(log::in, database::in, imap::in, mailbox_pair::in,
     diet(uid)::in, uid::in, maybe(uid)::in, mod_seq_valzer::in,
-    mod_seq_value::in, maybe_error::out, io::di, io::uo) is det.
+    mod_seq_value::in, maybe_result::out, io::di, io::uo) is det.
 
 update_uid_range(Log, Db, IMAP, MailboxPair, KnownUIDs, BatchMin, RangeMax,
         SinceModSeqValzer, HighestModSeqValue, Res, !IO) :-
     get_batch_max(KnownUIDs, BatchMin, RangeMax, BatchMax, MaybeNextBatchMin),
     update_uid_range_batch(Log, Db, IMAP, MailboxPair, number(BatchMin),
         BatchMax, SinceModSeqValzer, HighestModSeqValue, Res0, !IO),
-    (
-        Res0 = ok,
+    ( Res0 = ok ->
         (
             MaybeNextBatchMin = yes(NextBatchMin),
             update_uid_range(Log, Db, IMAP, MailboxPair, KnownUIDs,
@@ -264,8 +266,7 @@ update_uid_range(Log, Db, IMAP, MailboxPair, KnownUIDs, BatchMin, RangeMax,
             Res = ok
         )
     ;
-        Res0 = error(Error),
-        Res = error(Error)
+        Res = Res0
     ).
 
 :- pred get_batch_max(diet(uid)::in, uid::in, maybe(uid)::in,
@@ -298,7 +299,7 @@ max_batch_size = 4000.
 
 :- pred update_uid_range_batch(log::in, database::in, imap::in,
     mailbox_pair::in, seq_number(uid)::in, seq_number(uid)::in,
-    mod_seq_valzer::in, mod_seq_value::in, maybe_error::out, io::di, io::uo)
+    mod_seq_valzer::in, mod_seq_value::in, maybe_result::out, io::di, io::uo)
     is det.
 
 update_uid_range_batch(Log, Db, IMAP, MailboxPair, BatchMin, BatchMax,
@@ -320,46 +321,53 @@ update_uid_range_batch(Log, Db, IMAP, MailboxPair, BatchMin, BatchMax,
         SinceModSeqValzer = mod_seq_valzer(N),
         ChangedSinceModifier = yes(changedsince(mod_seq_value(N)))
     ),
-    uid_fetch(IMAP, SequenceSet, Items, ChangedSinceModifier,
-        result(ResFetch, Text, Alerts), !IO),
-    report_alerts(Log, Alerts, !IO),
+    uid_fetch(IMAP, SequenceSet, Items, ChangedSinceModifier, ResFetch, !IO),
     (
-        ResFetch = ok_with_data(FetchResults),
-        log_debug(Log, Text, !IO),
-        make_remote_message_infos(FetchResults, ResParse,
-            map.init, RemoteMessageInfos),
+        ResFetch = ok(result(Status, Text, Alerts)),
+        report_alerts(Log, Alerts, !IO),
         (
-            ResParse = ok,
-            % Transaction around this for faster.
-            transaction(
-                update_db_with_remote_message_infos(Log, Db, MailboxPair,
-                    HighestModSeqValue, RemoteMessageInfos),
-                    Db, Res0, !IO),
+            Status = ok_with_data(FetchResults),
+            log_debug(Log, Text, !IO),
+            make_remote_message_infos(FetchResults, ResParse,
+                map.init, RemoteMessageInfos),
             (
-                Res0 = ok(commit(_ : unit)),
-                Res = ok
+                ResParse = ok,
+                % Transaction around this for faster.
+                transaction(
+                    update_db_with_remote_message_infos(Log, Db, MailboxPair,
+                        HighestModSeqValue, RemoteMessageInfos),
+                        Db, Res0, !IO),
+                (
+                    Res0 = ok(commit(_ : unit)),
+                    Res = ok
+                ;
+                    Res0 = ok(rollback(Error)),
+                    Res = error(Error)
+                ;
+                    Res0 = ok(rollback_exception(Excp)),
+                    Res = error(string(Excp))
+                ;
+                    Res0 = error(Error),
+                    Res = error(Error)
+                )
             ;
-                Res0 = ok(rollback(Error)),
-                Res = error(Error)
-            ;
-                Res0 = ok(rollback_exception(Excp)),
-                Res = error(string(Excp))
-            ;
-                Res0 = error(Error),
+                ResParse = error(Error),
                 Res = error(Error)
             )
         ;
-            ResParse = error(Error),
-            Res = error(Error)
+            ( Status = no
+            ; Status = bad
+            ; Status = bye
+            ; Status = continue
+            ),
+            Res = error("unexpected response to UID FETCH: " ++ Text)
         )
     ;
-        ( ResFetch = no
-        ; ResFetch = bad
-        ; ResFetch = bye
-        ; ResFetch = continue
-        ; ResFetch = error
-        ),
-        Res = error("unexpected response to UID FETCH: " ++ Text)
+        ResFetch = eof,
+        Res = eof
+    ;
+        ResFetch = error(Error),
+        Res = error(Error)
     ).
 
 :- func to_string(seq_number(uid)) = string.
@@ -556,45 +564,54 @@ do_update_db_with_remote_message_info(Db, MailboxPair, HighestModSeqValue,
 %-----------------------------------------------------------------------------%
 
 :- pred detect_remote_message_expunges(log::in, database::in, imap::in,
-    mailbox_pair::in, maybe_error::out, io::di, io::uo) is det.
+    mailbox_pair::in, maybe_result::out, io::di, io::uo) is det.
 
 detect_remote_message_expunges(Log, Db, IMAP, MailboxPair, Res, !IO) :-
     % The search return option forces the server to return UIDs using
     % sequence-set syntax (RFC 4731).
     % XXX might be able to reuse UID set from update_db_remote_mailbox_state
     % but be careful as messages may be added in the mean time
-    uid_search(IMAP, all, yes([all]), result(ResSearch, Text, Alerts), !IO),
-    report_alerts(Log, Alerts, !IO),
+    uid_search(IMAP, all, yes([all]), ResSearch, !IO),
     (
-        ResSearch = ok_with_data(uid_search_result(_UIDs,
-            _HighestModSeqValueOfFound, ReturnDatas)),
-        ( get_all_uids_diet(ReturnDatas, RemoteUIDs) ->
-            search_min_max_uid(Db, MailboxPair, ResMinMaxUID, !IO),
-            (
-                ResMinMaxUID = ok(yes({DbMinUID, DbMaxUID})),
-                MissingUIDs = difference(make_interval_set(DbMinUID, DbMaxUID),
-                    RemoteUIDs),
-                mark_expunged_remote_messages(Log, Db, MailboxPair,
-                    MissingUIDs, Res, !IO)
+        ResSearch = ok(result(Status, Text, Alerts)),
+        report_alerts(Log, Alerts, !IO),
+        (
+            Status = ok_with_data(uid_search_result(_UIDs,
+                _HighestModSeqValueOfFound, ReturnDatas)),
+            ( get_all_uids_diet(ReturnDatas, RemoteUIDs) ->
+                search_min_max_uid(Db, MailboxPair, ResMinMaxUID, !IO),
+                (
+                    ResMinMaxUID = ok(yes({DbMinUID, DbMaxUID})),
+                    MissingUIDs = difference(
+                        make_interval_set(DbMinUID, DbMaxUID), RemoteUIDs),
+                    mark_expunged_remote_messages(Log, Db, MailboxPair,
+                        MissingUIDs, ResMark, !IO),
+                    Res = from_maybe_error(ResMark)
+                ;
+                    ResMinMaxUID = ok(no),
+                    % Mailbox already empty.
+                    Res = ok
+                ;
+                    ResMinMaxUID = error(Error),
+                    Res = error(Error)
+                )
             ;
-                ResMinMaxUID = ok(no),
-                % Mailbox already empty.
-                Res = ok
-            ;
-                ResMinMaxUID = error(Error),
-                Res = error(Error)
+                Res = error("expected UID SEARCH response ALL sequence-set")
             )
         ;
-            Res = error("expected UID SEARCH response ALL sequence-set")
+            ( Status = no
+            ; Status = bad
+            ; Status = bye
+            ; Status = continue
+            ),
+            Res = error("unexpected response to UID SEARCH: " ++ Text)
         )
     ;
-        ( ResSearch = no
-        ; ResSearch = bad
-        ; ResSearch = bye
-        ; ResSearch = continue
-        ; ResSearch = error
-        ),
-        Res = error("unexpected response to UID SEARCH: " ++ Text)
+        ResSearch = eof,
+        Res = eof
+    ;
+        ResSearch = error(Error),
+        Res = error(Error)
     ).
 
 :- pred mark_expunged_remote_messages(log::in, database::in, mailbox_pair::in,
