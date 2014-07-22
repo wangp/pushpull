@@ -228,8 +228,8 @@
 
 %-----------------------------------------------------------------------------%
 
-:- pred delete_expunged_pairings(database::in, maybe_error::out,
-    io::di, io::uo) is det.
+:- pred delete_expunged_pairings(database::in, mailbox_pair::in,
+    maybe_error::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -1842,9 +1842,32 @@ mark_expunged_2(Db, Stmt, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-delete_expunged_pairings(Db, Res, !IO) :-
-    Stmt = "DELETE FROM pairing WHERE local_expunged=1 AND remote_expunged=1",
-    exec(Db, Stmt, Res, !IO).
+delete_expunged_pairings(Db, MailboxPair, Res, !IO) :-
+    MailboxPair = mailbox_pair(MailboxPairId, _, _, _),
+    Stmt = "DELETE FROM pairing"
+        ++ " WHERE mailbox_pair_id = :mailbox_pair_id"
+        ++ "   AND local_expunged=1"
+        ++ "   AND remote_expunged=1",
+    Bindings = [
+        name(":mailbox_pair_id") - bind_value(MailboxPairId)
+    ],
+    with_stmt(delete_expunged_pairings_2, Db, Stmt, Bindings, Res, !IO).
+
+:- pred delete_expunged_pairings_2(db(rw)::in, stmt::in, maybe_error::out,
+    io::di, io::uo) is det.
+
+delete_expunged_pairings_2(Db, Stmt, Res, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
+    (
+        StepResult = done,
+        Res = ok
+    ;
+        StepResult = row,
+        Res = error("unexpected row")
+    ;
+        StepResult = error(Error),
+        Res = error(Error)
+    ).
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

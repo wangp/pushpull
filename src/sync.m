@@ -133,7 +133,7 @@ sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
     ),
     ( !.Res = ok ->
         log_debug(Log, "Delete expunged pairings", !IO),
-        delete_expunged_pairings(Db, ResDelete, !IO),
+        delete_expunged_pairings(Db, MailboxPair, ResDelete, !IO),
         !:Res = from_maybe_error(ResDelete)
     ;
         true
