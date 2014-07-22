@@ -41,6 +41,8 @@
 
 :- pred find_file(dir_cache::in, uniquename::in, find_file_result::out) is det.
 
+:- pred parse_basename(basename::in, uniquename::out) is semidet.
+
 :- pred parse_basename(basename::in, uniquename::out, set(flag)::out)
     is semidet.
 
@@ -145,12 +147,28 @@ find_file(DirCache, UniqueName, Res) :-
 
 %-----------------------------------------------------------------------------%
 
+parse_basename(basename(BaseName), uniquename(Unique)) :-
+    ( string.sub_string_search(BaseName, ":", Colon) ->
+        string.unsafe_between(BaseName, 0, Colon, Unique),
+        parse_info_suffix_inner(BaseName, Colon, _FlagsStart, _FlagsEnd)
+    ;
+        Unique = BaseName
+    ).
+
 parse_basename(basename(BaseName), uniquename(Unique), Flags) :-
     ( string.sub_string_search(BaseName, ":", Colon) ->
         string.unsafe_between(BaseName, 0, Colon, Unique),
         parse_info_suffix(BaseName, Colon, InfoSuffix),
         InfoSuffix = info_suffix(Chars, _Rest),
-        set.filter_map(char_to_standard_flag, Chars, Flags)
+        % Optimise common case.
+        (
+            set.singleton_set(Char, Chars),
+            char_to_standard_flag(Char, Flag)
+        ->
+            set.singleton_set(Flag, Flags)
+        ;
+            set.filter_map(char_to_standard_flag, Chars, Flags)
+        )
     ;
         Unique = BaseName,
         Flags = set.init
@@ -193,19 +211,27 @@ standard_flag_char('D', system(draft)).
 
 :- pred parse_info_suffix(string::in, int::in, info_suffix::out) is semidet.
 
-parse_info_suffix(String, !.Pos, InfoSuffix) :-
+parse_info_suffix(String, Pos0, InfoSuffix) :-
+    parse_info_suffix_inner(String, Pos0, FlagsStart, FlagsEnd),
+    string.unsafe_between(String, FlagsStart, FlagsEnd, FlagsString),
+    string.unsafe_between(String, FlagsEnd, length(String), Rest),
+    Flags = set.from_sorted_list(to_char_list(FlagsString)),
+    InfoSuffix = info_suffix(Flags, Rest).
+
+:- pred parse_info_suffix_inner(string::in, int::in, int::out, int::out)
+    is semidet.
+
+parse_info_suffix_inner(String, !.Pos, FlagsStart, FlagsEnd) :-
     string.unsafe_index_next(String, !Pos, ':'),
     string.unsafe_index_next(String, !Pos, '2'),
     string.unsafe_index_next(String, !Pos, ','),
-    grab_flag_chars(String, !Pos, [], RevFlagChars),
-    string.unsafe_between(String, !.Pos, length(String), Rest),
-    Flags = set.from_list(RevFlagChars),
-    InfoSuffix = info_suffix(Flags, Rest).
+    FlagsStart = !.Pos,
+    FakePrecChar = char.det_from_int(to_int('A') - 1),
+    grab_flag_chars(String, FakePrecChar, FlagsStart, FlagsEnd).
 
-:- pred grab_flag_chars(string::in, int::in, int::out,
-    list(char)::in, list(char)::out) is semidet.
+:- pred grab_flag_chars(string::in, char::in, int::in, int::out) is semidet.
 
-grab_flag_chars(String, !Pos, !RevFlagChars) :-
+grab_flag_chars(String, PrecChar, !Pos) :-
     (
         string.unsafe_index_next(String, !Pos, Char),
         % Dovecot defines an extension where non-standard fields may follow a
@@ -215,20 +241,13 @@ grab_flag_chars(String, !Pos, !RevFlagChars) :-
         % ASCII seems to be implied.
         char.to_int(Char, I),
         0 < I, I =< 0x7f,
-        % Flags are supposed to be in ASCII order.
-        later(Char, !.RevFlagChars),
-        cons(Char, !RevFlagChars),
-        grab_flag_chars(String, !Pos, !RevFlagChars)
+        % Flags must be in ASCII order.
+        Char @> PrecChar,
+        grab_flag_chars(String, Char, !Pos)
     ;
         % End of flags.
         true
     ).
-
-:- pred later(char::in, list(char)::in) is semidet.
-
-later(_, []).
-later(C, [X | _]) :-
-    to_int(C) > to_int(X).
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

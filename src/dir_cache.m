@@ -542,7 +542,7 @@ search_uniquename_2(UniqueName, Tree, BaseName) :-
         ),
         K = basename(KString),
         ( string.prefix(KString, Unique) ->
-            ( parse_basename(K, UniqueName, _Flags) ->
+            ( parse_basename(K, UniqueName) ->
                 BaseName = K
             ;
                 fail
