@@ -127,7 +127,8 @@
 
 :- type stop_or_continue
     --->    stop_idling
-    ;       continue_idling.
+    ;       continue_idling
+    ;       bye.
 
     % Read an untagged message that the server may send while in IDLE state.
     %

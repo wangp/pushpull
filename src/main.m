@@ -725,22 +725,26 @@ idle_loop(Log, Config, IMAP, Inotify, StartTime, Res, !IO) :-
         Res = error(Error)
     ).
 
-:- pred do_read_idle_response(log::in, imap::in, maybe_result::out, check::out,
-    io::di, io::uo) is det.
+:- pred do_read_idle_response(log::in, imap::in,
+    maybe_result::out, check::out, io::di, io::uo) is det.
 
 do_read_idle_response(Log, IMAP, Res, CheckRemote, !IO) :-
     read_single_idle_response(IMAP, ResRead, !IO),
     (
-        ResRead = ok(Stop - Alerts),
-        (
-            Stop = stop_idling,
-            CheckRemote = check
-        ;
-            Stop = continue_idling,
-            CheckRemote = skip
-        ),
+        ResRead = ok(stop_idling - Alerts),
         report_alerts(Log, Alerts, !IO),
-        Res = ok
+        Res = ok,
+        CheckRemote = check
+    ;
+        ResRead = ok(continue_idling - Alerts),
+        report_alerts(Log, Alerts, !IO),
+        Res = ok,
+        CheckRemote = skip
+    ;
+        ResRead = ok(bye - Alerts),
+        report_alerts(Log, Alerts, !IO),
+        Res = eof,
+        CheckRemote = skip
     ;
         ResRead = eof,
         Res = eof,
