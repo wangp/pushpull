@@ -124,6 +124,16 @@ main_2(Log, Config, !IO) :-
     inotify(S)::in, io::di, io::uo) is det.
 
 main_3(Log, Config, Password, Db, Inotify, !IO) :-
+    LocalMailboxName = Config ^ local_mailbox_name,
+    LocalMailboxPath = make_local_mailbox_path(Config, LocalMailboxName),
+    LocalMailboxPath = local_mailbox_path(DirName),
+    DirCache0 = dir_cache.init(dirname(DirName)),
+    main_4(Log, Config, Password, Db, Inotify, DirCache0, !IO).
+
+:- pred main_4(log::in, prog_config::in, password::in, database::in,
+    inotify(S)::in, dir_cache::in, io::di, io::uo) is det.
+
+main_4(Log, Config, Password, Db, Inotify, DirCache0, !IO) :-
     open_connection(Log, Config, ResBio, !IO),
     (
         ResBio = ok(Bio),
@@ -134,7 +144,8 @@ main_3(Log, Config, Password, Db, Inotify, !IO) :-
             do_login(Log, Config, Password, IMAP, ResLogin, !IO),
             (
                 ResLogin = yes,
-                logged_in(Log, Config, Db, IMAP, Inotify, Res, !IO),
+                logged_in(Log, Config, Db, IMAP, Inotify, Res,
+                    DirCache0, DirCache1, !IO),
                 (
                     Res = ok,
                     Restart = no
@@ -149,7 +160,8 @@ main_3(Log, Config, Password, Db, Inotify, !IO) :-
                 )
             ;
                 ResLogin = no,
-                Restart = no
+                Restart = no,
+                DirCache1 = DirCache0
             ),
             % XXX skip logout if connection already closed
             log_notice(Log, "Logging out.\n", !IO),
@@ -158,7 +170,7 @@ main_3(Log, Config, Password, Db, Inotify, !IO) :-
             (
                 Restart = yes,
                 log_notice(Log, "Restarting.\n", !IO),
-                main_3(Log, Config, Password, Db, Inotify, !IO)
+                main_4(Log, Config, Password, Db, Inotify, DirCache1, !IO)
             ;
                 Restart = no
             )
@@ -358,12 +370,11 @@ do_login(Log, Config, Password, IMAP, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-
 :- pred logged_in(log::in, prog_config::in, database::in, imap::in,
-    inotify(S)::in, maybe_result::out, io::di, io::uo) is det.
+    inotify(S)::in, maybe_result::out, dir_cache::in, dir_cache::out,
+    io::di, io::uo) is det.
 
-logged_in(Log, Config, Db, IMAP, Inotify, Res, !IO) :-
-    % For now.
+logged_in(Log, Config, Db, IMAP, Inotify, Res, !DirCache, !IO) :-
     LocalMailboxName = Config ^ local_mailbox_name,
     RemoteMailboxName = Config ^ mailbox,
     select(IMAP, RemoteMailboxName, Res0, !IO),
@@ -392,13 +403,9 @@ logged_in(Log, Config, Db, IMAP, Inotify, Res, !IO) :-
                         RemoteMailboxName, UIDValidity, ResLookup, !IO),
                     (
                         ResLookup = ok(MailboxPair),
-                        LocalMailboxPath = make_local_mailbox_path(Config,
-                            LocalMailboxName),
-                        LocalMailboxPath = local_mailbox_path(DirName),
-                        DirCache0 = dir_cache.init(dirname(DirName)),
                         sync_and_repeat(Log, Config, Db, IMAP, Inotify,
                             MailboxPair, shortcut(check, check), scan_all,
-                            Res, DirCache0, _DirCache, !IO)
+                            Res, !DirCache, !IO)
                     ;
                         ResLookup = error(Error),
                         Res = error(Error)
