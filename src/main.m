@@ -657,7 +657,10 @@ idle_until_done(Log, Config, IMAP, Inotify, StartTime, Res, !IO) :-
             Res = eof
         ;
             Res1 = error(Error),
-            Res = error(Error)
+            log_error(Log, "failed to send DONE: " ++ Error, !IO),
+            % Restart in case we failed to write because the connection was
+            % closed.
+            Res = eof
         )
     ;
         Res0 = eof,
