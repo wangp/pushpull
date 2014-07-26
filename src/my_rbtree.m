@@ -43,6 +43,7 @@
 :- module my_rbtree.
 :- interface.
 
+:- import_module array.
 :- import_module assoc_list.
 :- import_module list.
 
@@ -207,6 +208,8 @@
     in, in, out, di, uo) is det.
 :- mode foldl2(pred(in, in, di, uo, di, uo) is det,
     in, di, uo, di, uo) is det.
+:- mode foldl2(pred(in, in, in, out, array_di, array_uo) is det,
+    in, in, out, array_di, array_uo) is det.
 :- mode foldl2(pred(in, in, in, out, in, out) is semidet,
     in, in, out, in, out) is semidet.
 :- mode foldl2(pred(in, in, in, out, mdi, muo) is semidet,

@@ -3,6 +3,7 @@
 :- module sqlite3.
 :- interface.
 
+:- import_module array.
 :- import_module assoc_list.
 :- import_module bool.
 :- import_module char.
@@ -172,11 +173,15 @@
     T::in, T::out, io::di, io::uo) is det.
 
 :- pred with_stmt_acc3(
-    pred(db(RwRo), stmt, maybe_error, A, A, B, B, C, C, io, io)::in(
-        pred(in, in, out, in, out, in, out, in, out, di, uo) is det),
-    db(RwRo)::in, string::in, assoc_list(bind_index, bind_value)::in,
-    maybe_error::out, A::in, A::out, B::in, B::out, C::in, C::out,
-    io::di, io::uo) is det.
+    pred(db(RwRo), stmt, maybe_error, A, A, B, B, C, C, io, io),
+    db(RwRo), string, assoc_list(bind_index, bind_value),
+    maybe_error, A, A, B, B, C, C, io, io).
+:- mode with_stmt_acc3(
+    in(pred(in, in, out, in, out, in, out, in, out, di, uo) is det),
+    in, in, in, out, in, out, in, out, in, out, di, uo) is det.
+:- mode with_stmt_acc3(
+    in(pred(in, in, out, in, out, in, out, array_di, array_uo, di, uo) is det),
+    in, in, in, out, in, out, in, out, array_di, array_uo, di, uo) is det.
 
 :- pred bind_checked(db(RwRo)::in, stmt::in,
     assoc_list(bind_index, bind_value)::in, io::di, io::uo) is det.

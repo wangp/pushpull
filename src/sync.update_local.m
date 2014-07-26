@@ -17,6 +17,7 @@
 
 :- implementation.
 
+:- import_module array.
 :- import_module bool.
 :- import_module list.
 :- import_module set.
@@ -50,7 +51,8 @@ update_db_local_mailbox(Log, Config, Db, Inotify, MailboxPair, UpdateMethod,
         ( all_files(!.DirCache, AllFiles) ->
             fold_unexpunged_pairings_with_uniquename(detect_local_changes(Log),
                 Db, MailboxPair, ResFold,
-                AllFiles, NewFiles, [], Changes, init, UnseenPairingIds, !IO),
+                [], Changes, init, UnseenPairingIds,
+                AllFiles, NewFiles, !IO),
             (
                 ResFold = ok,
                 log_debug(Log, "Update database local message state", !IO),
@@ -90,11 +92,12 @@ update_db_local_mailbox(Log, Config, Db, Inotify, MailboxPair, UpdateMethod,
 
 :- pred detect_local_changes(log::in,
     pairing_id::in, uniquename::in, flag_deltas(local_mailbox)::in,
-    files::in, files::out, list(change)::in, list(change)::out,
-    pairing_id_set::in, pairing_id_set::out, io::di, io::uo) is det.
+    list(change)::in, list(change)::out,
+    pairing_id_set::in, pairing_id_set::out,
+    files::array_di, files::array_uo, io::di, io::uo) is det.
 
 detect_local_changes(Log, PairingId, Unique, LocalFlagDeltas0,
-        !Files, !Changes, !UnseenPairingIds, !IO) :-
+        !Changes, !UnseenPairingIds, !Files, !IO) :-
     ( remove_uniquename(Unique, BaseName, !Files) ->
         % Unique name exists found in directory.
         ( parse_basename(BaseName, Unique, MaildirStandardFlags) ->

@@ -3,6 +3,7 @@
 :- module dir_cache.
 :- interface.
 
+:- import_module array.
 :- import_module bool.
 :- import_module io.
 :- import_module list.
@@ -45,13 +46,13 @@
 
 :- type files.
 
-:- pred all_files(dir_cache::in, files::out) is semidet.
+:- pred all_files(dir_cache::in, files::array_uo) is semidet.
 
-:- pred remove_uniquename(uniquename::in, basename::out, files::in, files::out)
-    is semidet.
+:- pred remove_uniquename(uniquename::in, basename::out,
+    files::array_di, files::array_uo) is semidet.
 
 :- pred foldl2(pred(basename, dirname, T, T, U, U), files, T, T, U, U).
-:- mode foldl2(pred(in, in, in, out, di, uo) is det, in, in, out, di, uo)
+:- mode foldl2(pred(in, in, in, out, di, uo) is det, array_ui, in, out, di, uo)
     is det.
 
 %-----------------------------------------------------------------------------%
@@ -70,11 +71,9 @@
 :- import_module string.
 :- import_module time.
 :- import_module unit.
-:- import_module version_array.
 
 :- import_module my_rbtree.
 :- import_module signal.
-:- import_module va_sort.
 
 :- type dir_cache
     --->    dir_cache(
@@ -109,7 +108,7 @@
 
 :- type scan_dir == pair(dirname, context).
 
-:- type files == version_array(file_or_tombstone).
+:- type files == array(file_or_tombstone).
 
     % The basename and dirname values are shared with dir_cache
     % so that the extra memory is all in the nodes.
@@ -507,7 +506,7 @@ search_prefix_2(Prefix, DirName, Tree, !Matching) :-
 all_files(dir_cache(_, Dirs), Array) :-
     map.foldr2(gather_new_or_cur_dirs, Dirs, [], NewOrCurDirs,
         0, TotalBaseNames),
-    Array0 = version_array.unsafe_init(TotalBaseNames, tombstone(basename(""))),
+    Array0 = array.init(TotalBaseNames, tombstone(basename(""))),
     fill_array(NewOrCurDirs, 0, Index, Array0, Array1),
     expect(unify(TotalBaseNames, Index),
         $module, $pred, "TotalBaseNames != Index"),
@@ -545,7 +544,7 @@ gather_new_or_cur_dirs(DirName, DirInfo, !NewOrCurDirs, !CountBaseNames) :-
     ).
 
 :- pred fill_array(list(pair(dirname, basename_tree))::in, int::in, int::out,
-    files::in, files::out) is det.
+    files::array_di, files::array_uo) is det.
 
 fill_array([], !Index, !Array).
 fill_array([H | T], !Index, !Array) :-
@@ -554,11 +553,11 @@ fill_array([H | T], !Index, !Array) :-
     fill_array(T, !Index, !Array).
 
 :- pred fill_array_2(dirname::in, basename::in, unit::in, int::in, int::out,
-    version_array(file_or_tombstone)::in,
-    version_array(file_or_tombstone)::out) is det.
+    array(file_or_tombstone)::array_di, array(file_or_tombstone)::array_uo)
+    is det.
 
 fill_array_2(DirName, BaseName, _unit, Index, Index + 1, !Array) :-
-    version_array.set(Index, file(BaseName, DirName), !Array).
+    array.set(Index, file(BaseName, DirName), !Array).
 
 :- pred sanity_check_array(files::in, basename::in, int::in, int::in)
     is semidet.
@@ -582,7 +581,7 @@ remove_uniquename(Unique, BaseName, !Files) :-
     Hi = size(!.Files) - 1,
     binsearch(!.Files, Unique, Lo, Hi, Index),
     lookup(!.Files, Index) = file(BaseName, _DirName),
-    version_array.set(Index, tombstone(BaseName), !Files).
+    array.set(Index, tombstone(BaseName), !Files).
 
 :- pred binsearch(files::in, uniquename::in, int::in, int::in, int::out)
     is semidet.

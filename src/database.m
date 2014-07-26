@@ -3,6 +3,7 @@
 :- module database.
 :- interface.
 
+:- import_module array.
 :- import_module bool.
 :- import_module io.
 :- import_module list.
@@ -83,9 +84,12 @@
     pred(pairing_id, uniquename, flag_deltas(local_mailbox), A, A, B, B, C, C,
     io, io), database, mailbox_pair, maybe_error,
     A, A, B, B, C, C, io, io).
+% :- mode fold_unexpunged_pairings_with_uniquename(
+%     pred(in, in, in, in, out, in, out, in, out, di, uo) is det,
+%     in, in, out, in, out, in, out, in, out, di, uo) is det.
 :- mode fold_unexpunged_pairings_with_uniquename(
-    pred(in, in, in, in, out, in, out, in, out, di, uo) is det, in, in, out,
-    in, out, in, out, in, out, di, uo) is det.
+    pred(in, in, in, in, out, in, out, array_di, array_uo, di, uo) is det,
+    in, in, out, in, out, in, out, array_di, array_uo, di, uo) is det.
 
 :- pred search_pairing_by_remote_message(database::in,
     mailbox_pair::in, uid::in, maybe_message_id::in,
@@ -871,9 +875,12 @@ fold_unexpunged_pairings_with_uniquename(Pred, Db, MailboxPair, Res,
     pred(pairing_id, uniquename, flag_deltas(local_mailbox), A, A, B, B, C, C,
     io, io), database, stmt, maybe_error,
     A, A, B, B, C, C, io, io).
+% :- mode fold_unexpunged_pairings_with_uniquename_2(
+%     pred(in, in, in, in, out, in, out, in, out, di, uo) is det,
+%     in, in, out, in, out, in, out, in, out, di, uo) is det.
 :- mode fold_unexpunged_pairings_with_uniquename_2(
-    pred(in, in, in, in, out, in, out, in, out, di, uo) is det, in, in, out,
-    in, out, in, out, in, out, di, uo) is det.
+    pred(in, in, in, in, out, in, out, array_di, array_uo, di, uo) is det,
+    in, in, out, in, out, in, out, array_di, array_uo, di, uo) is det.
 
 fold_unexpunged_pairings_with_uniquename_2(Pred, Db, Stmt, Res, !A, !B, !C,
         !IO) :-
