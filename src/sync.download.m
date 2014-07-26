@@ -521,7 +521,10 @@ save_raw_message_2(Log, Config, dirname(SubDirName), RemoteMessage,
         ResUnique = ok({Unique, path(TmpPath), Fd}),
         InfoSuffix = flags_to_info_suffix(Flags),
         % XXX don't think this condition is right
-        ( InfoSuffix = info_suffix(set.init, "") ->
+        (
+            InfoSuffix = info_suffix(FlagChars, ""),
+            is_empty(FlagChars)
+        ->
             make_message_basename(Unique, no, basename(BaseName))
         ;
             make_message_basename(Unique, yes(InfoSuffix), basename(BaseName))

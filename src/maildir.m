@@ -3,7 +3,6 @@
 :- module maildir.
 :- interface.
 
-:- import_module char.
 :- import_module io.
 :- import_module maybe.
 :- import_module set.
@@ -24,7 +23,9 @@
     ;       cur.
 
 :- type info_suffix
-    --->    info_suffix(set(char), string). % after ":2,"; may be empty
+    --->    info_suffix(fn_flags, string). % after ":2,"; may be empty
+
+:- type fn_flags.
 
 :- pred generate_unique_name(dirname::in,
     maybe_error({uniquename, path, filedes})::out, io::di, io::uo) is det.
@@ -51,11 +52,14 @@
 :- pred add_remove_standard_flags(set(flag)::in, set(flag)::in,
     info_suffix::in, info_suffix::out) is det.
 
+:- pred is_empty(fn_flags::in) is semidet.
+
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
 :- implementation.
 
+:- import_module char.
 :- import_module dir.
 :- import_module int.
 :- import_module list.
@@ -65,6 +69,9 @@
 :- import_module gettimeofday.
 :- import_module sys_util.
 
+:- type fn_flags == string. % sorted, no duplicates
+
+%-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
 generate_unique_name(DirName, Res, !IO) :-
@@ -107,8 +114,7 @@ safe_gethostname(HostName, !IO) :-
 make_message_basename(uniquename(Unique), MaybeInfoSuffix, basename(BaseName))
         :-
     (
-        MaybeInfoSuffix = yes(info_suffix(FlagChars, Rest)),
-        Flags = string.from_char_list(to_sorted_list(FlagChars)),
+        MaybeInfoSuffix = yes(info_suffix(Flags, Rest)),
         BaseName = string.append_list([Unique, ":2,", Flags, Rest])
     ;
         MaybeInfoSuffix = no,
@@ -159,16 +165,8 @@ parse_basename(basename(BaseName), uniquename(Unique), Flags) :-
     ( string.sub_string_search(BaseName, ":", Colon) ->
         string.unsafe_between(BaseName, 0, Colon, Unique),
         parse_info_suffix(BaseName, Colon, InfoSuffix),
-        InfoSuffix = info_suffix(Chars, _Rest),
-        % Optimise common case.
-        (
-            set.singleton_set(Char, Chars),
-            char_to_standard_flag(Char, Flag)
-        ->
-            set.singleton_set(Flag, Flags)
-        ;
-            set.filter_map(char_to_standard_flag, Chars, Flags)
-        )
+        InfoSuffix = info_suffix(FnFlags, _Rest),
+        fn_flags_to_standard_flags(FnFlags, Flags)
     ;
         Unique = BaseName,
         Flags = set.init
@@ -177,15 +175,41 @@ parse_basename(basename(BaseName), uniquename(Unique), Flags) :-
 %-----------------------------------------------------------------------------%
 
 flags_to_info_suffix(Flags) = InfoSuffix :-
-    set.filter_map(flag_to_standard_char, Flags, Chars),
-    InfoSuffix = info_suffix(Chars, "").
+    standard_flags_to_fn_flags(Flags, FnFlags),
+    InfoSuffix = info_suffix(FnFlags, "").
 
 add_remove_standard_flags(AddFlags, RemoveFlags, InfoSuffix0, InfoSuffix) :-
-    InfoSuffix0 = info_suffix(Chars0, Rest),
     set.filter_map(flag_to_standard_char, RemoveFlags, RemoveChars),
     set.filter_map(flag_to_standard_char, AddFlags, AddChars),
-    Chars = difference(Chars0, RemoveChars) `union` AddChars,
-    InfoSuffix = info_suffix(Chars, Rest).
+
+    InfoSuffix0 = info_suffix(String0, Rest),
+    Set0 = set.from_sorted_list(to_char_list(String0)),
+    Set = difference(Set0, RemoveChars) `union` AddChars,
+    String = from_char_list(to_sorted_list(Set)),
+    InfoSuffix = info_suffix(String, Rest).
+
+%-----------------------------------------------------------------------------%
+
+is_empty("").
+
+:- pred fn_flags_to_standard_flags(fn_flags::in, set(flag)::out) is det.
+
+fn_flags_to_standard_flags(String, Set) :-
+    % Optimise common case.
+    ( String = "S" ->
+        Set = set.make_singleton_set(system(seen))
+    ;
+        string.to_char_list(String, Chars),
+        list.filter_map(char_to_standard_flag, Chars, Flags),
+        set.list_to_set(Flags, Set)
+    ).
+
+:- pred standard_flags_to_fn_flags(set(flag)::in, fn_flags::out) is det.
+
+standard_flags_to_fn_flags(Set, String) :-
+    set.to_sorted_list(Set, Flags),
+    list.filter_map(flag_to_standard_char, Flags, Chars),
+    string.from_char_list(Chars, String).
 
 :- pred char_to_standard_flag(char::in, flag::out) is semidet.
 
@@ -213,9 +237,8 @@ standard_flag_char('D', system(draft)).
 
 parse_info_suffix(String, Pos0, InfoSuffix) :-
     parse_info_suffix_inner(String, Pos0, FlagsStart, FlagsEnd),
-    string.unsafe_between(String, FlagsStart, FlagsEnd, FlagsString),
+    string.unsafe_between(String, FlagsStart, FlagsEnd, Flags),
     string.unsafe_between(String, FlagsEnd, length(String), Rest),
-    Flags = set.from_sorted_list(to_char_list(FlagsString)),
     InfoSuffix = info_suffix(Flags, Rest).
 
 :- pred parse_info_suffix_inner(string::in, int::in, int::out, int::out)
