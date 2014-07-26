@@ -50,7 +50,7 @@
 :- pred remove_uniquename(uniquename::in, basename::out, files::in, files::out)
     is semidet.
 
-:- pred foldl2(pred(basename, dirname, T, T, U, U), files, T, T, U, U) is det.
+:- pred foldl2(pred(basename, dirname, T, T, U, U), files, T, T, U, U).
 :- mode foldl2(pred(in, in, in, out, di, uo) is det, in, in, out, di, uo)
     is det.
 
@@ -70,9 +70,11 @@
 :- import_module string.
 :- import_module time.
 :- import_module unit.
+:- import_module version_array.
 
 :- import_module my_rbtree.
 :- import_module signal.
+:- import_module va_sort.
 
 :- type dir_cache
     --->    dir_cache(
@@ -107,10 +109,14 @@
 
 :- type scan_dir == pair(dirname, context).
 
+:- type files == version_array(file_or_tombstone).
+
     % The basename and dirname values are shared with dir_cache
     % so that the extra memory is all in the nodes.
     %
-:- type files == rbtree(basename, dirname).
+:- type file_or_tombstone
+    --->    file(basename, dirname)
+    ;       tombstone(basename).
 
 %-----------------------------------------------------------------------------%
 
@@ -498,66 +504,148 @@ search_prefix_2(Prefix, DirName, Tree, !Matching) :-
 
 %-----------------------------------------------------------------------------%
 
-all_files(dir_cache(_, Dirs), Map) :-
-    map.foldl(make_combined_map, Dirs, init, Map).
+all_files(dir_cache(_, Dirs), Array) :-
+    map.foldr2(gather_new_or_cur_dirs, Dirs, [], NewOrCurDirs,
+        0, TotalBaseNames),
+    Array0 = version_array.unsafe_init(TotalBaseNames, tombstone(basename(""))),
+    fill_array(NewOrCurDirs, 0, Index, Array0, Array1),
+    expect(unify(TotalBaseNames, Index),
+        $module, $pred, "TotalBaseNames != Index"),
+    % The trees are already sorted, so it seems like we could do better here.
+    % I tried populating the array by multi-level merging of lazy-streamed
+    % trees; that used less memory but was a bit slower.  I tried merge sorting
+    % the subarrays, which are populated in sorted order; that turned out to
+    % perform basically the same as samsort, even though samsort has to
+    % identify the subarrays.
+    Array = sort(Array1),
+    ( size(Array) > 0 ->
+        ( lookup(Array, 0) = file(BaseName0, _) ->
+            sanity_check_array(Array, BaseName0, 1, size(Array))
+        ;
+            unexpected($module, $pred, "missing file entry")
+        )
+    ;
+        true
+    ).
 
-:- pred make_combined_map(dirname::in, dirinfo::in,
-    rbtree(basename, dirname)::in, rbtree(basename, dirname)::out) is semidet.
+:- pred gather_new_or_cur_dirs(dirname::in, dirinfo::in,
+    list(pair(dirname, basename_tree))::in,
+    list(pair(dirname, basename_tree))::out, int::in, int::out) is det.
 
-make_combined_map(DirName, dirinfo(Context, _ModTime, BaseNames), !Map) :-
+gather_new_or_cur_dirs(DirName, DirInfo, !NewOrCurDirs, !CountBaseNames) :-
+    DirInfo = dirinfo(Context, _ModTime, BaseNames),
     (
         Context = top
     ;
         Context = bucket
     ;
         Context = new_or_cur,
-        my_rbtree.foldl(make_combined_map_2(DirName), BaseNames, !Map)
+        cons(DirName - BaseNames, !NewOrCurDirs),
+        !:CountBaseNames = !.CountBaseNames + my_rbtree.count(BaseNames)
     ).
 
-:- pred make_combined_map_2(dirname::in, basename::in, unit::in,
-    rbtree(basename, dirname)::in, rbtree(basename, dirname)::out) is semidet.
+:- pred fill_array(list(pair(dirname, basename_tree))::in, int::in, int::out,
+    files::in, files::out) is det.
 
-make_combined_map_2(DirName, BaseName, _unit, !Map) :-
-    insert(BaseName, DirName, !Map).
+fill_array([], !Index, !Array).
+fill_array([H | T], !Index, !Array) :-
+    H = DirName - BaseNames,
+    my_rbtree.foldl2(fill_array_2(DirName), BaseNames, !Index, !Array),
+    fill_array(T, !Index, !Array).
+
+:- pred fill_array_2(dirname::in, basename::in, unit::in, int::in, int::out,
+    version_array(file_or_tombstone)::in,
+    version_array(file_or_tombstone)::out) is det.
+
+fill_array_2(DirName, BaseName, _unit, Index, Index + 1, !Array) :-
+    version_array.set(Index, file(BaseName, DirName), !Array).
+
+:- pred sanity_check_array(files::in, basename::in, int::in, int::in)
+    is semidet.
+
+sanity_check_array(Array, PrevBaseName, I, Size) :-
+    ( I < Size ->
+        ( lookup(Array, I) = file(BaseName, _) ->
+            PrevBaseName @< BaseName,
+            sanity_check_array(Array, BaseName, I + 1, Size)
+        ;
+            unexpected($module, $pred, "not file entry")
+        )
+    ;
+        true
+    ).
 
 %-----------------------------------------------------------------------------%
 
 remove_uniquename(Unique, BaseName, !Files) :-
-    search_uniquename_2(Unique, !.Files, BaseName),
-    remove(BaseName, _DirName, !Files).
+    Lo = 0,
+    Hi = size(!.Files) - 1,
+    binsearch(!.Files, Unique, Lo, Hi, Index),
+    lookup(!.Files, Index) = file(BaseName, _DirName),
+    version_array.set(Index, tombstone(BaseName), !Files).
 
-:- pred search_uniquename_2(uniquename::in, files::in, basename::out)
+:- pred binsearch(files::in, uniquename::in, int::in, int::in, int::out)
     is semidet.
 
-search_uniquename_2(UniqueName, Tree, BaseName) :-
+binsearch(Array, UniqueName, Lo, Hi, Index) :-
+    Lo =< Hi,
+    Mid = (Lo + Hi) / 2,
+    MidX = lookup(Array, Mid),
+    (
+        MidX = file(MidBaseName, _)
+    ;
+        MidX = tombstone(MidBaseName)
+    ),
+    compare_basename_uniquename(Rel, MidBaseName, UniqueName),
+    (
+        Rel = (=),
+        Index = Mid
+    ;
+        Rel = (<),
+        binsearch(Array, UniqueName, Mid + 1, Hi, Index)
+    ;
+        Rel = (>),
+        binsearch(Array, UniqueName, Lo, Mid - 1, Index)
+    ).
+
+:- pred compare_basename_uniquename(comparison_result::out,
+    basename::in, uniquename::in) is det.
+
+compare_basename_uniquename(Rel, BaseName, UniqueName) :-
+    BaseName = basename(BN),
     UniqueName = uniquename(Unique),
     (
-        Tree = empty,
-        fail
+        string.prefix(BN, Unique),
+        parse_basename(BaseName, UniqueName)
+    ->
+        Rel = (=)
     ;
-        (
-            Tree = red(K, _, L, R)
-        ;
-            Tree = black(K, _, L, R)
-        ),
-        K = basename(KString),
-        ( string.prefix(KString, Unique) ->
-            ( parse_basename(K, UniqueName) ->
-                BaseName = K
-            ;
-                fail
-            )
-        ; Unique @< KString ->
-            search_uniquename_2(UniqueName, L, BaseName)
-        ;
-            search_uniquename_2(UniqueName, R, BaseName)
-        )
+        compare(Rel, BN, Unique)
     ).
 
 %-----------------------------------------------------------------------------%
 
-foldl2(Pred, Tree, !A, !B) :-
-    my_rbtree.foldl2(Pred, Tree, !A, !B).
+foldl2(Pred, Array, !A, !B) :-
+    foldl2(Pred, Array, 0, size(Array), !A, !B).
+
+:- pred foldl2(pred(basename, dirname, T, T, U, U), files, int, int,
+    T, T, U, U).
+:- mode foldl2(pred(in, in, in, out, di, uo) is det, in, in, in,
+    in, out, di, uo) is det.
+
+foldl2(P, Array, I, Size, !A, !B) :-
+    ( I < Size ->
+        X = lookup(Array, I),
+        (
+            X = file(BaseName, DirName),
+            P(BaseName, DirName, !A, !B)
+        ;
+            X = tombstone(_)
+        ),
+        foldl2(P, Array, I + 1, Size, !A, !B)
+    ;
+        true
+    ).
 
 %-----------------------------------------------------------------------------%
 
