@@ -52,8 +52,6 @@
 :- pred add_remove_standard_flags(set(flag)::in, set(flag)::in,
     info_suffix::in, info_suffix::out) is det.
 
-:- pred is_empty(fn_flags::in) is semidet.
-
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
@@ -189,8 +187,6 @@ add_remove_standard_flags(AddFlags, RemoveFlags, InfoSuffix0, InfoSuffix) :-
     InfoSuffix = info_suffix(String, Rest).
 
 %-----------------------------------------------------------------------------%
-
-is_empty("").
 
 :- pred fn_flags_to_standard_flags(fn_flags::in, set(flag)::out) is det.
 
