@@ -361,50 +361,73 @@ match_unpaired_local_message(Log, Database, MailboxPair, DirCache,
     io::di, io::uo) is det.
 
 merge_pair(Database, UnwantedPairingId, KeepPairingId, Unique, Res, !IO) :-
+    % The remote message has flags and the local message has flags.  If we
+    % simply take the union of both sets, we end up including undesirable
+    % flags.  For example, if the local message was previously \Deleted, then
+    % when we pair it with a resurrected remote message, the union would
+    % include the undesired \Deleted flag.
+    %
+    % Another example: a message in GMail gets the $Phishing flag and is
+    % removed (expunged) from the folder, but the flag is propagated to the
+    % local message.  If the message is subsequently marked "not spam" in
+    % GMail, it reappears in the remote mailbox as a NEW message, without the
+    % $Phishing.  When we pair it with the existing local message, we want to
+    % REMOVE the $Phishing on the local message, not to add the $Phishing to
+    % the remote message.
+    %
+    % The solution is to compare the known flags of the OLD remote message
+    % (if any) with the flags of the NEW remote message to compute flag deltas,
+    % then allow them to propagate as usual.
     lookup_local_message_flags(Database, UnwantedPairingId, ResLocalFlags,
         !IO),
     (
-        ResLocalFlags = ok(LocalFlagDeltas0),
-        lookup_remote_message_flags(Database, KeepPairingId, ResRemoteFlags,
-            !IO),
+        ResLocalFlags = ok(LocalFlagDeltas),
+        lookup_remote_message_flags(Database, UnwantedPairingId,
+            ResOldRemoteFlags, !IO),
         (
-            ResRemoteFlags = ok(RemoteFlagDeltas0),
-            % The remote message has flags and the local message has flags,
-            % so we try to take the union of both, with one exception:
-            % if either side is missing the Deleted flag then we prefer
-            % to remove the Deleted flag on the other side.
-            imply_minus_deleted_flag(LocalFlagDeltas0, LocalFlagDeltas1),
-            imply_minus_deleted_flag(RemoteFlagDeltas0, RemoteFlagDeltas1),
-            merge_flag_deltas(LocalFlagDeltas1, LocalFlagDeltas,
-                RemoteFlagDeltas1, RemoteFlagDeltas),
-            delete_pairing(Database, UnwantedPairingId, ResDelete, !IO),
+            ResOldRemoteFlags = ok(OldRemoteFlagDeltas),
+            lookup_remote_message_flags(Database, KeepPairingId,
+                ResNewRemoteFlags, !IO),
             (
-                ResDelete = ok,
-                set_pairing_local_message(Database, KeepPairingId, Unique,
-                    LocalFlagDeltas, require_attn(LocalFlagDeltas),
-                    ResSetLocal, !IO),
+                ResNewRemoteFlags = ok(NewRemoteFlagDeltas0),
+                % For a new remote message the plus and minus sets should be
+                % empty.
+                NewRemoteFlags0 = NewRemoteFlagDeltas0 ^ cur_set,
+                update_flags(NewRemoteFlags0, OldRemoteFlagDeltas,
+                    NewRemoteFlagDeltas, _IsChanged),
+                delete_pairing(Database, UnwantedPairingId, ResDelete, !IO),
                 (
-                    ResSetLocal = ok,
-                    update_remote_message_flags(Database, KeepPairingId,
-                        RemoteFlagDeltas, require_attn(RemoteFlagDeltas),
-                        ResSetRemote, !IO),
+                    ResDelete = ok,
+                    set_pairing_local_message(Database, KeepPairingId, Unique,
+                        LocalFlagDeltas, require_attn(LocalFlagDeltas),
+                        ResSetLocal, !IO),
                     (
-                        ResSetRemote = ok,
-                        Res = commit(unit)
+                        ResSetLocal = ok,
+                        update_remote_message_flags(Database, KeepPairingId,
+                            NewRemoteFlagDeltas,
+                            require_attn(NewRemoteFlagDeltas),
+                            ResSetRemote, !IO),
+                        (
+                            ResSetRemote = ok,
+                            Res = commit(unit)
+                        ;
+                            ResSetRemote = error(Error),
+                            Res = rollback(Error)
+                        )
                     ;
-                        ResSetRemote = error(Error),
+                        ResSetLocal = error(Error),
                         Res = rollback(Error)
                     )
                 ;
-                    ResSetLocal = error(Error),
+                    ResDelete = error(Error),
                     Res = rollback(Error)
                 )
             ;
-                ResDelete = error(Error),
+                ResNewRemoteFlags = error(Error),
                 Res = rollback(Error)
             )
         ;
-            ResRemoteFlags = error(Error),
+            ResOldRemoteFlags = error(Error),
             Res = rollback(Error)
         )
     ;

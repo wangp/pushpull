@@ -52,13 +52,6 @@
 :- pred imply_deleted_flag(expunged(S)::in,
     flag_deltas(S)::in, flag_deltas(S)::out) is det.
 
-:- pred imply_minus_deleted_flag(flag_deltas(S)::in, flag_deltas(S)::out)
-    is det.
-
-:- pred merge_flag_deltas(
-    flag_deltas(local_mailbox)::in, flag_deltas(local_mailbox)::out,
-    flag_deltas(remote_mailbox)::in, flag_deltas(remote_mailbox)::out) is det.
-
     % apply_flag_deltas(!L, !R)
     % Apply nonconflicting deltas from R to L.
     %
@@ -120,16 +113,6 @@ maildir_standard_flags = set.from_list([
     system(draft)
 ]).
 
-imply_minus_deleted_flag(Sets0, Sets) :-
-    Sets0 = sets(Cur, Plus, Minus0),
-    DeletedFlag = system(deleted),
-    ( not set.contains(Cur, DeletedFlag) ->
-        set.insert(DeletedFlag, Minus0, Minus),
-        Sets = sets(Cur, Plus, Minus)
-    ;
-        Sets = Sets0
-    ).
-
 imply_deleted_flag(Expunged, Sets0, Sets) :-
     Sets0 = sets(Cur0, Plus0, Minus0),
     DeletedFlag = system(deleted),
@@ -144,16 +127,6 @@ imply_deleted_flag(Expunged, Sets0, Sets) :-
     ;
         Sets = Sets0
     ).
-
-merge_flag_deltas(LSets0, LSets, RSets0, RSets) :-
-    LSets0 = sets(LCur, LPlus0, LMinus),
-    RSets0 = sets(RCur, RPlus0, RMinus),
-
-    LPlus = union(LPlus0, (LCur `difference` union(RCur, RMinus))),
-    RPlus = union(RPlus0, (RCur `difference` union(LCur, LMinus))),
-
-    LSets = sets(LCur, LPlus, LMinus),
-    RSets = sets(RCur, RPlus, RMinus).
 
     %   For L{F +G -H}
     %
