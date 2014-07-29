@@ -9,7 +9,7 @@
 
 :- pred download_unpaired_remote_messages(log::in, prog_config::in,
     database::in, imap::in, mailbox_pair::in, maybe_result::out,
-    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+    dir_cache::in, dir_cache::out, bool::in, bool::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -59,14 +59,14 @@
 %-----------------------------------------------------------------------------%
 
 download_unpaired_remote_messages(Log, Config, Database, IMAP, MailboxPair,
-        Res, !DirCache, !IO) :-
+        Res, !DirCache, !LocalChanges, !IO) :-
     log_debug(Log, "Find remote messages to download", !IO),
     search_unpaired_remote_messages(Database, MailboxPair, ResSearch, !IO),
     (
         ResSearch = ok(Unpaireds),
         list.length(Unpaireds, Total),
         download_messages(Log, Config, Database, IMAP, MailboxPair, Total,
-            Unpaireds, Res, 1, _Count, !DirCache, !IO)
+            Unpaireds, Res, 1, _Count, !DirCache, !LocalChanges, !IO)
     ;
         ResSearch = error(Error),
         Res = error(Error)
@@ -75,10 +75,10 @@ download_unpaired_remote_messages(Log, Config, Database, IMAP, MailboxPair,
 :- pred download_messages(log::in, prog_config::in, database::in, imap::in,
     mailbox_pair::in, int::in, list(unpaired_remote_message)::in,
     maybe_result::out, int::in, int::out, dir_cache::in, dir_cache::out,
-    io::di, io::uo) is det.
+    bool::in, bool::out, io::di, io::uo) is det.
 
 download_messages(Log, Config, Database, IMAP, MailboxPair, Total, Unpaireds,
-        Res, !Count, !DirCache, !IO) :-
+        Res, !Count, !DirCache, !LocalChanges, !IO) :-
     (
         Unpaireds = [],
         Res = ok
@@ -86,10 +86,10 @@ download_messages(Log, Config, Database, IMAP, MailboxPair, Total, Unpaireds,
         Unpaireds = [_ | _],
         list.split_upto(max_batch_messages, Unpaireds, Heads, Tails),
         download_message_batch(Log, Config, Database, IMAP, MailboxPair, Total,
-            Heads, Res0, !Count, !DirCache, !IO),
+            Heads, Res0, !Count, !DirCache, !LocalChanges, !IO),
         ( Res0 = ok ->
             download_messages(Log, Config, Database, IMAP, MailboxPair, Total,
-                Tails, Res, !Count, !DirCache, !IO)
+                Tails, Res, !Count, !DirCache, !LocalChanges, !IO)
         ;
             Res = Res0
         )
@@ -102,10 +102,10 @@ max_batch_messages = 50.
 :- pred download_message_batch(log::in, prog_config::in, database::in,
     imap::in, mailbox_pair::in, int::in, list(unpaired_remote_message)::in,
     maybe_result::out, int::in, int::out, dir_cache::in, dir_cache::out,
-    io::di, io::uo) is det.
+    bool::in, bool::out, io::di, io::uo) is det.
 
 download_message_batch(Log, Config, Database, IMAP, MailboxPair,
-        Total, UnpairedRemotes, Res, !Count, !DirCache, !IO) :-
+        Total, UnpairedRemotes, Res, !Count, !DirCache, !LocalChanges, !IO) :-
     UIDs = list.map(get_uid, UnpairedRemotes),
     ( make_sequence_set(UIDs, SequenceSet) ->
         % Use BODY.PEEK instead of RFC822 to avoid setting \Seen flag.
@@ -133,7 +133,7 @@ download_message_batch(Log, Config, Database, IMAP, MailboxPair,
                 LocalMailboxName),
             handle_downloaded_messages(Log, Config, Database,
                 MailboxPair, LocalMailboxPath, Total, FetchResults,
-                UnpairedRemotes, Res0, !Count, !DirCache, !IO),
+                UnpairedRemotes, Res0, !Count, !DirCache, !LocalChanges, !IO),
             Res = from_maybe_error(Res0)
         ;
             ( Status = no
@@ -155,11 +155,12 @@ download_message_batch(Log, Config, Database, IMAP, MailboxPair,
     mailbox_pair::in, local_mailbox_path::in, int::in,
     assoc_list(message_seq_nr, msg_atts)::in,
     list(unpaired_remote_message)::in, maybe_error::out,
-    int::in, int::out, dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+    int::in, int::out, dir_cache::in, dir_cache::out, bool::in, bool::out,
+    io::di, io::uo) is det.
 
 handle_downloaded_messages(Log, Config, Database, MailboxPair,
         LocalMailboxPath, Total, FetchResults, UnpairedRemotes, Res,
-        !Count, !DirCache, !IO) :-
+        !Count, !DirCache, !LocalChanges, !IO) :-
     (
         UnpairedRemotes = [],
         Res = ok
@@ -167,7 +168,7 @@ handle_downloaded_messages(Log, Config, Database, MailboxPair,
         UnpairedRemotes = [H | T],
         handle_downloaded_message(Log, Config, Database, MailboxPair,
             LocalMailboxPath, Total, FetchResults, H, Res0,
-            !Count, !DirCache, !IO),
+            !Count, !DirCache, !LocalChanges, !IO),
         (
             Res0 = ok,
             signal.get_sigint_count(Sigint, !IO),
@@ -176,7 +177,7 @@ handle_downloaded_messages(Log, Config, Database, MailboxPair,
             ;
                 handle_downloaded_messages(Log, Config, Database, MailboxPair,
                     LocalMailboxPath, Total, FetchResults, T, Res,
-                    !Count, !DirCache, !IO)
+                    !Count, !DirCache, !LocalChanges, !IO)
             )
         ;
             Res0 = error(Error),
@@ -188,11 +189,11 @@ handle_downloaded_messages(Log, Config, Database, MailboxPair,
     mailbox_pair::in, local_mailbox_path::in, int::in,
     assoc_list(message_seq_nr, msg_atts)::in, unpaired_remote_message::in,
     maybe_error::out, int::in, int::out, dir_cache::in, dir_cache::out,
-    io::di, io::uo) is det.
+    bool::in, bool::out, io::di, io::uo) is det.
 
 handle_downloaded_message(Log, Config, Database, MailboxPair,
         LocalMailboxPath, Total, FetchResults, UnpairedRemote, Res,
-        Count, Count + 1, !DirCache, !IO) :-
+        Count, Count + 1, !DirCache, !LocalChanges, !IO) :-
     UnpairedRemote = unpaired_remote_message(_PairingId, UID,
         ExpectedMessageId),
     % If changes are being made on the remote mailbox concurrently the server
@@ -219,7 +220,8 @@ handle_downloaded_message(Log, Config, Database, MailboxPair,
                     RemoteMessage = remote_message(UnpairedRemote,
                         RawMessageLf, Flags, InternalDate, Count, Total),
                     save_message_and_pair(Log, Config, Database, MailboxPair,
-                        LocalMailboxPath, RemoteMessage, Res, !DirCache, !IO)
+                        LocalMailboxPath, RemoteMessage, Res, !DirCache,
+                        !LocalChanges, !IO)
                 ;
                     Res = error("unexpected Message-Id")
                 )
@@ -283,10 +285,11 @@ get_internaldate(Atts, DateTime) :-
 
 :- pred save_message_and_pair(log::in, prog_config::in, database::in,
     mailbox_pair::in, local_mailbox_path::in, remote_message::in,
-    maybe_error::out, dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+    maybe_error::out, dir_cache::in, dir_cache::out, bool::in, bool::out,
+    io::di, io::uo) is det.
 
 save_message_and_pair(Log, Config, Database, MailboxPair, LocalMailboxPath,
-        RemoteMessage, Res, !DirCache, !IO) :-
+        RemoteMessage, Res, !DirCache, !LocalChanges, !IO) :-
     RemoteMessage = remote_message(UnpairedRemote, _RawMessageLf, Flags,
         _InternalDate, _Count, _Total),
     UnpairedRemote = unpaired_remote_message(PairingId, _UID, _MessageId),
@@ -299,6 +302,7 @@ save_message_and_pair(Log, Config, Database, MailboxPair, LocalMailboxPath,
             ResSave, !IO),
         (
             ResSave = ok(Unique, DirName, BaseName),
+            !:LocalChanges = yes,
             (
                 update_for_new_file(DirName, BaseName, !DirCache)
             ->

@@ -33,7 +33,7 @@
                 idle_timeout_secs :: int,
                 sync_on_idle_timeout :: bool,
                 certificate_file :: maybe(string),
-                command_post_sync :: maybe(list(word))
+                command_post_sync_local_change :: maybe(list(word))
             ).
 
 :- type maildir_root
@@ -260,17 +260,17 @@ make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
         cons("missing section: " ++ PairingSectionName, !Errors)
     ),
 
-    ( nonempty(Config, "command", "post_sync", Command0) ->
-        parse_command(Command0, CommandPostSync, !Errors)
+    ( nonempty(Config, "command", "post_sync_local_change", Command0) ->
+        parse_command(Command0, CommandPostSyncLocal, !Errors)
     ;
-        CommandPostSync = maybe.no
+        CommandPostSyncLocal = maybe.no
     ),
 
     ProgConfig = prog_config(MaybeLogFileName, LogLevel, DbFileName,
         MaildirRoot, Fsync, Buckets, LocalMailboxName,
         Host, CertMatchName, UserName, MaybePassword, RemoteMailboxName,
         Idle, IdleTimeoutSecs, SyncOnIdleTimeout, MaybeCertificateFile,
-        CommandPostSync).
+        CommandPostSyncLocal).
 
 :- pred nonempty(config::in, config.section::in, string::in,
     string::out) is semidet.

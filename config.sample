@@ -26,6 +26,6 @@ local = INBOX
 remote = INBOX
 
 [command]
-post_sync =
+post_sync_local_change =
 
 # vim: ft=cfg

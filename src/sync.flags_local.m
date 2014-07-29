@@ -9,7 +9,7 @@
 
 :- pred propagate_flag_deltas_from_remote(log::in, prog_config::in,
     database::in, mailbox_pair::in, maybe_error::out,
-    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+    dir_cache::in, dir_cache::out, bool::in, bool::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -30,13 +30,13 @@
 
 %-----------------------------------------------------------------------------%
 
-propagate_flag_deltas_from_remote(Log, Config, Db, MailboxPair, Res, !DirCache,
-        !IO) :-
+propagate_flag_deltas_from_remote(Log, Config, Db, MailboxPair, Res,
+        !DirCache, !LocalChanges, !IO) :-
     search_pending_flag_deltas_from_remote(Db, MailboxPair, ResSearch, !IO),
     (
         ResSearch = ok(Pendings),
         propagate_flag_deltas_from_remote_2(Log, Config, Db, Pendings, Res,
-            !DirCache, !IO)
+            !DirCache, !LocalChanges, !IO)
     ;
         ResSearch = error(Error),
         Res = error(Error)
@@ -44,21 +44,21 @@ propagate_flag_deltas_from_remote(Log, Config, Db, MailboxPair, Res, !DirCache,
 
 :- pred propagate_flag_deltas_from_remote_2(log::in, prog_config::in,
     database::in, list(pending_flag_deltas)::in, maybe_error::out,
-    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+    dir_cache::in, dir_cache::out, bool::in, bool::out, io::di, io::uo) is det.
 
-propagate_flag_deltas_from_remote_2(Log, Config, Db, Pendings, Res, !DirCache,
-        !IO) :-
+propagate_flag_deltas_from_remote_2(Log, Config, Db, Pendings, Res,
+        !DirCache, !LocalChanges, !IO) :-
     (
         Pendings = [],
         Res = ok
     ;
         Pendings = [Head | Tail],
         propagate_flag_deltas_from_remote_3(Log, Config, Db, Head, Res0,
-            !DirCache, !IO),
+            !DirCache, !LocalChanges, !IO),
         (
             Res0 = ok,
             propagate_flag_deltas_from_remote_2(Log, Config, Db, Tail, Res,
-                !DirCache, !IO)
+                !DirCache, !LocalChanges, !IO)
         ;
             Res0 = error(Error),
             Res = error(Error)
@@ -67,10 +67,10 @@ propagate_flag_deltas_from_remote_2(Log, Config, Db, Pendings, Res, !DirCache,
 
 :- pred propagate_flag_deltas_from_remote_3(log::in, prog_config::in,
     database::in, pending_flag_deltas::in, maybe_error::out,
-    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+    dir_cache::in, dir_cache::out, bool::in, bool::out, io::di, io::uo) is det.
 
-propagate_flag_deltas_from_remote_3(Log, Config, Db, Pending, Res, !DirCache,
-        !IO) :-
+propagate_flag_deltas_from_remote_3(Log, Config, Db, Pending, Res,
+        !DirCache, !LocalChanges, !IO) :-
     Pending = pending_flag_deltas(PairingId,
         MaybeUnique, LocalFlags0, LocalExpunged,
         MaybeUID, RemoteFlags0, RemoteExpunged),
@@ -86,7 +86,7 @@ propagate_flag_deltas_from_remote_3(Log, Config, Db, Pending, Res, !DirCache,
         MaybeUnique = yes(Unique),
         expect(unify(LocalExpunged, exists), $module, $pred),
         store_local_flags_add_rm(Log, Config, Unique, AddFlags, RemoveFlags,
-            Res0, !DirCache, !IO),
+            Res0, !DirCache, !LocalChanges, !IO),
         (
             Res0 = ok,
             record_remote_flag_deltas_applied_to_local(Db, PairingId,
@@ -116,10 +116,10 @@ propagate_flag_deltas_from_remote_3(Log, Config, Db, Pending, Res, !DirCache,
 
 :- pred store_local_flags_add_rm(log::in, prog_config::in, uniquename::in,
     set(flag)::in, set(flag)::in, maybe_error::out,
-    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+    dir_cache::in, dir_cache::out, bool::in, bool::out, io::di, io::uo) is det.
 
 store_local_flags_add_rm(Log, Config, Unique, AddFlags, RemoveFlags, Res,
-        !DirCache, !IO) :-
+        !DirCache, !LocalChanges, !IO) :-
     find_file(!.DirCache, Unique, ResFind),
     (
         ResFind = found(OldDirName, OldBaseName, MaybeInfoSuffix0),
@@ -153,6 +153,7 @@ store_local_flags_add_rm(Log, Config, Unique, AddFlags, RemoveFlags, Res,
                 io.rename_file(OldPath ^ path, NewPath ^ path, ResRename, !IO),
                 (
                     ResRename = ok,
+                    !:LocalChanges = yes,
                     maybe_fsync_dir(Config, NewDirName, ResFsync, !IO),
                     (
                         ResFsync = ok,

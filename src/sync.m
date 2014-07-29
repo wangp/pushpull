@@ -34,6 +34,7 @@
 
 :- implementation.
 
+:- import_module bool.
 :- import_module int.
 :- import_module list.
 :- import_module maybe.
@@ -61,7 +62,18 @@
 %-----------------------------------------------------------------------------%
 
 sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
-        Shortcut, DirCacheUpdate, !:Res, !DirCache, !IO) :-
+        Shortcut, DirCacheUpdate, Res, !DirCache, !IO) :-
+    sync_mailboxes_2(Log, Config, Db, IMAP, Inotify, MailboxPair,
+        LastModSeqValzer, Shortcut, DirCacheUpdate, Res, !DirCache,
+        no, _LocalChanges, !IO).
+
+:- pred sync_mailboxes_2(log::in, prog_config::in, database::in, imap::in,
+    inotify(S)::in, mailbox_pair::in, mod_seq_valzer::in, shortcut::in,
+    update_method::in, maybe_result::out, dir_cache::in, dir_cache::out,
+    bool::in, bool::out, io::di, io::uo) is det.
+
+sync_mailboxes_2(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
+        Shortcut, DirCacheUpdate, !:Res, !DirCache, !LocalChanges, !IO) :-
     Shortcut = shortcut(CheckLocal0, CheckRemote),
     % It might be better to get set of valid UIDs first, then use that
     % as part of update_db_remote_mailbox and for detecting expunges.
@@ -94,7 +106,7 @@ sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
         % messages to be be reset, and thus downloaded in the following steps.
         log_debug(Log, "Propagate flag deltas from remote mailbox", !IO),
         propagate_flag_deltas_from_remote(Log, Config, Db, MailboxPair,
-            ResPropFlagsFromRemote, !DirCache, !IO),
+            ResPropFlagsFromRemote, !DirCache, !LocalChanges, !IO),
         !:Res = from_maybe_error(ResPropFlagsFromRemote)
     ;
         true
@@ -112,12 +124,12 @@ sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
     ( !.Res = ok ->
         log_debug(Log, "Download remote messages", !IO),
         download_unpaired_remote_messages(Log, Config, Db, IMAP, MailboxPair,
-            !:Res, !DirCache, !IO),
+            !:Res, !DirCache, !LocalChanges, !IO),
         ( !.Res = ok ->
             % When a remote message is paired with an existing local message
             % then their flags may need to be propagated either way.
             propagate_flag_deltas(Log, Config, Db, IMAP, MailboxPair, !:Res,
-                !DirCache, !IO)
+                !DirCache, !LocalChanges, !IO)
         ;
             true
         )
@@ -139,7 +151,7 @@ sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
         true
     ),
     ( !.Res = ok ->
-        call_command_post_sync(Log, Config, !:Res, !IO)
+        maybe_call_command_post_sync(Log, Config, !.LocalChanges, !:Res, !IO)
     ;
         true
     ).
@@ -177,12 +189,12 @@ force_check_local(Inotify, CheckLocal0, CheckLocal, Res0, Res, !IO) :-
 
 :- pred propagate_flag_deltas(log::in, prog_config::in, database::in,
     imap::in, mailbox_pair::in, maybe_result::out,
-    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+    dir_cache::in, dir_cache::out, bool::in, bool::out, io::di, io::uo) is det.
 
 propagate_flag_deltas(Log, Config, Db, IMAP, MailboxPair, Res,
-        !DirCache, !IO) :-
+        !DirCache, !LocalChanges, !IO) :-
     propagate_flag_deltas_from_remote(Log, Config, Db, MailboxPair,
-        Res0, !DirCache, !IO),
+        Res0, !DirCache, !LocalChanges, !IO),
     (
         Res0 = ok,
         propagate_flag_deltas_from_local(Log, Config, Db, IMAP, MailboxPair,
@@ -192,11 +204,24 @@ propagate_flag_deltas(Log, Config, Db, IMAP, MailboxPair, Res,
         Res = error(Error)
     ).
 
+:- pred maybe_call_command_post_sync(log::in, prog_config::in, bool::in,
+    maybe_result::out, io::di, io::uo) is det.
+
+maybe_call_command_post_sync(Log, Config, LocalChanges, Res, !IO) :-
+    (
+        LocalChanges = yes,
+        call_command_post_sync(Log, Config, Res, !IO)
+    ;
+        LocalChanges = no,
+        log_debug(Log, "No local file changes.", !IO),
+        Res = ok
+    ).
+
 :- pred call_command_post_sync(log::in, prog_config::in,
     maybe_result::out, io::di, io::uo) is det.
 
 call_command_post_sync(Log, Config, Res, !IO) :-
-    MaybeCommand = Config ^ command_post_sync,
+    MaybeCommand = Config ^ command_post_sync_local_change,
     (
         MaybeCommand = yes(Words),
         Command = join_list(" ", map(compose(quote_arg, word_string), Words)),
@@ -207,7 +232,7 @@ call_command_post_sync(Log, Config, Res, !IO) :-
             ( ExitStatus = 0 ->
                 Res = ok
             ;
-                Res = error("post_sync command returned exit status " ++
+                Res = error(Command ++ " returned exit status " ++
                     string.from_int(ExitStatus))
             )
         ;
@@ -216,7 +241,7 @@ call_command_post_sync(Log, Config, Res, !IO) :-
         )
     ;
         MaybeCommand = no,
-        log_debug(Log, "No post_sync command configured.", !IO),
+        log_debug(Log, "No post_sync_local_change command.", !IO),
         Res = ok
     ).
 
