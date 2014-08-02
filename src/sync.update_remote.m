@@ -621,33 +621,28 @@ mark_expunged_remote_messages(Log, Db, MailboxPair, MissingUIDs, Res, !IO) :-
     begin_detect_expunge(Db, Res0, !IO),
     (
         Res0 = ok(InsertStmt),
-        foldl2(detect_expunge_insert_uid(Db, InsertStmt), MissingUIDs,
-            ok, Res1, !IO),
+        transaction(mark_expunged_remote_messages_2(Log, Db, MailboxPair,
+            MissingUIDs, InsertStmt), Db, Res1, !IO),
         (
-            Res1 = ok,
-            database.mark_expunged_remote_messages(Db, MailboxPair, Res2, !IO),
-            (
-                Res2 = ok(Count),
-                ( Count = 0 ->
-                    Level = debug
-                ;
-                    Level = info
-                ),
-                log(Log, Level,
-                    format("Detected %d expunged remote messages.\n",
-                        [i(Count)]), !IO)
+            Res1 = ok(commit(Count)),
+            ( Count = 0 ->
+                Level = debug
             ;
-                Res2 = error(_)
-            )
-        ;
-            Res1 = error(Error1),
-            Res2 = error(Error1)
-        ),
-        (
-            Res2 = ok(_),
+                Level = info
+            ),
+            log(Log, Level,
+                format("Detected %d expunged remote messages.\n", [i(Count)]),
+                !IO),
             end_detect_expunge(Db, InsertStmt, Res, !IO)
         ;
-            Res2 = error(Error),
+            (
+                Res1 = ok(rollback(Error))
+            ;
+                Res1 = ok(rollback_exception(Univ)),
+                Error = "exception thrown: " ++ string(Univ)
+            ;
+                Res1 = error(Error)
+            ),
             Res = error(Error),
             end_detect_expunge(Db, InsertStmt, _, !IO)
         )
@@ -655,6 +650,53 @@ mark_expunged_remote_messages(Log, Db, MailboxPair, MissingUIDs, Res, !IO) :-
         Res0 = error(Error),
         Res = error(Error)
     ).
+
+:- pred mark_expunged_remote_messages_2(log::in, database::in, mailbox_pair::in,
+    diet(uid)::in, insert_into_detect_expunge_stmt::in,
+    transaction_result(int, string)::out, io::di, io::uo) is det.
+
+mark_expunged_remote_messages_2(Log, Db, MailboxPair, MissingUIDs,
+        InsertStmt, Res, !IO) :-
+    diet.foldl2(insert(Db, InsertStmt), MissingUIDs, ok, Res1, !IO),
+    (
+        Res1 = ok,
+        % For each expunged message, set the remote_expunged column and
+        % add the \Deleted flag.
+        fold_expunged_remote_messages(mark_expunged_remote_message(Log, Db),
+            Db, MailboxPair, Res2, 0, Count, !IO),
+        (
+            Res2 = ok,
+            Res = commit(Count)
+        ;
+            Res2 = error(Error),
+            Res = rollback(Error)
+        )
+    ;
+        Res1 = error(Error),
+        Res = rollback(Error)
+    ).
+
+:- pred insert(database::in, insert_into_detect_expunge_stmt::in, uid::in,
+    maybe_error::in, maybe_error::out, io::di, io::uo) is det.
+
+insert(Db, Stmt, UID, Res0, Res, !IO) :-
+    (
+        Res0 = ok,
+        database.detect_expunge_insert_uid(Db, Stmt, UID, Res, !IO)
+    ;
+        Res0 = error(_),
+        Res = Res0
+    ).
+
+:- pred mark_expunged_remote_message(log::in, database::in, pairing_id::in,
+    flag_deltas(remote_mailbox)::in, maybe_error::out, int::in, int::out,
+    io::di, io::uo) is det.
+
+mark_expunged_remote_message(_Log, Db, PairingId, RemoteFlagDeltas0,
+        Res, Count, Count + 1, !IO) :-
+    add_deleted_flag(RemoteFlagDeltas0, RemoteFlagDeltas),
+    set_remote_message_expunged(Db, PairingId, RemoteFlagDeltas,
+        require_attn(RemoteFlagDeltas), Res, !IO).
 
 %-----------------------------------------------------------------------------%
 
@@ -715,19 +757,6 @@ sequence_set_element_to_diet(Elem, Diet) :-
 get_modseq(ReturnDatas, ModSeqValue) :-
     solutions((pred(X::out) is nondet :- member(modseq(X), ReturnDatas)),
         [ModSeqValue]).
-
-:- pred detect_expunge_insert_uid(database::in,
-    insert_into_detect_expunge_stmt::in, uid::in, maybe_error::in,
-    maybe_error::out, io::di, io::uo) is det.
-
-detect_expunge_insert_uid(Db, Stmt, UID, Res0, Res, !IO) :-
-    (
-        Res0 = ok,
-        database.detect_expunge_insert_uid(Db, Stmt, UID, Res, !IO)
-    ;
-        Res0 = error(_),
-        Res = Res0
-    ).
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

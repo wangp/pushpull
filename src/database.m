@@ -131,6 +131,10 @@
     flag_deltas(local_mailbox)::in, bool::in, maybe_error::out,
     io::di, io::uo) is det.
 
+:- pred set_local_message_expunged(database::in, pairing_id::in,
+    flag_deltas(local_mailbox)::in, bool::in, maybe_error::out,
+    io::di, io::uo) is det.
+
 :- pred update_remote_message_flags(database::in, pairing_id::in,
     flag_deltas(remote_mailbox)::in, bool::in, maybe_error::out,
     io::di, io::uo) is det.
@@ -138,6 +142,10 @@
 :- pred update_remote_message_flags_modseq(database::in, pairing_id::in,
     flag_deltas(remote_mailbox)::in, bool::in, mod_seq_value::in,
     maybe_error::out, io::di, io::uo) is det.
+
+:- pred set_remote_message_expunged(database::in, pairing_id::in,
+    flag_deltas(remote_mailbox)::in, bool::in, maybe_error::out,
+    io::di, io::uo) is det.
 
 :- pred search_min_max_uid(database::in, mailbox_pair::in,
     maybe_error(maybe({uid, uid}))::out, io::di, io::uo) is det.
@@ -224,11 +232,19 @@
     insert_into_detect_expunge_stmt::in, uid::in, maybe_error::out,
     io::di, io::uo) is det.
 
-:- pred mark_expunged_local_messages(database::in, mailbox_pair::in,
-    maybe_error(int)::out, io::di, io::uo) is det.
+:- pred fold_expunged_local_messages(
+    pred(pairing_id, flag_deltas(local_mailbox), maybe_error, A, A, io, io),
+    database, mailbox_pair, maybe_error, A, A, io, io).
+:- mode fold_expunged_local_messages(
+    pred(in, in, out, in, out, di, uo) is det,
+    in, in, out, in, out, di, uo) is det.
 
-:- pred mark_expunged_remote_messages(database::in, mailbox_pair::in,
-    maybe_error(int)::out, io::di, io::uo) is det.
+:- pred fold_expunged_remote_messages(
+    pred(pairing_id, flag_deltas(remote_mailbox), maybe_error, A, A, io, io),
+    database, mailbox_pair, maybe_error, A, A, io, io).
+:- mode fold_expunged_remote_messages(
+    pred(in, in, out, in, out, di, uo) is det,
+    in, in, out, in, out, di, uo) is det.
 
 %-----------------------------------------------------------------------------%
 
@@ -245,6 +261,7 @@
 :- import_module maybe.
 :- import_module pair.
 :- import_module string.
+:- import_module unit.
 
 :- import_module binary_string.
 :- import_module sqlite3.
@@ -1231,6 +1248,19 @@ update_local_message_flags(Db, PairingId, Flags, Attn, Res, !IO) :-
         name(":local_flags_attn") - bind_value(Attn)
     ], Res, !IO).
 
+set_local_message_expunged(Db, PairingId, Flags, Attn, Res, !IO) :-
+    Stmt = "UPDATE pairing"
+        ++ " SET local_uniquename = NULL,"
+        ++ "     local_expunged = 1,"
+        ++ "     local_flags = :local_flags,"
+        ++ "     local_flags_attn = :local_flags_attn"
+        ++ " WHERE pairing_id = :pairing_id",
+    with_stmt(update_local_message_flags_2, Db, Stmt, [
+        name(":pairing_id") - bind_value(PairingId),
+        name(":local_flags") - bind_value(Flags),
+        name(":local_flags_attn") - bind_value(Attn)
+    ], Res, !IO).
+
 :- pred update_local_message_flags_2(db(rw)::in, stmt::in, maybe_error::out,
     io::di, io::uo) is det.
 
@@ -1272,6 +1302,19 @@ update_remote_message_flags_modseq(Db, PairingId, Flags, Attn, ModSeqValue,
         name(":remote_flags") - bind_value(Flags),
         name(":remote_flags_attn") - bind_value(Attn),
         name(":remote_modseqvalzer") - bind_value(ModSeqValue)
+    ], Res, !IO).
+
+set_remote_message_expunged(Db, PairingId, Flags, Attn, Res, !IO) :-
+    Stmt = "UPDATE pairing"
+        ++ " SET remote_uid = NULL,"
+        ++ "     remote_expunged = 1,"
+        ++ "     remote_flags = :remote_flags,"
+        ++ "     remote_flags_attn = :remote_flags_attn"
+        ++ " WHERE pairing_id = :pairing_id",
+    with_stmt(update_remote_message_flags_2, Db, Stmt, [
+        name(":pairing_id") - bind_value(PairingId),
+        name(":remote_flags") - bind_value(Flags),
+        name(":remote_flags_attn") - bind_value(Attn)
     ], Res, !IO).
 
 :- pred update_remote_message_flags_2(db(rw)::in, stmt::in, maybe_error::out,
@@ -1687,7 +1730,9 @@ record_flag_deltas_applied_2(Db, Stmt, Res, !IO) :-
 :- type insert_into_detect_expunge_stmt == stmt.
 
 begin_detect_expunge(Db, Res, !IO) :-
-    CreateStmt = "CREATE TABLE mem.detect_expunge(uniq NOT NULL)",
+    % The column is a pairing_id when detecting expunged local messages
+    % or a remote_uid when detecting expunged remote messages.
+    CreateStmt = "CREATE TABLE mem.detect_expunge(x NOT NULL)",
     exec(Db, CreateStmt, Res0, !IO),
     (
         Res0 = ok,
@@ -1744,104 +1789,57 @@ detect_expunge_insert_2(Db, Stmt, Res, !IO) :-
         Res = error(Error)
     ).
 
-mark_expunged_local_messages(Db, MailboxPair, Res, !IO) :-
+fold_expunged_local_messages(Pred, Db, MailboxPair, Res, !A, !IO) :-
     MailboxPair = mailbox_pair(MailboxPairId, _, _, _),
-    Where = 
-       " WHERE mailbox_pair_id = :mailbox_pair_id
-           AND NOT local_expunged
-           AND pairing_id IN mem.detect_expunge",
-    Bindings = [
+    Stmt = "SELECT pairing_id, local_flags FROM PAIRING"
+        ++ " WHERE mailbox_pair_id = :mailbox_pair_id"
+        ++ "   AND NOT local_expunged"
+        ++ "   AND pairing_id IN mem.detect_expunge",
+    with_stmt_acc3(fold_expunged_messages_2(Pred), Db, Stmt, [
         name(":mailbox_pair_id") - bind_value(MailboxPairId)
-    ],
+    ], Res, !A, unit, _, unit, _, !IO).
 
-    StmtCount = "SELECT count(*) FROM pairing" ++ Where,
-    with_stmt(count, Db, StmtCount, Bindings, ResCount, !IO),
-    (
-        ResCount = ok(Count),
-        Count > 0
-    ->
-        StmtUpdate
-            =  "UPDATE pairing SET"
-            ++ " local_uniquename = NULL,"
-            ++ " local_expunged = 1,"
-            ++ " local_flags_attn = 1 "
-            ++ Where,
-        with_stmt(mark_expunged_2, Db, StmtUpdate, Bindings,
-            ResUpdate, !IO),
-        (
-            ResUpdate = ok,
-            Res = ResCount
-        ;
-            ResUpdate = error(Error),
-            Res = error(Error)
-        )
-    ;
-        Res = ResCount
-    ).
-
-mark_expunged_remote_messages(Db, MailboxPair, Res, !IO) :-
+fold_expunged_remote_messages(Pred, Db, MailboxPair, Res, !A, !IO) :-
     MailboxPair = mailbox_pair(MailboxPairId, _, _, _),
-    Where = 
-       " WHERE mailbox_pair_id = :mailbox_pair_id
-           AND NOT remote_expunged
-           AND remote_uid IN mem.detect_expunge",
-    Bindings = [
+    Stmt = "SELECT pairing_id, remote_flags FROM PAIRING"
+        ++ " WHERE mailbox_pair_id = :mailbox_pair_id"
+        ++ "   AND NOT remote_expunged"
+        ++ "   AND remote_uid IN mem.detect_expunge",
+    with_stmt_acc3(fold_expunged_messages_2(Pred), Db, Stmt, [
         name(":mailbox_pair_id") - bind_value(MailboxPairId)
-    ],
+    ], Res, !A, unit, _, unit, _, !IO).
 
-    StmtCount = "SELECT count(*) FROM pairing" ++ Where,
-    with_stmt(count, Db, StmtCount, Bindings, ResCount, !IO),
-    (
-        ResCount = ok(Count),
-        Count > 0
-    ->
-        StmtUpdate
-            = "UPDATE pairing SET"
-            ++ " remote_uid = NULL,"
-            ++ " remote_expunged = 1,"
-            ++ " remote_flags_attn = 1"
-            ++ Where,
-        with_stmt(mark_expunged_2, Db, StmtUpdate, Bindings,
-            ResUpdate, !IO),
-        (
-            ResUpdate = ok,
-            Res = ResCount
-        ;
-            ResUpdate = error(Error),
-            Res = error(Error)
-        )
-    ;
-        Res = ResCount
-    ).
+:- pred fold_expunged_messages_2(
+    pred(pairing_id, flag_deltas(T), maybe_error, A, A, io, io),
+    database, stmt, maybe_error, A, A, B, B, C, C, io, io).
+:- mode fold_expunged_messages_2(
+    pred(in, in, out, in, out, di, uo) is det,
+    in, in, out, in, out, in, out, in, out, di, uo) is det.
 
-:- pred count(db(rw)::in, stmt::in, maybe_error(int)::out, io::di, io::uo)
-    is det.
-
-count(Db, Stmt, Res, !IO) :-
-    step(Db, Stmt, StepResult, !IO),
-    (
-        StepResult = done,
-        Res = error("expected row")
-    ;
-        StepResult = row,
-        column_int(Stmt, column(0), Count, !IO),
-        Res = ok(Count)
-    ;
-        StepResult = error(Error),
-        Res = error(Error)
-    ).
-
-:- pred mark_expunged_2(db(rw)::in, stmt::in,
-    maybe_error::out, io::di, io::uo) is det.
-
-mark_expunged_2(Db, Stmt, Res, !IO) :-
+fold_expunged_messages_2(Pred, Db, Stmt, Res, !A, !B, !C, !IO) :-
     step(Db, Stmt, StepResult, !IO),
     (
         StepResult = done,
         Res = ok
     ;
         StepResult = row,
-        Res = error("unexpected row")
+        column_int(Stmt, column(0), X0, !IO),
+        column_text(Stmt, column(1), X1, !IO),
+        (
+            convert(X0, PairingId),
+            convert(X1, FlagDeltas)
+        ->
+            Pred(PairingId, FlagDeltas, Res0, !A, !IO),
+            (
+                Res0 = ok,
+                fold_expunged_messages_2(Pred, Db, Stmt, Res, !A, !B, !C, !IO)
+            ;
+                Res0 = error(Error),
+                Res = error(Error)
+            )
+        ;
+            Res = error("database error")
+        )
     ;
         StepResult = error(Error),
         Res = error(Error)

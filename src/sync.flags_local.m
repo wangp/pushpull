@@ -73,10 +73,8 @@ propagate_flag_deltas_from_remote_3(Log, Config, Db, Pending, Res,
         !DirCache, !LocalChanges, !IO) :-
     Pending = pending_flag_deltas(PairingId,
         MaybeUnique, LocalFlags0, LocalExpunged,
-        MaybeUID, RemoteFlags0, RemoteExpunged),
-    imply_deleted_flag(LocalExpunged, LocalFlags0, LocalFlags1),
-    imply_deleted_flag(RemoteExpunged, RemoteFlags0, RemoteFlags1),
-    apply_flag_deltas(LocalFlags1, LocalFlags, RemoteFlags1, RemoteFlags),
+        MaybeUID, RemoteFlags0, _RemoteExpunged),
+    apply_flag_deltas(LocalFlags0, LocalFlags, RemoteFlags0, RemoteFlags),
 
     Flags0 = LocalFlags0 ^ cur_set,
     Flags = LocalFlags ^ cur_set,

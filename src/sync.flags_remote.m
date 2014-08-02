@@ -63,11 +63,9 @@ propagate_flag_deltas_from_local_2(Log, Db, IMAP, Total, Pending, Res0, Res,
 propagate_flag_deltas_from_local_3(Log, Db, IMAP, Pending, Count, Total, Res,
         !IO) :-
     Pending = pending_flag_deltas(PairingId,
-        MaybeUnique, LocalFlags0, LocalExpunged,
+        MaybeUnique, LocalFlags0, _LocalExpunged,
         MaybeUID, RemoteFlags0, RemoteExpunged),
-    imply_deleted_flag(LocalExpunged, LocalFlags0, LocalFlags1),
-    imply_deleted_flag(RemoteExpunged, RemoteFlags0, RemoteFlags1),
-    apply_flag_deltas(RemoteFlags1, RemoteFlags, LocalFlags1, LocalFlags),
+    apply_flag_deltas(RemoteFlags0, RemoteFlags, LocalFlags0, LocalFlags),
 
     Flags0 = RemoteFlags0 ^ cur_set,
     Flags = RemoteFlags ^ cur_set,
