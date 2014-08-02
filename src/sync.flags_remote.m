@@ -157,7 +157,12 @@ propagate_flag_deltas_by_group(Log, Db, IMAP, NumGroups, Changes, Group,
 propagate_flag_deltas_by_group_2(Log, Db, IMAP, Changes, Group,
         Count, NumGroups, Res, !IO) :-
     Group = group(UIDs, PairingIds),
-    log_remote_flag_changes(Log, UIDs, Count, NumGroups, !IO),
+
+    log_info(Log,
+        format("Applying changes to %d remote messages (%d of %d): %s",
+            [i(count(UIDs)), i(Count), i(NumGroups),
+            s(show_changes(Changes))]), !IO),
+
     ( diet_to_sequence_set(UIDs, SequenceSet) ->
         store_remote_flags_add_rm(Log, IMAP, SequenceSet, Changes, Res0, !IO)
     ;
@@ -184,13 +189,20 @@ propagate_flag_deltas_by_group_2(Log, Db, IMAP, Changes, Group,
         Res = Res0
     ).
 
-:- pred log_remote_flag_changes(log::in, diet(uid)::in, int::in, int::in,
-    io::di, io::uo) is det.
+:- func show_changes(changes) = string.
 
-log_remote_flag_changes(Log, UIDs, Count, NumGroups, !IO) :-
-    log_info(Log,
-        format("Changing flags of %d remote messages (%d of %d)",
-            [i(count(UIDs)), i(Count), i(NumGroups)]), !IO).
+show_changes(changes(AddFlags, RemoveFlags)) =
+    ( empty(AddFlags), empty(RemoveFlags) ->
+        "(none)"
+    ;
+        join_list(" ",
+            map(show_change("+"), to_sorted_list(AddFlags)) ++
+            map(show_change("-"), to_sorted_list(RemoveFlags)))
+    ).
+
+:- func show_change(string, flag) = string.
+
+show_change(Prefix, Flag) = Prefix ++ flag_to_imap_syntax(Flag).
 
 :- pred store_remote_flags_add_rm(log::in, imap::in, sequence_set(uid)::in,
     changes::in, maybe_result::out, io::di, io::uo) is det.

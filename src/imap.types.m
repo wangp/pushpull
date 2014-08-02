@@ -309,6 +309,8 @@
 
 :- pred system_flag(atom::in, system_flag::out) is semidet.
 
+:- func flag_to_imap_syntax(flag) = string.
+
 :- pred month(string, month).
 :- mode month(in, out) is semidet.
 :- mode month(out, in) is det.
@@ -465,6 +467,14 @@ system_flag(Atom, Flag) :-
         not Atom = atom("RECENT"),
         Flag = extension(Atom)
     ).
+
+flag_to_imap_syntax(system(answered)) = "\\Answered".
+flag_to_imap_syntax(system(flagged)) = "\\Flagged".
+flag_to_imap_syntax(system(deleted)) = "\\Deleted".
+flag_to_imap_syntax(system(seen)) = "\\Seen".
+flag_to_imap_syntax(system(draft)) = "\\Draft".
+flag_to_imap_syntax(system(extension(atom(Atom)))) = "\\" ++ Atom.
+flag_to_imap_syntax(keyword(atom(Atom))) = Atom.
 
 %-----------------------------------------------------------------------------%
 

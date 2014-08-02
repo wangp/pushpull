@@ -614,21 +614,7 @@ escape_for_quoted_string(S0) = S :-
 ].
 
 :- instance add(flag) where [
-    add(system(Flag)) --> add(Flag),
-    add(keyword(Atom)) --> add(Atom)
-].
-
-:- instance add(system_flag) where [
-    add(answered) --> add("\\Answered"),
-    add(flagged) --> add("\\Flagged"),
-    add(deleted) --> add("\\Deleted"),
-    add(seen) --> add("\\Seen"),
-    add(draft) --> add("\\Draft"),
-    add(extension(Atom)) -->
-    (
-        add("\\"),
-        add(Atom)
-    )
+    add(Flag) --> add(flag_to_imap_syntax(Flag))
 ].
 
 :- instance add(atom) where [
