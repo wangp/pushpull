@@ -18,13 +18,11 @@
 :- implementation.
 
 :- import_module bool.
-:- import_module enum.
 :- import_module diet.
 :- import_module integer.
 :- import_module list.
 :- import_module map.
 :- import_module pair.
-:- import_module require.
 :- import_module set.
 :- import_module solutions.
 :- import_module string.
@@ -699,20 +697,6 @@ mark_expunged_remote_message(_Log, Db, PairingId, RemoteFlagDeltas0,
         require_attn(RemoteFlagDeltas), Res, !IO).
 
 %-----------------------------------------------------------------------------%
-
-    % XXX diet uses int internally but UIDs may overflow 32-bit signed ints
-:- instance enum(uid) where [
-    from_int(Int) = uid(integer(Int)) :- Int > 0,
-    to_int(uid(Integer)) = Int :-
-    (
-        ( string.to_int(to_string(Integer), IntPrime) ->
-            Int = IntPrime
-        ;
-            sorry($module, $pred,
-                "UID to int conversion failed (probably overflow)")
-        )
-    )
-].
 
 :- pred get_all_uids_diet(list(search_return_data(uid))::in, diet(uid)::out)
     is semidet.

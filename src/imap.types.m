@@ -3,6 +3,8 @@
 :- module imap.types.
 :- interface.
 
+:- import_module diet.
+:- import_module enum.
 :- import_module integer.
 :- import_module set.
 
@@ -282,6 +284,9 @@
 
 %-----------------------------------------------------------------------------%
 
+    % XXX diet uses int internally but UIDs may overflow 32-bit signed ints
+:- instance enum(uid).
+
 :- pred mod_seq_value < mod_seq_value.
 :- mode in < in is semidet.
 
@@ -296,6 +301,9 @@
 
 :- pred sequence_set_only_numbers(sequence_set(T)::in) is semidet
     <= sequence_set_number(T).
+
+:- pred diet_to_sequence_set(diet(T)::in, sequence_set(T)::out) is semidet
+    <= (enum(T), sequence_set_number(T)).
 
 :- func make_astring(string) = astring.
 
@@ -314,6 +322,22 @@
 :- import_module string.
 
 :- import_module imap.charclass.
+
+%-----------------------------------------------------------------------------%
+
+    % XXX diet uses int internally but UIDs may overflow 32-bit signed ints
+:- instance enum(uid) where [
+    from_int(Int) = uid(integer(Int)) :- Int > 0,
+    to_int(uid(Integer)) = Int :-
+    (
+        ( string.to_int(to_string(Integer), IntPrime) ->
+            Int = IntPrime
+        ;
+            sorry($module, $pred,
+                "UID to int conversion failed (probably overflow)")
+        )
+    )
+].
 
 %-----------------------------------------------------------------------------%
 
@@ -385,6 +409,30 @@ sequence_set_element_only_numbers(Elem) :-
     ;
         Elem = range(number(_), number(_))
     ).
+
+diet_to_sequence_set(Diet, SequenceSet) :-
+    to_sorted_interval_list(Diet, Intervals),
+    intervals_to_sequence_set(Intervals, SequenceSet).
+
+:- pred intervals_to_sequence_set(list({T, T})::in, sequence_set(T)::out)
+    is semidet.
+
+intervals_to_sequence_set([H | T], SequenceSet) :-
+    (
+        T = [],
+        interval_to_sequence_set_element(H, Element),
+        SequenceSet = last(Element)
+    ;
+        T = [_ | _],
+        intervals_to_sequence_set(T, SequenceSet0),
+        interval_to_sequence_set_element(H, Element),
+        SequenceSet = cons(Element, SequenceSet0)
+    ).
+
+:- pred interval_to_sequence_set_element({T, T}::in,
+    sequence_set_element(T)::out) is det.
+
+interval_to_sequence_set_element({Lo, Hi}, range(number(Lo), number(Hi))).
 
 %-----------------------------------------------------------------------------%
 

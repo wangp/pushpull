@@ -8,6 +8,7 @@
 :- import_module io.
 :- import_module list.
 :- import_module maybe.
+:- import_module pair.
 :- import_module set.
 :- import_module univ.
 
@@ -127,6 +128,10 @@
 :- pred lookup_remote_message_flags(database::in, pairing_id::in,
     maybe_error(flag_deltas(remote_mailbox))::out, io::di, io::uo) is det.
 
+:- pred lookup_both_message_flags(database::in, pairing_id::in,
+    maybe_error(pair(flag_deltas(local_mailbox),
+    flag_deltas(remote_mailbox)))::out, io::di, io::uo) is det.
+
 :- pred update_local_message_flags(database::in, pairing_id::in,
     flag_deltas(local_mailbox)::in, bool::in, maybe_error::out,
     io::di, io::uo) is det.
@@ -183,13 +188,13 @@
 
 :- type pending_flag_deltas
     --->    pending_flag_deltas(
-                pairing_id,
-                maybe(uniquename),
-                flag_deltas(local_mailbox),
-                expunged(local_mailbox),
-                maybe(uid),
-                flag_deltas(remote_mailbox),
-                expunged(remote_mailbox)
+                pairing_id          :: pairing_id,
+                local_uniquename    :: maybe(uniquename),
+                local_flags         :: flag_deltas(local_mailbox),
+                local_expunged      :: expunged(local_mailbox),
+                remote_uid          :: maybe(uid),
+                remote_flags        :: flag_deltas(remote_mailbox),
+                remote_expunged     :: expunged(remote_mailbox)
             ).
 
 :- pred search_pending_flag_deltas_from_local(database::in, mailbox_pair::in,
@@ -198,12 +203,13 @@
 :- pred search_pending_flag_deltas_from_remote(database::in, mailbox_pair::in,
     maybe_error(list(pending_flag_deltas))::out, io::di, io::uo) is det.
 
+    % XXX remote_flags_attn?
 :- pred record_remote_flag_deltas_applied_to_local(database::in,
     pairing_id::in, flag_deltas(local_mailbox)::in,
     flag_deltas(remote_mailbox)::in, maybe_error::out, io::di, io::uo) is det.
 
 :- pred record_local_flag_deltas_applied_to_remote(database::in,
-    pairing_id::in, flag_deltas(local_mailbox)::in,
+    pairing_id::in, flag_deltas(local_mailbox)::in, bool::in,
     flag_deltas(remote_mailbox)::in, maybe_error::out, io::di, io::uo) is det.
 
 :- pred record_remote_flag_deltas_inapplicable_to_local(database::in,
@@ -259,7 +265,6 @@
 :- import_module int.
 :- import_module integer.
 :- import_module maybe.
-:- import_module pair.
 :- import_module string.
 :- import_module unit.
 
@@ -1237,6 +1242,41 @@ lookup_remote_message_flags_2(Db, Stmt, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
+lookup_both_message_flags(Db, PairingId, Res, !IO) :-
+    Stmt = "SELECT local_flags, remote_flags FROM pairing"
+        ++ " WHERE pairing_id = :pairing_id",
+    with_stmt(lookup_both_message_flags_2, Db, Stmt, [
+        name(":pairing_id") - bind_value(PairingId)
+    ], Res, !IO).
+
+:- pred lookup_both_message_flags_2(db(rw)::in, stmt::in,
+    maybe_error(pair(flag_deltas(local_mailbox),
+    flag_deltas(remote_mailbox)))::out, io::di, io::uo) is det.
+
+lookup_both_message_flags_2(Db, Stmt, Res, !IO) :-
+    step(Db, Stmt, StepResult, !IO),
+    (
+        StepResult = done,
+        Res = error("pairing not found")
+    ;
+        StepResult = row,
+        column_text(Stmt, column(0), X0, !IO),
+        column_text(Stmt, column(1), X1, !IO),
+        (
+            convert(X0, LocalFlags),
+            convert(X1, RemoteFlags)
+        ->
+            Res = ok(LocalFlags - RemoteFlags)
+        ;
+            Res = error("database error")
+        )
+    ;
+        StepResult = error(Error),
+        Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
+
 update_local_message_flags(Db, PairingId, Flags, Attn, Res, !IO) :-
     Stmt = "UPDATE pairing"
         ++ " SET local_flags = :local_flags,"
@@ -1582,7 +1622,7 @@ search_pending_flag_deltas_from_local(Db, MailboxPair, Res, !IO) :-
     %
     % If the remote message of a pairing is expunged but then the local message
     % is subsequently undeleted, the remote side of the pairing can be reset so
-    % that the local message is re-paired.
+    % that the local message is re-uploaded.
     Stmt = "SELECT pairing_id, local_uniquename, local_flags, local_expunged,"
         ++ "       remote_uid, remote_flags, remote_expunged"
         ++ "  FROM pairing"
@@ -1675,15 +1715,16 @@ record_remote_flag_deltas_applied_to_local(Db, PairingId, LocalFlags,
     ], Res, !IO).
 
 record_local_flag_deltas_applied_to_remote(Db, PairingId, LocalFlags,
-        RemoteFlags, Res, !IO) :-
+        LocalFlagsAttn, RemoteFlags, Res, !IO) :-
     Stmt = "UPDATE pairing"
         ++ " SET local_flags = :local_flags,"
-        ++ "     remote_flags = :remote_flags,"
-        ++ "     local_flags_attn = 0"
+        ++ "     local_flags_attn = :local_flags_attn,"
+        ++ "     remote_flags = :remote_flags"
         ++ " WHERE pairing_id = :pairing_id",
     with_stmt(record_flag_deltas_applied_2, Db, Stmt, [
         name(":pairing_id") - bind_value(PairingId),
         name(":local_flags") - bind_value(LocalFlags),
+        name(":local_flags_attn") - bind_value(LocalFlagsAttn),
         name(":remote_flags") - bind_value(RemoteFlags)
     ], Res, !IO).
 
