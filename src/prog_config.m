@@ -23,6 +23,7 @@
                 maildir_root :: maildir_root,
                 fsync :: fsync,
                 buckets :: buckets,
+                quiesce_secs :: int,
                 local_mailbox_name :: local_mailbox_name,
                 hostport :: string,
                 certificate_match_name :: string,
@@ -173,6 +174,17 @@ make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
         Buckets = no_buckets
     ),
 
+    ( nonempty(Config, "local", "quiesce_seconds", Quiesce0) ->
+        ( nonnegative_int(Quiesce0, QuiesceInt) ->
+            Quiesce = QuiesceInt
+        ;
+            cons("invalid local.quiesce_seconds: " ++ Quiesce0, !Errors),
+            Quiesce = 0
+        )
+    ;
+        Quiesce = 10
+    ),
+
     ( nonempty(Config, "imap", "host", Host0) ->
         Host = Host0
     ;
@@ -267,7 +279,7 @@ make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
     ),
 
     ProgConfig = prog_config(MaybeLogFileName, LogLevel, DbFileName,
-        MaildirRoot, Fsync, Buckets, LocalMailboxName,
+        MaildirRoot, Fsync, Buckets, Quiesce, LocalMailboxName,
         Host, CertMatchName, UserName, MaybePassword, RemoteMailboxName,
         Idle, IdleTimeoutSecs, SyncOnIdleTimeout, MaybeCertificateFile,
         CommandPostSyncLocal).
@@ -290,6 +302,12 @@ nonempty(SectionMap, Key, Value) :-
 positive_int(String, Int) :-
     string.to_int(String, Int),
     Int > 0.
+
+:- pred nonnegative_int(string::in, int::out) is semidet.
+
+nonnegative_int(String, Int) :-
+    string.to_int(String, Int),
+    Int >= 0.
 
 :- pred bool(string::in, bool::out) is semidet.
 

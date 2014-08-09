@@ -14,8 +14,8 @@
 :- import_module maybe_result.
 :- import_module prog_config.
 
-:- type shortcut
-    --->    shortcut(
+:- type requires_check
+    --->    requires_check(
                 check_local :: check,
                 check_remote :: check
             ).
@@ -25,7 +25,7 @@
     ;       skip.
 
 :- pred sync_mailboxes(log::in, prog_config::in, database::in, imap::in,
-    inotify(S)::in, mailbox_pair::in, mod_seq_valzer::in, shortcut::in,
+    inotify(S)::in, mailbox_pair::in, mod_seq_valzer::in, requires_check::in,
     update_method::in, maybe_result::out, dir_cache::in, dir_cache::out,
     io::di, io::uo) is det.
 
@@ -61,19 +61,19 @@
 %-----------------------------------------------------------------------------%
 
 sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
-        Shortcut, DirCacheUpdate, Res, !DirCache, !IO) :-
+        RequiresCheck, DirCacheUpdate, Res, !DirCache, !IO) :-
     sync_mailboxes_2(Log, Config, Db, IMAP, Inotify, MailboxPair,
-        LastModSeqValzer, Shortcut, DirCacheUpdate, Res, !DirCache,
+        LastModSeqValzer, RequiresCheck, DirCacheUpdate, Res, !DirCache,
         no, _LocalChanges, !IO).
 
 :- pred sync_mailboxes_2(log::in, prog_config::in, database::in, imap::in,
-    inotify(S)::in, mailbox_pair::in, mod_seq_valzer::in, shortcut::in,
+    inotify(S)::in, mailbox_pair::in, mod_seq_valzer::in, requires_check::in,
     update_method::in, maybe_result::out, dir_cache::in, dir_cache::out,
     bool::in, bool::out, io::di, io::uo) is det.
 
 sync_mailboxes_2(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
-        Shortcut, DirCacheUpdate, !:Res, !DirCache, !LocalChanges, !IO) :-
-    Shortcut = shortcut(CheckLocal0, CheckRemote),
+        RequiresCheck, DirCacheUpdate, !:Res, !DirCache, !LocalChanges, !IO) :-
+    RequiresCheck = requires_check(CheckLocal0, CheckRemote),
     % It might be better to get set of valid UIDs first, then use that
     % as part of update_db_remote_mailbox and for detecting expunges.
     (

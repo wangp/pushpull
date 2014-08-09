@@ -39,12 +39,12 @@
 
 :- type idle_next
     --->    quit
-    ;       sync(shortcut)
+    ;       sync(requires_check)
     ;       restart_idle.
 
-:- inst idle_next_outer
+:- type idle_next_outer
     --->    quit
-    ;       sync(ground).
+    ;       sync(requires_check).
 
 %-----------------------------------------------------------------------------%
 
@@ -404,8 +404,8 @@ logged_in(Log, Config, Db, IMAP, Inotify, Res, !DirCache, !IO) :-
                     (
                         ResLookup = ok(MailboxPair),
                         sync_and_repeat(Log, Config, Db, IMAP, Inotify,
-                            MailboxPair, shortcut(check, check), scan_all,
-                            Res, !DirCache, !IO)
+                            MailboxPair, requires_check(check, check),
+                            scan_all, Res, !DirCache, !IO)
                     ;
                         ResLookup = error(Error),
                         Res = error(Error)
@@ -434,7 +434,7 @@ logged_in(Log, Config, Db, IMAP, Inotify, Res, !DirCache, !IO) :-
     ).
 
 :- pred sync_and_repeat(log::in, prog_config::in, database::in, imap::in,
-    inotify(S)::in, mailbox_pair::in, shortcut::in, update_method::in,
+    inotify(S)::in, mailbox_pair::in, requires_check::in, update_method::in,
     maybe_result::out, dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
 sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, Shortcut0,
@@ -459,9 +459,9 @@ sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, Shortcut0,
                 sync_and_repeat_2(Log, Config, IMAP, Inotify, Res1,
                     DirCacheUpdate1, !DirCache, !IO),
                 (
-                    Res1 = ok(sync(Shortcut1)),
+                    Res1 = ok(sync(RequiresCheck1)),
                     sync_and_repeat(Log, Config, Db, IMAP, Inotify,
-                        MailboxPair, Shortcut1, DirCacheUpdate1,
+                        MailboxPair, RequiresCheck1, DirCacheUpdate1,
                         Res, !DirCache, !IO)
                 ;
                     Res1 = ok(quit),
@@ -485,9 +485,8 @@ sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, Shortcut0,
     ).
 
 :- pred sync_and_repeat_2(log::in, prog_config::in, imap::in, inotify(S)::in,
-    maybe_result(idle_next)::out(maybe_result(idle_next_outer)),
-    dir_cache.update_method::out, dir_cache::in, dir_cache::out,
-    io::di, io::uo) is det.
+    maybe_result(idle_next_outer)::out, dir_cache.update_method::out,
+    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
 sync_and_repeat_2(Log, Config, IMAP, Inotify, Res, DirCacheUpdate1, !DirCache,
         !IO) :-
@@ -517,9 +516,10 @@ sync_and_repeat_2(Log, Config, IMAP, Inotify, Res, DirCacheUpdate1, !DirCache,
                 CheckLocal = skip,
                 CheckRemote = skip
             ->
-                idle_until_sync(Log, Config, IMAP, Inotify, Res, !IO)
+                idle_until_sync(Log, Config, IMAP, Inotify, Res,
+                    !DirCache, !IO)
             ;
-                Res = ok(sync(shortcut(CheckLocal, CheckRemote)))
+                Res = ok(sync(requires_check(CheckLocal, CheckRemote)))
             )
         ;
             ResNoop = eof,
@@ -579,13 +579,16 @@ should_check_remote(IMAP, CheckRemote, !IO) :-
     ).
 
 :- pred idle_until_sync(log::in, prog_config::in, imap::in, inotify(S)::in,
-    maybe_result(idle_next)::out(maybe_result(idle_next_outer)),
+    maybe_result(idle_next_outer)::out, dir_cache::in, dir_cache::out,
     io::di, io::uo) is det.
 
-idle_until_sync(Log, Config, IMAP, Inotify, Res, !IO) :-
+idle_until_sync(Log, Config, IMAP, Inotify, Res, !DirCache, !IO) :-
+    IdleTimeoutSecs = Config ^ idle_timeout_secs,
+    gettimeofday(StartTime, _StartUsec, !IO),
+    EndTime = StartTime + IdleTimeoutSecs,
+
     % Send IDLE command.
     log_info(Log, "Idling", !IO),
-    gettimeofday(StartTime, _StartUsec, !IO),
     idle(IMAP, Res0, !IO),
     (
         Res0 = ok(result(Status, IdleText, IdleAlerts)),
@@ -593,14 +596,15 @@ idle_until_sync(Log, Config, IMAP, Inotify, Res, !IO) :-
         (
             Status = continue,
             log_debug(Log, IdleText, !IO),
-            idle_until_done(Log, Config, IMAP, Inotify, StartTime, Res1, !IO),
+            idle_until_done(Log, Config, IMAP, Inotify, EndTime, Res1,
+                !DirCache, !IO),
             (
-                Res1 = ok(sync(Shortcut)),
-                sleep(1, !IO),
-                Res = ok(sync(Shortcut))
-            ;
                 Res1 = ok(restart_idle),
-                idle_until_sync(Log, Config, IMAP, Inotify, Res, !IO)
+                idle_until_sync(Log, Config, IMAP, Inotify, Res,
+                    !DirCache, !IO)
+            ;
+                Res1 = ok(sync(RequiresCheck)),
+                Res = ok(sync(RequiresCheck))
             ;
                 Res1 = ok(quit),
                 Res = ok(quit)
@@ -630,12 +634,15 @@ idle_until_sync(Log, Config, IMAP, Inotify, Res, !IO) :-
     ).
 
 :- pred idle_until_done(log::in, prog_config::in, imap::in, inotify(S)::in,
-    int::in, maybe_result(idle_next)::out, io::di, io::uo) is det.
+    int::in, maybe_result(idle_next)::out, dir_cache::in, dir_cache::out,
+    io::di, io::uo) is det.
 
-idle_until_done(Log, Config, IMAP, Inotify, StartTime, Res, !IO) :-
-    idle_loop(Log, Config, IMAP, Inotify, StartTime, Res0, !IO),
+idle_until_done(Log, Config, IMAP, Inotify, EndTime, Res, !DirCache, !IO) :-
+    RequiresCheck0 = requires_check(skip, skip),
+    idle_loop(Log, Config, IMAP, Inotify, EndTime, EndTime, RequiresCheck0,
+        Res0, !DirCache, !IO),
     (
-        Res0 = ok(_),
+        Res0 = ok(IdleNext),
         % Send IDLE DONE.
         idle_done(IMAP, Res1, !IO),
         (
@@ -643,7 +650,7 @@ idle_until_done(Log, Config, IMAP, Inotify, StartTime, Res, !IO) :-
             report_alerts(Log, DoneAlerts, !IO),
             (
                 Status = ok,
-                Res = Res0
+                Res = ok(IdleNext)
            ;
                 ( Status = no
                 ; Status = bad
@@ -671,39 +678,56 @@ idle_until_done(Log, Config, IMAP, Inotify, StartTime, Res, !IO) :-
     ).
 
 :- pred idle_loop(log::in, prog_config::in, imap::in, inotify(S)::in, int::in,
-    maybe_result(idle_next)::out, io::di, io::uo) is det.
+    int::in, requires_check::in, maybe_result(idle_next)::out,
+    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
-idle_loop(Log, Config, IMAP, Inotify, StartTime, Res, !IO) :-
-    gettimeofday(Now, _, !IO),
-    IdleTimeoutSecs = Config ^ idle_timeout_secs,
-    TimeoutSecs = StartTime - Now + IdleTimeoutSecs,
+idle_loop(Log, Config, IMAP, Inotify, EndTimeA, EndTimeB0, !.RequiresCheck,
+        Res, !DirCache, !IO) :-
     get_filedes(Inotify, InotifyFd),
     get_read_filedes(IMAP, ResIMAP_Fd, !IO),
     (
         ResIMAP_Fd = ok(IMAP_Fd),
+        gettimeofday(T0, _, !IO),
+        TimeoutSecs = min(EndTimeA, EndTimeB0) - T0,
         select_read([IMAP_Fd, InotifyFd], TimeoutSecs, Res0, !IO),
         (
             Res0 = ready(_NumReady, FdSet),
             ( fd_isset(FdSet, InotifyFd) ->
-                CheckLocal = check
+                % Buffer events for later.
+                sleep(1, !IO),
+                buffer_events(Inotify, Res1, !IO),
+                (
+                    Res1 = ok,
+                    log_debug(Log, "Waiting for local changes to settle", !IO),
+                    gettimeofday(T1, _, !IO),
+                    EndTimeB = T1 + Config ^ quiesce_secs,
+                    !RequiresCheck ^ check_local := check
+                ;
+                    Res1 = error(_),
+                    EndTimeB = EndTimeB0
+                )
             ;
-                CheckLocal = skip
+                Res1 = ok,
+                EndTimeB = EndTimeB0
             ),
-            ( fd_isset(FdSet, IMAP_Fd) ->
-                do_read_idle_response(Log, IMAP, Res2, CheckRemote, !IO)
+            (
+                Res1 = ok,
+                fd_isset(FdSet, IMAP_Fd)
+            ->
+                do_read_idle_response(Log, IMAP, Res2, !RequiresCheck, !IO)
             ;
-                Res2 = ok,
-                CheckRemote = skip
+                Res2 = ok
             ),
             (
                 Res2 = ok,
-                (
-                    CheckLocal = skip,
-                    CheckRemote = skip
-                ->
-                    idle_loop(Log, Config, IMAP, Inotify, StartTime, Res, !IO)
+                ( skip_all(!.RequiresCheck) ->
+                    idle_loop(Log, Config, IMAP, Inotify, EndTimeA, EndTimeB,
+                        !.RequiresCheck, Res, !DirCache, !IO)
+                ; !.RequiresCheck = requires_check(check, skip) ->
+                    idle_loop(Log, Config, IMAP, Inotify, EndTimeA, EndTimeB,
+                        !.RequiresCheck, Res, !DirCache, !IO)
                 ;
-                    Res = ok(sync(shortcut(CheckLocal, CheckRemote)))
+                    Res = ok(sync(!.RequiresCheck))
                 )
             ;
                 Res2 = eof,
@@ -717,10 +741,14 @@ idle_loop(Log, Config, IMAP, Inotify, StartTime, Res, !IO) :-
             SyncOnIdleTimeout = Config ^ sync_on_idle_timeout,
             (
                 SyncOnIdleTimeout = yes,
-                Res = ok(sync(shortcut(skip, check)))
+                !RequiresCheck ^ check_remote := check
             ;
-                SyncOnIdleTimeout = no,
+                SyncOnIdleTimeout = no
+            ),
+            ( skip_all(!.RequiresCheck) ->
                 Res = ok(restart_idle)
+            ;
+                Res = ok(sync(!.RequiresCheck))
             )
         ;
             Res0 = interrupt,
@@ -735,35 +763,35 @@ idle_loop(Log, Config, IMAP, Inotify, StartTime, Res, !IO) :-
         Res = error(Error)
     ).
 
-:- pred do_read_idle_response(log::in, imap::in,
-    maybe_result::out, check::out, io::di, io::uo) is det.
+:- pred do_read_idle_response(log::in, imap::in, maybe_result::out,
+    requires_check::in, requires_check::out, io::di, io::uo) is det.
 
-do_read_idle_response(Log, IMAP, Res, CheckRemote, !IO) :-
+do_read_idle_response(Log, IMAP, Res, !RequiresCheck, !IO) :-
     read_single_idle_response(IMAP, ResRead, !IO),
     (
         ResRead = ok(stop_idling - Alerts),
         report_alerts(Log, Alerts, !IO),
         Res = ok,
-        CheckRemote = check
+        !RequiresCheck ^ check_remote := check
     ;
         ResRead = ok(continue_idling - Alerts),
         report_alerts(Log, Alerts, !IO),
-        Res = ok,
-        CheckRemote = skip
+        Res = ok
     ;
         ResRead = ok(bye - Alerts),
         report_alerts(Log, Alerts, !IO),
-        Res = eof,
-        CheckRemote = skip
+        Res = eof
     ;
         ResRead = eof,
-        Res = eof,
-        CheckRemote = skip
+        Res = eof
     ;
         ResRead = error(Error),
-        Res = error(Error),
-        CheckRemote = skip
+        Res = error(Error)
     ).
+
+:- pred skip_all(requires_check::in) is semidet.
+
+skip_all(requires_check(skip, skip)).
 
 :- pred sleep(int::in, io::di, io::uo) is det.
 

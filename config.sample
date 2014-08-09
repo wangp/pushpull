@@ -10,6 +10,7 @@ state = /home/user/Maildir/.plugsink/state.db
 maildir = /home/user/Maildir
 fsync = yes
 buckets = no
+quiesce_seconds = 10
 
 [imap]
 host = imap.example.com:993
