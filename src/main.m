@@ -583,7 +583,7 @@ should_check_remote(IMAP, CheckRemote, !IO) :-
     io::di, io::uo) is det.
 
 idle_until_sync(Log, Config, IMAP, Inotify, Res, !DirCache, !IO) :-
-    IdleTimeoutSecs = Config ^ idle_timeout_secs,
+    IdleTimeoutSecs = Config ^ idle_timeout_seconds,
     gettimeofday(StartTime, _StartUsec, !IO),
     EndTime = StartTime + IdleTimeoutSecs,
 
@@ -700,7 +700,7 @@ idle_loop(Log, Config, IMAP, Inotify, EndTimeA, EndTimeB0, !.RequiresCheck,
                     Res1 = ok,
                     log_debug(Log, "Waiting for local changes to settle", !IO),
                     gettimeofday(T1, _, !IO),
-                    EndTimeB = T1 + Config ^ quiesce_secs,
+                    EndTimeB = T1 + Config ^ quiesce_seconds,
                     !RequiresCheck ^ check_local := check
                 ;
                     Res1 = error(_),

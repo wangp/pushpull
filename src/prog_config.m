@@ -23,7 +23,7 @@
                 maildir_root :: maildir_root,
                 fsync :: fsync,
                 buckets :: buckets,
-                quiesce_secs :: int,
+                quiesce_seconds :: int,
                 local_mailbox_name :: local_mailbox_name,
                 hostport :: string,
                 certificate_match_name :: string,
@@ -31,7 +31,7 @@
                 password :: maybe(password),
                 mailbox :: mailbox,
                 idle :: bool,
-                idle_timeout_secs :: int,
+                idle_timeout_seconds :: int,
                 sync_on_idle_timeout :: bool,
                 certificate_file :: maybe(string),
                 command_post_sync_local_change :: maybe(list(word))
@@ -225,13 +225,13 @@ make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
 
     ( nonempty(Config, "imap", "idle_timeout_minutes", Mins0) ->
         ( positive_int(Mins0, Mins) ->
-            IdleTimeoutSecs = min(Mins * 60, max_idle_timeout_secs)
+            IdleTimeoutSecs = min(Mins * 60, max_idle_timeout_seconds)
         ;
             IdleTimeoutSecs = 0,
             cons("imap.idle_timeout_minutes invalid: " ++ Mins0, !Errors)
         )
     ;
-        IdleTimeoutSecs = max_idle_timeout_secs
+        IdleTimeoutSecs = max_idle_timeout_seconds
     ),
 
     ( nonempty(Config, "imap", "sync_on_idle_timeout", Value) ->
@@ -338,9 +338,9 @@ log_level_lower("debug", debug).
 
 default_log_level = info.
 
-:- func max_idle_timeout_secs = int.
+:- func max_idle_timeout_seconds = int.
 
-max_idle_timeout_secs = 29 * 60.
+max_idle_timeout_seconds = 29 * 60.
 
 :- pred parse_command(string::in, maybe(list(word))::out,
     list(string)::in, list(string)::out) is cc_multi.
