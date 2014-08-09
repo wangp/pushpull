@@ -35,7 +35,6 @@
 :- implementation.
 
 :- import_module bool.
-:- import_module int.
 :- import_module list.
 :- import_module maybe.
 :- import_module std_util.
@@ -164,11 +163,15 @@ force_check_local(Inotify, CheckLocal0, CheckLocal, Res0, Res, !IO) :-
         Res0 = ok,
         (
             CheckLocal0 = skip,
-            get_queue_length(Inotify, ResQueue, !IO),
+            check_queue(Inotify, ResQueue, !IO),
             (
-                ResQueue = ok(Length),
+                ResQueue = ok(empty),
                 Res = ok,
-                CheckLocal = ( Length > 0 -> check ; skip )
+                CheckLocal = skip
+            ;
+                ResQueue = ok(nonempty),
+                Res = ok,
+                CheckLocal = check
             ;
                 ResQueue = error(Error),
                 Res = error(Error),

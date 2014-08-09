@@ -19,6 +19,7 @@
 
 :- import_module array.
 :- import_module bool.
+:- import_module int.
 :- import_module list.
 :- import_module set.
 :- import_module set_tree234.

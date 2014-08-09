@@ -41,6 +41,10 @@
 
 :- type cookie.
 
+:- type emptiness
+    --->    empty
+    ;       nonempty.
+
 %-----------------------------------------------------------------------------%
 
 :- some [S] pred init(maybe_error(inotify(S))::out, io::di, io::uo) is det.
@@ -58,11 +62,13 @@
 
 :- pred get_filedes(inotify(S)::in, int::out) is det.
 
-:- pred get_queue_length(inotify(S)::in, maybe_error(int)::out,
+:- pred check_queue(inotify(S)::in, maybe_error(emptiness)::out,
     io::di, io::uo) is det.
 
 :- pred read_events(inotify(S)::in, maybe_error(list(inotify_event(S)))::out,
     io::di, io::uo) is det.
+
+:- pred buffer_events(inotify(S)::in, maybe_error::out, io::di, io::uo) is det.
 
 :- pred contains(mask::in, event_type::in) is semidet.
 
@@ -73,12 +79,14 @@
 
 :- import_module bimap.
 :- import_module int.
+:- import_module queue.
 :- import_module store.
 
 :- type inotify(S)
     --->    inotify(
                 events_fd :: int,
-                watches :: io_mutvar(watches(S))
+                watches :: io_mutvar(watches(S)),
+                buffer :: io_mutvar(queue(inotify_event(S)))
             ).
 
 :- type watch(S)
@@ -125,7 +133,8 @@ init(Res, !IO) :-
         Res = error(Error)
     ;
         new_mutvar(bimap.init, WatchesVar, !IO),
-        Res = ok(inotify(Fd, WatchesVar) : inotify(dummy))
+        new_mutvar(queue.init, BufferVar, !IO),
+        Res = ok(inotify(Fd, WatchesVar, BufferVar) : inotify(dummy))
     ).
 
 :- pred inotify_init(int::out, string::out, io::di, io::uo) is det.
@@ -145,9 +154,10 @@ init(Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-close(inotify(Fd, WatchesVar), !IO) :-
+close(inotify(Fd, WatchesVar, BufferVar), !IO) :-
     close_2(Fd, !IO),
-    set_mutvar(WatchesVar, bimap.init, !IO).
+    set_mutvar(WatchesVar, bimap.init, !IO),
+    set_mutvar(BufferVar, queue.init, !IO).
 
 :- pred close_2(int::in, io::di, io::uo) is det.
 
@@ -161,7 +171,8 @@ close(inotify(Fd, WatchesVar), !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-add_watch(inotify(Fd, WatchesVar), PathName, EventList, Res, !IO) :-
+add_watch(Inotify, PathName, EventList, Res, !IO) :-
+    Inotify = inotify(Fd, WatchesVar, _BufferVar),
     Mask = list.foldl(make_mask, EventList, 0),
     inotify_add_watch(Fd, PathName, Mask, WatchDescr, Error, !IO),
     ( WatchDescr >= 0 ->
@@ -197,7 +208,7 @@ make_mask(Event, Mask) = Mask \/ bit(Event).
 
 %-----------------------------------------------------------------------------%
 
-remove_watch(inotify(Fd, WatchesVar), Watch, Res, !IO) :-
+remove_watch(inotify(Fd, WatchesVar, _BufferVar), Watch, Res, !IO) :-
     Watch = watch(WatchDescr),
     inotify_rm_watch(Fd, WatchDescr, RC, Error, !IO),
     ( RC = 0 ->
@@ -234,7 +245,7 @@ remove_watch_from_map(WatchesVar, Watch, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-is_watched(inotify(_Fd, WatchesVar), PathName, IsWatched, !IO) :-
+is_watched(inotify(_Fd, WatchesVar, _BufferVar), PathName, IsWatched, !IO) :-
     get_mutvar(WatchesVar, Watches, !IO),
     ( bimap.reverse_search(Watches, _, PathName) ->
         IsWatched = yes
@@ -244,23 +255,32 @@ is_watched(inotify(_Fd, WatchesVar), PathName, IsWatched, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-get_filedes(inotify(Fd, _), Fd).
+get_filedes(inotify(Fd, _, _), Fd).
 
 %-----------------------------------------------------------------------------%
 
-get_queue_length(inotify(Fd, _), Res, !IO) :-
-    get_queue_length_2(Fd, RC, Error, Length, !IO),
-    ( RC = 0 ->
-        Res = ok(Length)
+check_queue(inotify(Fd, _, BufferVar), Res, !IO) :-
+    get_mutvar(BufferVar, Queue, !IO),
+    ( queue.is_full(Queue) ->
+        Res = ok(nonempty)
     ;
-        Res = error(Error)
+        get_queue_length(Fd, RC, Error, Length, !IO),
+        ( RC = 0 ->
+            ( Length = 0 ->
+                Res = ok(empty)
+            ;
+                Res = ok(nonempty)
+            )
+        ;
+            Res = error(Error)
+        )
     ).
 
-:- pred get_queue_length_2(int::in, int::out, string::out, int::out,
+:- pred get_queue_length(int::in, int::out, string::out, int::out,
     io::di, io::uo) is det.
 
 :- pragma foreign_proc("C",
-    get_queue_length_2(Fd::in, RC::out, Error::out, Length::out,
+    get_queue_length(Fd::in, RC::out, Error::out, Length::out,
         _IO0::di, _IO::uo),
     [may_call_mercury, promise_pure, not_thread_safe, tabled_for_io,
         may_not_duplicate],
@@ -278,30 +298,42 @@ get_queue_length(inotify(Fd, _), Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-read_events(inotify(Fd, WatchesVar), Res, !IO) :-
-    get_mutvar(WatchesVar, Watches0, !IO),
-    read_events_2(Fd, Watches0, Res0, [], RevEvents, !IO),
-    list.reverse(RevEvents, Events),
-    list.foldl(remove_ignored, Events, Watches0, Watches),
-    set_mutvar(WatchesVar, Watches, !IO),
+read_events(Inotify, Res, !IO) :-
+    Inotify = inotify(_Fd, _WatchesVar, BufferVar),
+    buffer_events(Inotify, Res0, !IO),
     (
         Res0 = ok,
-        Res = ok(Events)
+        get_mutvar(BufferVar, Queue, !IO),
+        set_mutvar(BufferVar, queue.init, !IO),
+        Res = ok(to_list(Queue))
     ;
         Res0 = error(Error),
         Res = error(Error)
     ).
 
-:- pred read_events_2(int::in, watches(S)::in, maybe_error::out,
+%-----------------------------------------------------------------------------%
+
+buffer_events(inotify(Fd, WatchesVar, BufferVar), Res, !IO) :-
+    get_mutvar(WatchesVar, Watches0, !IO),
+    get_mutvar(BufferVar, Queue0, !IO),
+
+    read_all(Fd, Watches0, Res, [], RevEvents1, !IO),
+    list.foldl(remove_ignored, RevEvents1, Watches0, Watches),
+    queue.put_list(reverse(RevEvents1), Queue0, Queue),
+
+    set_mutvar(WatchesVar, Watches, !IO),
+    set_mutvar(BufferVar, Queue, !IO).
+
+:- pred read_all(int::in, watches(S)::in, maybe_error::out,
     list(inotify_event(S))::in, list(inotify_event(S))::out, io::di, io::uo)
     is det.
 
-read_events_2(Fd, Watches, Res, !RevEvents, !IO) :-
+read_all(Fd, Watches, Res, !RevEvents, !IO) :-
     read_some(Fd, Watches, RC, Error, !RevEvents, !IO),
     ( RC = 0 ->
         Res = ok
     ; RC = 1 ->
-        read_events_2(Fd, Watches, Res, !RevEvents, !IO)
+        read_all(Fd, Watches, Res, !RevEvents, !IO)
     ;
         Res = error(Error)
     ).
