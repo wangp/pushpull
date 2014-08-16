@@ -163,9 +163,7 @@ main_4(Log, Config, Password, Db, Inotify, DirCache0, !IO) :-
                 Restart = no,
                 DirCache1 = DirCache0
             ),
-            % XXX skip logout if connection already closed
-            log_notice(Log, "Logging out.\n", !IO),
-            logout(IMAP, ResLogout, !IO),
+            logout_and_close(IMAP, ResLogout, !IO),
             log_debug(Log, string(ResLogout), !IO),
             (
                 Restart = yes,
