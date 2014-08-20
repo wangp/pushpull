@@ -93,6 +93,7 @@ main_2(Log, Config, !IO) :-
         install_signal_handler(sigint, count, !IO)
     ),
     install_signal_handler(sigpipe, ignore, !IO),
+    install_signal_handler(sighup, count, !IO),
     DbFileName = Config ^ db_filename,
     log_info(Log, "Opening database " ++ DbFileName, !IO),
     open_database(DbFileName, ResOpenDb, !IO),
@@ -685,6 +686,7 @@ idle_loop(Log, Config, IMAP, Inotify, EndTimeA, EndTimeB0, !.RequiresCheck,
     get_read_filedes(IMAP, ResIMAP_Fd, !IO),
     (
         ResIMAP_Fd = ok(IMAP_Fd),
+        get_sighup_count(Hup0, !IO),
         gettimeofday(T0, _, !IO),
         TimeoutSecs = min(EndTimeA, EndTimeB0) - T0,
         select_read([IMAP_Fd, InotifyFd], TimeoutSecs, Res0, !IO),
@@ -750,8 +752,14 @@ idle_loop(Log, Config, IMAP, Inotify, EndTimeA, EndTimeB0, !.RequiresCheck,
             )
         ;
             Res0 = interrupt,
-            log_notice(Log, "Interrupted.\n", !IO),
-            Res = ok(quit)
+            get_sighup_count(Hup, !IO),
+            ( Hup > Hup0 ->
+                log_notice(Log, "Received SIGHUP, forcing sync.\n", !IO),
+                Res = ok(sync(requires_check(check, check)))
+            ;
+                log_notice(Log, "Interrupted.\n", !IO),
+                Res = ok(quit)
+            )
         ;
             Res0 = error(Error),
             Res = error(Error)
