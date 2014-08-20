@@ -3,13 +3,20 @@
 :- module signal.
 :- interface.
 
-:- import_module bool.
 :- import_module io.
 
-:- pred ignore_sigint(bool::in, io::di, io::uo) is det.
+:- type signal
+    --->    sighup
+    ;       sigint
+    ;       sigpipe.
 
-:- pred ignore_sigpipe(bool::in, io::di, io::uo) is det.
+:- type handler
+    --->    ignore
+    ;       count.
 
+:- pred install_signal_handler(signal::in, handler::in, io::di, io::uo) is det.
+
+:- pred get_sighup_count(int::out, io::di, io::uo) is det.
 :- pred get_sigint_count(int::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
@@ -17,56 +24,75 @@
 
 :- implementation.
 
+:- import_module bool.
+
+:- pragma foreign_decl("C", "
+#include <signal.h>
+").
+
+:- pragma foreign_enum("C", signal/0, [
+    sighup - "SIGHUP",
+    sigint - "SIGINT",
+    sigpipe - "SIGPIPE"
+]).
+
+%-----------------------------------------------------------------------------%
+
 :- pragma foreign_decl("C", local, "
-    #include <signal.h>
-
-    static sig_atomic_t sigint_count;
-    static void sigint_handler(int sig);
-
-    static sig_atomic_t sigpipe_count;
-    static void sigpipe_handler(int sig);
-").
-
-:- pragma foreign_code("C", "
-static void
-sigint_handler(int sig)
-{
-    (void) sig;
-    sigint_count++;
-}
+static sig_atomic_t sighup_count;
+static sig_atomic_t sigint_count;
+static sig_atomic_t sigpipe_count;
 
 static void
-sigpipe_handler(int sig)
+count_signal(int sig)
 {
-    (void) sig;
-    sigpipe_count++;
+    switch (sig) {
+        case SIGHUP:
+            sighup_count++;
+            break;
+        case SIGINT:
+            sigint_count++;
+            break;
+        case SIGPIPE:
+            sigpipe_count++;
+            break;
+    }
 }
 ").
+
+install_signal_handler(Signal, Handler, !IO) :-
+    (
+        Handler = ignore,
+        Ignore = yes
+    ;
+        Handler = count,
+        Ignore = no
+    ),
+    install_signal_handler_2(Signal, Ignore, !IO).
+
+:- pred install_signal_handler_2(signal::in, bool::in, io::di, io::uo) is det.
 
 :- pragma foreign_proc("C",
-    ignore_sigint(Ignore::in, _IO0::di, _IO::uo),
+    install_signal_handler_2(Signal::in, Ignore::in, _IO0::di, _IO::uo),
     [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
         may_not_duplicate],
 "
     struct sigaction act;
 
-    act.sa_handler = (Ignore ? SIG_IGN : sigint_handler);
+    act.sa_handler = Ignore ? SIG_IGN : count_signal;
     sigemptyset(&act.sa_mask);
     act.sa_flags = 0;
-    sigaction(SIGINT, &act, NULL);
+    sigaction(Signal, &act, NULL);
 ").
 
+%-----------------------------------------------------------------------------%
+
 :- pragma foreign_proc("C",
-    ignore_sigpipe(Ignore::in, _IO0::di, _IO::uo),
+    get_sighup_count(N::out, _IO0::di, _IO::uo),
     [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
         may_not_duplicate],
 "
-    struct sigaction act;
-
-    act.sa_handler = (Ignore ? SIG_IGN : sigpipe_handler);
-    sigemptyset(&act.sa_mask);
-    act.sa_flags = 0;
-    sigaction(SIGPIPE, &act, NULL);
+    N = sighup_count;
 ").
 
 :- pragma foreign_proc("C",

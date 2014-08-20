@@ -90,9 +90,9 @@ main_2(Log, Config, !IO) :-
     ( debugging_grade ->
         true
     ;
-        ignore_sigint(no, !IO)
+        install_signal_handler(sigint, count, !IO)
     ),
-    ignore_sigpipe(yes, !IO),
+    install_signal_handler(sigpipe, ignore, !IO),
     DbFileName = Config ^ db_filename,
     log_info(Log, "Opening database " ++ DbFileName, !IO),
     open_database(DbFileName, ResOpenDb, !IO),
