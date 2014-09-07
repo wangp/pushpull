@@ -338,16 +338,16 @@ open_2(FileName, OpenMode, Res, !IO) :-
     maybe_error(db(RwRo))::out, io::di, io::uo) is det.
 
 set_options_on_open(Db, OpenMode, Res, !IO) :-
-    PragmaCacheSize = "PRAGMA cache_size=20000;", % arbitrary
+    Common = "",
     (
         OpenMode = rw(Synchronous),
         synchronous(Synchronous, SynchronousValue),
         PragmaJournalMode = "PRAGMA journal_mode=WAL;",
         PragmaSynchronous = "PRAGMA synchronous=" ++ SynchronousValue,
-        Sql = PragmaCacheSize ++ PragmaJournalMode ++ PragmaSynchronous
+        Sql = Common ++ PragmaJournalMode ++ PragmaSynchronous
     ;
         OpenMode = ro,
-        Sql = PragmaCacheSize
+        Sql = Common
     ),
     sqlite3.exec(Db, Sql, ExecRes, !IO),
     (
