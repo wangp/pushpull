@@ -434,7 +434,12 @@ intervals_to_sequence_set([H | T], SequenceSet) :-
 :- pred interval_to_sequence_set_element({T, T}::in,
     sequence_set_element(T)::out) is det.
 
-interval_to_sequence_set_element({Lo, Hi}, range(number(Lo), number(Hi))).
+interval_to_sequence_set_element({Lo, Hi}, Element) :-
+    ( Lo = Hi ->
+        Element = element(number(Lo))
+    ;
+        Element = range(number(Lo), number(Hi))
+    ).
 
 %-----------------------------------------------------------------------------%
 
