@@ -70,7 +70,6 @@
 :- import_module set.
 :- import_module string.
 :- import_module time.
-:- import_module unit.
 
 :- import_module my_rbtree.
 :- import_module signal.
@@ -96,7 +95,10 @@
     ;       bucket
     ;       new_or_cur.
 
-:- type basename_tree == rbtree(basename, unit).
+:- type basename_tree == rbtree(basename, dummy).
+
+:- type dummy
+    --->    dummy(int).
 
 :- type enum_info
     --->    enum_info(
@@ -285,7 +287,7 @@ enumerate_files(Log, Context, DirName, BaseName, FileType, Continue,
             not dot_file(BaseName)
         ->
             !.Info = enum_info(BaseNames0, Count0, Queue, ReportProgress0),
-            det_insert(basename(BaseName), unit, BaseNames0, BaseNames),
+            det_insert(basename(BaseName), dummy, BaseNames0, BaseNames),
             Count = Count0 + 1,
             (
                 ReportProgress0 = no,
@@ -418,14 +420,14 @@ update_for_rename(OldDirName, OldBaseName, NewDirName, NewBaseName,
 
 insert_cached(DirName, BaseName, !Dirs) :-
     ( map.search(!.Dirs, DirName, dirinfo(Context, ModTime, BaseNames0)) ->
-        insert(BaseName, unit, BaseNames0, BaseNames),
+        insert(BaseName, dummy, BaseNames0, BaseNames),
         map.det_update(DirName, dirinfo(Context, ModTime, BaseNames), !Dirs)
     ;
         DirName = dirname(DirNameString),
         new_or_cur_suffix(DirNameString)
     ->
         % An previously unseen directory.
-        BaseNames = singleton(BaseName, unit),
+        BaseNames = singleton(BaseName, dummy),
         map.det_insert(DirName, dirinfo(new_or_cur, no, BaseNames), !Dirs)
     ;
         unexpected($module, $pred, "not new or cur")
@@ -445,7 +447,7 @@ remove_cached(DirName, BaseName, Dirs0, Dirs) :-
 rename_cached(DirName, OldBaseName, NewBaseName, Dirs0, Dirs) :-
     map.search(Dirs0, DirName, dirinfo(Context, ModTime, BaseNames0)),
     remove(OldBaseName, _, BaseNames0, BaseNames1),
-    insert(NewBaseName, unit, BaseNames1, BaseNames),
+    insert(NewBaseName, dummy, BaseNames1, BaseNames),
     map.det_update(DirName, dirinfo(Context, ModTime, BaseNames), Dirs0, Dirs).
 
 :- pred det_insert(K::in, V::in, rbtree(K, V)::in, rbtree(K, V)::out) is det.
@@ -456,6 +458,11 @@ det_insert(K, V, !Tree) :-
     ;
         unexpected($module, $pred, "duplicate key")
     ).
+
+    % Use an initialised dummy value to avoid retaining garbage.
+:- func dummy = dummy.
+
+dummy = dummy(0).
 
 %-----------------------------------------------------------------------------%
 
@@ -552,7 +559,7 @@ fill_array([H | T], !Index, !Array) :-
     my_rbtree.foldl2(fill_array_2(DirName), BaseNames, !Index, !Array),
     fill_array(T, !Index, !Array).
 
-:- pred fill_array_2(dirname::in, basename::in, unit::in, int::in, int::out,
+:- pred fill_array_2(dirname::in, basename::in, dummy::in, int::in, int::out,
     array(file_or_tombstone)::array_di, array(file_or_tombstone)::array_uo)
     is det.
 
