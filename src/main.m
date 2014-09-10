@@ -33,6 +33,7 @@
 :- import_module path.
 :- import_module prog_config.
 :- import_module select.
+:- import_module setsockopt.
 :- import_module signal.
 :- import_module sync.
 :- import_module terminal_attr.
@@ -290,7 +291,14 @@ connect_handshake(Method, HostPort, MaybeCertificateFile, Res, !IO) :-
             bio_do_handshake(Bio, ResHandshake, !IO),
             (
                 ResHandshake = ok(CertificateNames),
-                Res = ok(Bio - CertificateNames)
+                set_timeouts(Bio, ResSetup, !IO),
+                (
+                    ResSetup = ok,
+                    Res = ok(Bio - CertificateNames)
+                ;
+                    ResSetup = error(Error),
+                    Res = error(Error)
+                )
             ;
                 ResHandshake = error(Error),
                 Res = error(Error)
@@ -307,6 +315,26 @@ connect_handshake(Method, HostPort, MaybeCertificateFile, Res, !IO) :-
         )
     ;
         ResBio = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred set_timeouts(bio::in, maybe_error::out, io::di, io::uo) is det.
+
+set_timeouts(Bio, Res, !IO) :-
+    bio_get_fd(Bio, ResFd, !IO),
+    (
+        ResFd = ok(Fd),
+        TimeoutSecs = 60,
+        set_timeout(Fd, recv_timeout, TimeoutSecs, Res0, !IO),
+        (
+            Res0 = ok,
+            set_timeout(Fd, send_timeout, TimeoutSecs, Res, !IO)
+        ;
+            Res0 = error(Error),
+            Res = error(Error)
+        )
+    ;
+        ResFd = error(Error),
         Res = error(Error)
     ).
 
