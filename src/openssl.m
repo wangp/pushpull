@@ -71,6 +71,12 @@
     #include <openssl/ssl.h>
     #include <openssl/err.h>
     #include <openssl/x509v3.h>
+
+    /* OpenSSL likes to use uninitialised memory. */
+#if 0
+    #include <valgrind/memcheck.h>
+    #define VALGRIND_WORKAROUND_OPENSSL
+#endif
 ").
 
 %-----------------------------------------------------------------------------%
@@ -414,6 +420,13 @@ bio_read_byte(Bio, Res, !IO) :-
     unsigned char buf[1];
 
     NumRead = BIO_read(Bio, buf, sizeof(buf));
+
+#ifdef VALGRIND_WORKAROUND_OPENSSL
+    if (NumRead > 0) {
+        VALGRIND_MAKE_MEM_DEFINED(buf, sizeof(buf));
+    }
+#endif
+
     Byte = buf[0];
 ").
 
@@ -465,6 +478,10 @@ bio_read_bytes(Bio, NumOctets, Res, !IO) :-
     }
 
     if (Error == 0 && NumRead == NumOctets) {
+        #ifdef VALGRIND_WORKAROUND_OPENSSL
+            VALGRIND_MAKE_MEM_DEFINED(data, NumOctets);
+        #endif
+
         BinaryString = make_binary_string(NumOctets, data, system_heap,
             MR_ALLOC_ID);
     } else {
