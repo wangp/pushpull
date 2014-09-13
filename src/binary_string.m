@@ -4,7 +4,6 @@
 :- interface.
 
 :- import_module bitmap.
-:- import_module list.
 
 :- type binary_string. % immutable like string
 
@@ -17,8 +16,6 @@
 :- func from_string(string) = binary_string.
 
 :- func from_bitmap(bitmap) = binary_string.
-
-:- pred append_list(list(binary_string)::in, binary_string::out) is det.
 
 :- pred sub_string_search_start(binary_string::in, binary_string::in, int::in,
     int::out) is semidet.
@@ -34,7 +31,9 @@
 
 :- implementation.
 
+:- import_module bool.
 :- import_module int.
+:- import_module list.
 :- import_module require.
 
 :- pragma foreign_type("C", binary_string, "struct binary_string *").
@@ -42,33 +41,51 @@
 :- pragma foreign_decl("C", "
 struct binary_string {
     MR_Integer len;
-    const unsigned char *data;
+    const unsigned char *data;  /* GC or system heap */
     void *ref;  /* prevent GC if data points into another structure */
 };
 
 unsigned char *
-allocate_binary_string_buffer(MR_Integer len, MR_AllocSiteInfoPtr alloc_id);
+allocate_binary_string_buffer(MR_Integer len, MR_Bool *system_heap,
+    MR_AllocSiteInfoPtr alloc_id);
 
 struct binary_string *
 make_binary_string(MR_Integer len, const unsigned char *data,
-    MR_AllocSiteInfoPtr alloc_id);
+    MR_Bool system_heap, MR_AllocSiteInfoPtr alloc_id);
+
+void
+binary_string_free_data(void *BinaryString, void *data);
 ").
 
 :- pragma foreign_code("C", "
 unsigned char *
-allocate_binary_string_buffer(MR_Integer num_bytes,
+allocate_binary_string_buffer(MR_Integer num_bytes, MR_Bool *system_heap,
     MR_AllocSiteInfoPtr alloc_id)
 {
-    MR_Word ptr;
+    /*
+    ** Use the system malloc for larger buffers as Boehm GC doesn't deal with
+    ** large objects very well (internal fragmentation).
+    */
 
-    MR_offset_incr_hp_atomic_msg(ptr, 0, MR_bytes_to_words(num_bytes),
-        alloc_id, ""binary_string.binary_string/0"");
-    return (unsigned char *) ptr;
+    if (num_bytes < 0x1000) {
+        MR_Word ptr;
+
+        MR_offset_incr_hp_atomic_msg(ptr, 0, MR_bytes_to_words(num_bytes),
+            alloc_id, ""binary_string.binary_string/0"");
+        *system_heap = MR_NO;
+        return (unsigned char *) ptr;
+    } else {
+        unsigned char *ptr;
+
+        ptr = malloc(num_bytes);
+        *system_heap = MR_YES;
+        return ptr;
+    }
 }
 
 struct binary_string *
 make_binary_string(MR_Integer len, const unsigned char *data,
-    MR_AllocSiteInfoPtr alloc_id)
+    MR_Bool system_heap, MR_AllocSiteInfoPtr alloc_id)
 {
     struct binary_string *BinaryString;
 
@@ -76,7 +93,23 @@ make_binary_string(MR_Integer len, const unsigned char *data,
     BinaryString->len = len;
     BinaryString->data = data;
     BinaryString->ref = NULL;
+
+    if (system_heap) {
+        MR_GC_register_finalizer(BinaryString, binary_string_free_data, NULL);
+    }
+
     return BinaryString;
+}
+
+void
+binary_string_free_data(void *obj, void *cd)
+{
+    struct binary_string *BinaryString = obj;
+    void *data = (void *) BinaryString->data;
+    (void) cd;
+
+    BinaryString->data = NULL;
+    free(data);
 }
 ").
 
@@ -110,7 +143,7 @@ make_binary_string(MR_Integer len, const unsigned char *data,
     [will_not_call_mercury, promise_pure, thread_safe],
 "
     BinaryString = make_binary_string(strlen(String),
-        (const unsigned char *) String, MR_ALLOC_ID);
+        (const unsigned char *) String, MR_NO, MR_ALLOC_ID);
 ").
 
 %-----------------------------------------------------------------------------%
@@ -121,7 +154,7 @@ make_binary_string(MR_Integer len, const unsigned char *data,
 "
     BinaryString = make_binary_string(
         MR_bitmap_length_in_bytes(Bitmap->num_bits),
-        Bitmap->elements, MR_ALLOC_ID);
+        Bitmap->elements, MR_NO, MR_ALLOC_ID);
 
     /* Keep a reference to the Bitmap to prevent GC. */
     BinaryString->ref = Bitmap;
@@ -129,65 +162,82 @@ make_binary_string(MR_Integer len, const unsigned char *data,
 
 %-----------------------------------------------------------------------------%
 
-append_list(Inputs, Output) :-
-    (
-        Inputs = [],
-        Output = from_string("")
-    ;
-        Inputs = [X],
-        Output = X
-    ;
-        Inputs = [_, _ | _],
-        sum_length(Inputs, 0, BufLen),
-        allocate_buffer(BufLen, Buf0),
-        unsafe_copy_to_buffer(Inputs, 0, Buf0, Buf),
-        Output = from_buffer(BufLen, Buf)
-    ).
+:- type slice
+    --->    slice(binary_string, int, int).
 
-:- pred sum_length(list(binary_string)::in, int::in, int::out) is det.
-
-sum_length([], !Sum).
-sum_length([X | Xs], Sum0, Sum) :-
-    Sum1 = Sum0 + length(X),
-    sum_length(Xs, Sum1, Sum).
-
-:- pred allocate_buffer(int::in, c_pointer::uo) is det.
-
-:- pragma foreign_proc("C",
-    allocate_buffer(Length::in, Buf::uo),
-    [will_not_call_mercury, promise_pure, thread_safe],
-"
-    Buf = (MR_Word) allocate_binary_string_buffer(Length, MR_ALLOC_ID);
-").
-
-:- pred unsafe_copy_to_buffer(list(binary_string)::in, int::in,
-    c_pointer::di, c_pointer::uo) is det.
-
-unsafe_copy_to_buffer([], _Offset, !Buf).
-unsafe_copy_to_buffer([X | Xs], Offset0, !Buf) :-
-    unsafe_copy(X, Offset0, !Buf),
-    unsafe_copy_to_buffer(Xs, Offset0 + length(X), !Buf).
-
-:- pred unsafe_copy(binary_string::in, int::in, c_pointer::di, c_pointer::uo)
+:- pred append_slices(list(binary_string.slice)::in, binary_string::out)
     is det.
 
+append_slices(Inputs, Output) :-
+    (
+        Inputs = []
+    ->
+        Output = from_string("")
+    ;
+        Inputs = [Slice],
+        Slice = slice(BinaryString, 0, length(BinaryString))
+    ->
+        Output = BinaryString
+    ;
+        sum_length(Inputs, 0, BufLen),
+        allocate_buffer(BufLen, Buf0, SystemHeap),
+        unsafe_copy_to_buffer(Inputs, Buf0, Buf, 0),
+        Output = from_buffer(BufLen, Buf, SystemHeap)
+    ).
+
+:- pred sum_length(list(binary_string.slice)::in, int::in, int::out) is det.
+
+sum_length([], !Sum).
+sum_length([Slice | Slices], Sum0, Sum) :-
+    Slice = slice(_, Start, End),
+    Length = End - Start,
+    sum_length(Slices, Sum0 + Length, Sum).
+
+:- pred allocate_buffer(int::in, c_pointer::uo, bool::out) is det.
+
 :- pragma foreign_proc("C",
-    unsafe_copy(Input::in, Offset::in, Buf0::di, Buf::uo),
+    allocate_buffer(Length::in, Buf::uo, SystemHeap::out),
     [will_not_call_mercury, promise_pure, thread_safe],
 "
-    unsigned char *p = (unsigned char *) Buf0;
-    memcpy(p + Offset, Input->data, Input->len);
-    Buf = Buf0;
+    Buf = (MR_Word) allocate_binary_string_buffer(Length, &SystemHeap,
+        MR_ALLOC_ID);
 ").
 
-:- func from_buffer(int, c_pointer) = binary_string.
+:- pred unsafe_copy_to_buffer(list(binary_string.slice)::in,
+    c_pointer::di, c_pointer::uo, int::in) is det.
+
+unsafe_copy_to_buffer([], !Dest, _DestOffset).
+unsafe_copy_to_buffer([Slice | Slices], !Dest, DestOffset0) :-
+    Slice = slice(Input, InputStart, InputEnd),
+    unsafe_copy(Input, InputStart, InputEnd, !Dest, DestOffset0, DestOffset1),
+    unsafe_copy_to_buffer(Slices, !Dest, DestOffset1).
+
+:- pred unsafe_copy(binary_string::in, int::in, int::in,
+    c_pointer::di, c_pointer::uo, int::in, int::out) is det.
 
 :- pragma foreign_proc("C",
-    from_buffer(Length::in, Data::in) = (BinaryString::out),
+    unsafe_copy(Input::in, InputStart::in, InputEnd::in,
+        Dest0::di, Dest::uo, DestOffset0::in, DestOffset::out),
+    [will_not_call_mercury, promise_pure, thread_safe],
+"
+    MR_Integer InputLength = InputEnd - InputStart;
+
+    memcpy(
+        ((unsigned char *) Dest0) + DestOffset0,
+        Input->data + InputStart, InputLength);
+
+    Dest = Dest0;
+    DestOffset = DestOffset0 + InputLength;
+").
+
+:- func from_buffer(int, c_pointer, bool) = binary_string.
+
+:- pragma foreign_proc("C",
+    from_buffer(Length::in, Data::in, SystemHeap::in) = (BinaryString::out),
     [will_not_call_mercury, promise_pure, thread_safe],
 "
     BinaryString = make_binary_string(Length, (unsigned const char *) Data,
-        MR_ALLOC_ID);
+        SystemHeap, MR_ALLOC_ID);
 ").
 
 %-----------------------------------------------------------------------------%
@@ -234,46 +284,29 @@ unsafe_copy_to_buffer([X | Xs], Offset0, !Buf) :-
 
 %-----------------------------------------------------------------------------%
 
-:- func unsafe_between(binary_string::in, int::in, int::in) =
-    (binary_string::uo) is det.
-
-:- pragma foreign_proc("C",
-    unsafe_between(Str::in, Start::in, End::in) = (SubString::uo),
-    [will_not_call_mercury, promise_pure, thread_safe],
-"
-    MR_Integer Count;
-    unsigned char *Buf;
-
-    Count = End - Start;
-    Buf = allocate_binary_string_buffer(Count, MR_ALLOC_ID);
-    MR_memcpy(Buf, Str->data + Start, Count);
-    SubString = make_binary_string(Count, Buf, MR_ALLOC_ID);
-").
-
-%-----------------------------------------------------------------------------%
-
 replace_all(Str, Pat, Subst, Result) :-
     PatLength = length(Pat),
     ( PatLength = 0 ->
         sorry($module, $pred, "length(Pat) = 0")
     ;
-        ReversedChunks = replace_all_2(Str, Pat, Subst, PatLength, 0, []),
-        list.reverse(ReversedChunks, Chunks),
-        append_list(Chunks, Result)
+        SubstSlice = slice(Subst, 0, length(Subst)),
+        replace_all_2(Str, Pat, SubstSlice, PatLength, 0, [], RevSlices),
+        list.reverse(RevSlices, Slices),
+        append_slices(Slices, Result)
     ).
 
-:- func replace_all_2(binary_string, binary_string, binary_string, int, int,
-    list(binary_string)) = list(binary_string).
+:- pred replace_all_2(binary_string::in, binary_string::in,
+    binary_string.slice::in, int::in, int::in,
+    list(binary_string.slice)::in, list(binary_string.slice)::out) is det.
 
-replace_all_2(Str, Pat, Subst, PatLength, BeginAt, Result0) = Result :-
+replace_all_2(Str, Pat, Subst, PatLength, BeginAt, RevSlices0, RevSlices) :-
     ( sub_string_search_start(Str, Pat, BeginAt, Index) ->
-        Initial = unsafe_between(Str, BeginAt, Index),
-        Start = Index + PatLength,
-        Result = replace_all_2(Str, Pat, Subst, PatLength, Start,
-            [Subst, Initial | Result0])
+        Initial = slice(Str, BeginAt, Index),
+        replace_all_2(Str, Pat, Subst, PatLength, Index + PatLength,
+            [Subst, Initial | RevSlices0], RevSlices)
     ;
-        EndString = unsafe_between(Str, BeginAt, length(Str)),
-        Result = [EndString | Result0]
+        EndString = slice(Str, BeginAt, length(Str)),
+        RevSlices = [EndString | RevSlices0]
     ).
 
 %-----------------------------------------------------------------------------%

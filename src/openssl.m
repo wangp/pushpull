@@ -445,8 +445,9 @@ bio_read_bytes(Bio, NumOctets, Res, !IO) :-
         may_not_duplicate],
 "
     unsigned char *data;
+    MR_Bool system_heap;
 
-    data = allocate_binary_string_buffer(NumOctets, MR_ALLOC_ID);
+    data = allocate_binary_string_buffer(NumOctets, &system_heap, MR_ALLOC_ID);
     NumRead = 0;
     Error = 0;
 
@@ -464,8 +465,12 @@ bio_read_bytes(Bio, NumOctets, Res, !IO) :-
     }
 
     if (Error == 0 && NumRead == NumOctets) {
-        BinaryString = make_binary_string(NumOctets, data, MR_ALLOC_ID);
+        BinaryString = make_binary_string(NumOctets, data, system_heap,
+            MR_ALLOC_ID);
     } else {
+        if (system_heap) {
+            free(data);
+        }
         BinaryString = NULL;
     }
 ").
