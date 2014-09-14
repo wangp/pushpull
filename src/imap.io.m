@@ -23,6 +23,7 @@
 
 :- implementation.
 
+:- import_module char.
 :- import_module require.
 
 :- inst open
@@ -38,14 +39,8 @@ read_crlf_line_chop(open(Pipe), Res, !IO) :-
             list.reverse(RevBytes, Bytes),
             Res = ok(Bytes),
             trace [runtime(env("DEBUG_IMAP")), io(!IO2)] (
-                ( string.from_code_unit_list(Bytes, String) ->
-                    Stream = io.stderr_stream,
-                    io.write_string(Stream, "\x1B\[34;01m", !IO2),
-                    io.write_string(Stream, String, !IO2),
-                    io.write_string(Stream, "\x1B\[0m\n", !IO2)
-                ;
-                    true
-                )
+                Stream = io.stderr_stream,
+                debug_response_bytes(Stream, Bytes, !IO2)
             )
         ;
             unexpected($module, $pred, "RevBytes0 too short")
@@ -59,7 +54,6 @@ read_crlf_line_chop(open(Pipe), Res, !IO) :-
         Res = error(Error)
         % RevBytes ignored.
     ).
-
 read_crlf_line_chop(closed, Res, !IO) :-
     Res = error(io.make_io_error("session closed")).
 
@@ -236,6 +230,24 @@ wait_for_continuation_request(Bio, Tag, Res, !IO) :-
 crlf = "\r\n".
 
 %-----------------------------------------------------------------------------%
+
+:- pred debug_response_bytes(io.output_stream::in, list(int)::in,
+    io::di, io::uo) is det.
+
+debug_response_bytes(Stream, Bytes, !IO) :-
+    io.write_string(Stream, "\x1B\[34;01m", !IO),
+    list.foldl(debug_response_byte(Stream), Bytes, !IO),
+    io.write_string(Stream, "\x1B\[0m\n", !IO).
+
+:- pred debug_response_byte(io.output_stream::in, int::in, io::di, io::uo)
+    is det.
+
+debug_response_byte(Stream, Byte, !IO) :-
+    ( char.to_int(Char, Byte) ->
+        io.write_char(Stream, Char, !IO)
+    ;
+        io.write_char(Stream, '?', !IO)
+    ).
 
 :- pred debug_chunks(io.output_stream::in, list(chunk)::in,
     io::di, io::uo) is det.
