@@ -32,59 +32,71 @@
 %-----------------------------------------------------------------------------%
 
 read_crlf_line_chop(open(Pipe), Res, !IO) :-
-    read_crlf_line(Pipe, Res0, [], RevBytes0, !IO),
+    read_crlf_line(Pipe, Res0, empty, Bytes, !IO),
     (
         Res0 = ok,
-        ( RevBytes0 = [_LF, _CR | RevBytes] ->
-            list.reverse(RevBytes, Bytes),
-            Res = ok(Bytes),
-            trace [runtime(env("DEBUG_IMAP")), io(!IO2)] (
-                Stream = io.stderr_stream,
-                debug_response_bytes(Stream, Bytes, !IO2)
-            )
-        ;
-            unexpected($module, $pred, "RevBytes0 too short")
+        Res = ok(Bytes),
+        trace [runtime(env("DEBUG_IMAP")), io(!IO2)] (
+            Stream = io.stderr_stream,
+            debug_response_bytes(Stream, Bytes, !IO2)
         )
     ;
         Res0 = eof,
         Res = eof
-        % RevBytes ignored.
     ;
         Res0 = error(Error),
         Res = error(Error)
-        % RevBytes ignored.
     ).
 read_crlf_line_chop(closed, Res, !IO) :-
     Res = error(io.make_io_error("session closed")).
 
-:- pred read_crlf_line(bio::in, io.result::out,
-    list(int)::in, list(int)::out, io::di, io::uo) is det.
+:- type prior
+    --->    empty
+    ;       cr.
 
-read_crlf_line(Bio, Res, !RevBytes, !IO) :-
+:- pred read_crlf_line(bio::in, io.result::out, prior::in, list(int)::out,
+    io::di, io::uo) is det.
+
+read_crlf_line(Bio, Res, Prior, Bytes, !IO) :-
     bio_read_byte(Bio, ResByte, !IO),
     (
         ResByte = ok(Byte),
         (
-            Byte = lf,
-            head_cr(!.RevBytes)
-        ->
-            cons(Byte, !RevBytes),
-            Res = ok
+            Prior = empty,
+            ( Byte = cr ->
+                read_crlf_line(Bio, Res, cr, Bytes, !IO)
+            ;
+                Bytes = [Byte | BytesTail],
+                read_crlf_line(Bio, Res, empty, BytesTail, !IO) % lcmc
+            )
         ;
-            cons(Byte, !RevBytes),
-            read_crlf_line(Bio, Res, !RevBytes, !IO)
+            Prior = cr,
+            ( Byte = lf ->
+                Res = ok,
+                Bytes = [] % drop CR LF
+            ; Byte = cr ->
+                Bytes = [cr | BytesTail],
+                read_crlf_line(Bio, Res, cr, BytesTail, !IO) % lcmc
+            ;
+                Bytes = [cr, Byte | BytesTail],
+                read_crlf_line(Bio, Res, empty, BytesTail, !IO) % lcmc
+            )
         )
     ;
         ResByte = eof,
-        Res = eof
+        Res = eof,
+        (
+            Prior = empty,
+            Bytes = []
+        ;
+            Prior = cr,
+            Bytes = [cr]
+        )
     ;
         ResByte = error(Error),
-        Res = error(Error)
+        Res = error(Error),
+        Bytes = []
     ).
-
-:- pred head_cr(list(int)::in) is semidet.
-
-head_cr([cr | _]).
 
 :- func lf = int.
 :- func cr = int.

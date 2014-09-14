@@ -9,6 +9,7 @@ MLLIBS-main += -lssl -lcrypto
 MCFLAGS += --optimise-constructor-last-call
 
 # Module-specific options.
+MCFLAGS-imap.io += --warn-non-tail-recursion
 MCFLAGS-lowio += --no-ansi-c
 MCFLAGS-select += --no-ansi-c
 MCFLAGS-setsockopt += --no-ansi-c
