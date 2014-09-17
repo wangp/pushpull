@@ -14,9 +14,10 @@
 
 :- implementation.
 
-:- import_module char.
 :- import_module int.
 :- import_module require.
+
+:- import_module digit.
 
 :- pragma foreign_decl("C", local, "
     #include <time.h>
@@ -45,10 +46,10 @@ mktime(DateTime) = TimeT :-
 
 parse_zone(zone(Zone), GMTOff) :-
     string.to_char_list(Zone, [PlusMinus, D1, D2, D3, D4]),
-    char.digit_to_int(D1, H1),
-    char.digit_to_int(D2, H2),
-    char.digit_to_int(D3, M1),
-    char.digit_to_int(D4, M2),
+    digit.decimal_digit_to_int(D1, H1),
+    digit.decimal_digit_to_int(D2, H2),
+    digit.decimal_digit_to_int(D3, M1),
+    digit.decimal_digit_to_int(D4, M2),
     HH = (H1 * 10) + H2,
     MM = (M1 * 10) + M2,
     Secs = (HH * 60 * 60) + (MM * 60),
