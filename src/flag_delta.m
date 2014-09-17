@@ -103,6 +103,7 @@ update_maildir_standard_flags(Flags, Sets0, Sets, IsChanged) :-
     update_flags(Cur, Sets0, Sets, IsChanged).
 
 :- func maildir_standard_flags = set(flag).
+:- pragma memo(maildir_standard_flags/0).
 
 maildir_standard_flags = set.from_list([
     system(answered),
@@ -238,6 +239,9 @@ cons_system_flag(Flag, !Acc) :-
     ).
 
 %-----------------------------------------------------------------------------%
+
+    % Most flag delta strings are the same.
+:- pragma memo(from_string/2).
 
 from_string(Input, Sets) :-
     promise_equivalent_solutions [ParseResult] (
