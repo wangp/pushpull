@@ -12,6 +12,7 @@
 
 :- implementation.
 
+:- import_module benchmarking.
 :- import_module bool.
 :- import_module int.
 :- import_module integer.
@@ -543,6 +544,7 @@ sync_and_repeat_2(Log, Config, IMAP, Inotify, Res, DirCacheUpdate1, !DirCache,
                 CheckLocal = skip,
                 CheckRemote = skip
             ->
+                report_memory_attribution("before idle", !IO),
                 idle_until_sync(Log, Config, IMAP, Inotify, Res,
                     !DirCache, !IO)
             ;
