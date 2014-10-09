@@ -327,8 +327,8 @@ update_uid_range_batch(Log, Db, IMAP, MailboxPair, BatchMin, BatchMax,
         (
             Status = ok_with_data(FetchResults),
             log_debug(Log, Text, !IO),
-            make_remote_message_infos(FetchResults, ResParse,
-                map.init, RemoteMessageInfos),
+            make_remote_message_infos(Log, FetchResults, ResParse,
+                map.init, RemoteMessageInfos, !IO),
             (
                 ResParse = ok,
                 % Transaction around this for faster.
@@ -374,17 +374,18 @@ update_uid_range_batch(Log, Db, IMAP, MailboxPair, BatchMin, BatchMax,
 to_string(number(uid(N))) = to_string(N).
 to_string(star) = "*".
 
-:- pred make_remote_message_infos( list(pair(message_seq_nr, msg_atts))::in,
-    maybe_error::out, map(uid, remote_message_info)::in, map(uid,
-    remote_message_info)::out) is det.
+:- pred make_remote_message_infos(log::in,
+    list(pair(message_seq_nr, msg_atts))::in, maybe_error::out,
+    map(uid, remote_message_info)::in, map(uid, remote_message_info)::out,
+    io::di, io::uo) is det.
 
-make_remote_message_infos([], ok, !Map).
-make_remote_message_infos([H | T], Res, !Map) :-
-    make_remote_message_info(H, ResMake),
+make_remote_message_infos(_Log, [], ok, !Map, !IO).
+make_remote_message_infos(Log, [H | T], Res, !Map, !IO) :-
+    make_remote_message_info(Log, H, ResMake, !IO),
     (
         ResMake = yes(UID, Info),
         ( map.insert(UID, Info, !Map) ->
-            make_remote_message_infos(T, Res, !Map)
+            make_remote_message_infos(Log, T, Res, !Map, !IO)
         ;
             % I guess the server should not send multiple results for the same
             % UID.
@@ -392,16 +393,16 @@ make_remote_message_infos([H | T], Res, !Map) :-
         )
     ;
         ResMake = no,
-        make_remote_message_infos(T, Res, !Map)
+        make_remote_message_infos(Log, T, Res, !Map, !IO)
     ;
         ResMake = error(Error),
         Res = error(Error)
     ).
 
-:- pred make_remote_message_info(pair(message_seq_nr, msg_atts)::in,
-    make_remote_message_info_result::out) is det.
+:- pred make_remote_message_info(log::in, pair(message_seq_nr, msg_atts)::in,
+    make_remote_message_info_result::out, io::di, io::uo) is det.
 
-make_remote_message_info(_MsgSeqNr - Atts, Res) :-
+make_remote_message_info(Log, _MsgSeqNr - Atts, Res, !IO) :-
     % If changes are being made on the remote mailbox concurrently the server
     % (at least Dovecot) may send unsolicited FETCH responses which are not
     % directly in response to our FETCH request, and therefore not matching the
@@ -416,29 +417,32 @@ make_remote_message_info(_MsgSeqNr - Atts, Res) :-
                 ),
                 [NString])
         ->
-            parse_message_id_att(NString, ResMaybeMessageId),
             (
-                ResMaybeMessageId = ok(MaybeMessageId),
+                solutions((pred(F::out) is nondet :- member(flags(F), Atts)),
+                    [Flags0])
+            ->
+                parse_message_id_att(NString, ResMaybeMessageId),
                 (
-                    solutions(
-                        (pred(F::out) is nondet :- member(flags(F), Atts)),
-                        [Flags0]),
+                    ResMaybeMessageId = ok(MaybeMessageId),
                     list.filter_map(flag_except_recent, Flags0, Flags1),
-                    set.list_to_set(Flags1, Flags)
-                ->
-                    Info = remote_message_info(MaybeMessageId, Flags),
-                    Res = yes(UID, Info)
+                    set.list_to_set(Flags1, Flags),
+                    Res = yes(UID, remote_message_info(MaybeMessageId, Flags))
                 ;
-                    Res = error("missing or unexpected flags in FETCH result")
+                    ResMaybeMessageId = error(Error),
+                    Res = error("bad Message-Id in FETCH result: " ++ Error)
                 )
             ;
-                ResMaybeMessageId = error(Error),
-                Res = error("bad Message-Id in FETCH result: " ++ Error)
+                log_warning(Log,
+                    "FETCH result missing FLAGS attribute; ignored", !IO),
+                Res = no
             )
         ;
-            Res = error("missing Message-Id in FETCH result")
+            log_warning(Log,
+                "FETCH result missing Message-Id attribute; ignored", !IO),
+            Res = no
         )
     ;
+        log_warning(Log, "FETCH result missing UID attribute; ignored", !IO),
         Res = no
     ).
 
