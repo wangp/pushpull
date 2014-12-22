@@ -523,6 +523,7 @@ all_files(dir_cache(_, Dirs), Array) :-
     % the subarrays, which are populated in sorted order; that turned out to
     % perform basically the same as samsort, even though samsort has to
     % identify the subarrays.
+    array.sort_fix_2014,
     Array = sort(Array1),
     ( size(Array) > 0 ->
         ( lookup(Array, 0) = file(BaseName0, _) ->
