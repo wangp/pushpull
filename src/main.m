@@ -325,11 +325,13 @@ set_timeouts(Bio, Res, !IO) :-
     bio_get_fd(Bio, ResFd, !IO),
     (
         ResFd = ok(Fd),
-        TimeoutSecs = 60,
-        set_timeout(Fd, recv_timeout, TimeoutSecs, Res0, !IO),
+        % Some server operations really do take a long time.
+        RecvTimeoutSecs = 300,
+        SendTimeoutSecs = 60,
+        set_timeout(Fd, recv_timeout, RecvTimeoutSecs, Res0, !IO),
         (
             Res0 = ok,
-            set_timeout(Fd, send_timeout, TimeoutSecs, Res, !IO)
+            set_timeout(Fd, send_timeout, SendTimeoutSecs, Res, !IO)
         ;
             Res0 = error(Error),
             Res = error(Error)
