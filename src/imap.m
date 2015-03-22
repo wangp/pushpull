@@ -75,11 +75,11 @@
 
 :- func mailbox(string) = mailbox.
 
-:- pred select(imap::in, mailbox::in, imap_result::out, io::di, io::uo)
-    is det.
+:- pred select(imap::in, mailbox::in, list(select_param)::in,
+    imap_result::out, io::di, io::uo) is det.
 
-:- pred examine(imap::in, mailbox::in, imap_result::out, io::di, io::uo)
-    is det.
+:- pred examine(imap::in, mailbox::in, list(select_param)::in,
+    imap_result::out, io::di, io::uo) is det.
 
 :- pred get_selected_mailbox_uidvalidity(imap::in, maybe(uidvalidity)::out,
     io::di, io::uo) is det.
@@ -753,25 +753,25 @@ mailbox(S) =
         astring(make_astring(S))
     ).
 
-select(IMAP, Mailbox, Res, !IO) :-
-    command_wrapper(do_select_or_examine(yes, Mailbox),
+select(IMAP, Mailbox, Params, Res, !IO) :-
+    command_wrapper(do_select_or_examine(yes, Mailbox, Params),
         [authenticated, selected], IMAP, Res, !IO).
 
-examine(IMAP, Mailbox, Res, !IO) :-
-    command_wrapper(do_select_or_examine(no, Mailbox),
+examine(IMAP, Mailbox, Params, Res, !IO) :-
+    command_wrapper(do_select_or_examine(no, Mailbox, Params),
         [authenticated, selected], IMAP, Res, !IO).
 
-:- pred do_select_or_examine(bool::in, mailbox::in, imap::in, imap_result::out,
-    io::di, io::uo) is det.
+:- pred do_select_or_examine(bool::in, mailbox::in, list(select_param)::in,
+    imap::in, imap_result::out, io::di, io::uo) is det.
 
-do_select_or_examine(DoSelect, Mailbox, IMAP, Res, !IO) :-
+do_select_or_examine(DoSelect, Mailbox, Params, IMAP, Res, !IO) :-
     get_new_tag(IMAP, Pipe, Tag, !IO),
     (
         DoSelect = yes,
-        Command = select(Mailbox)
+        Command = select(Mailbox, Params)
     ;
         DoSelect = no,
-        Command = examine(Mailbox)
+        Command = examine(Mailbox, Params)
     ),
     make_command_stream(Tag - command_auth(Command), CommandStream),
     write_command_stream(Pipe, Tag, CommandStream, Res0, !IO),

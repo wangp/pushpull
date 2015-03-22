@@ -23,8 +23,8 @@
     --->    append(mailbox, list(flag), maybe(date_time), binary_string)
     %;      create
     %;      delete
-    ;       select(mailbox)
-    ;       examine(mailbox)
+    ;       select(mailbox, list(select_param))
+    ;       examine(mailbox, list(select_param))
     %;      list
     %;      lsub
     %;      rename
@@ -258,17 +258,26 @@ escape_for_quoted_string(S0) = S :-
         add(sp, !Acc),
         add(literal(Literal), !Acc)
     ),
-    add(select(Mailbox)) -->
+    add(Command, !Acc) :-
     (
-        add("SELECT"),
-        add(sp),
-        add(Mailbox)
-    ),
-    add(examine(Mailbox)) -->
-    (
-        add("EXAMINE"),
-        add(sp),
-        add(Mailbox)
+        (
+            Command = select(Mailbox, Params),
+            CommandString = "SELECT"
+        ;
+            Command = examine(Mailbox, Params),
+            CommandString = "EXAMINE"
+        ),
+        add(CommandString, !Acc),
+        add(sp, !Acc),
+        add(Mailbox, !Acc),
+        (
+            Params = []
+        ;
+            Params = [_ | _],
+            add(" (", !Acc),
+            add_sp_sep_list(Params, !Acc),
+            add(")", !Acc)
+        )
     ),
     add(idle) -->
     (
@@ -377,6 +386,10 @@ escape_for_quoted_string(S0) = S :-
 :- instance add(mailbox) where [
     add(inbox) --> add("INBOX"),
     add(astring(S)) --> add(S)
+].
+
+:- instance add(select_param) where [
+    add(condstore) --> add("CONDSTORE")
 ].
 
 :- instance add(charset) where [

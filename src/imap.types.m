@@ -74,6 +74,9 @@
 :- type charset
     --->    charset(astring).
 
+:- type select_param
+    --->    condstore.
+
 :- type search_key
     --->    (all)
     ;       answered

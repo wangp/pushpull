@@ -407,7 +407,9 @@ do_login(Log, Config, Password, IMAP, Res, !IO) :-
 logged_in(Log, Config, Db, IMAP, Inotify, Res, !DirCache, !IO) :-
     LocalMailboxName = Config ^ local_mailbox_name,
     RemoteMailboxName = Config ^ mailbox,
-    select(IMAP, RemoteMailboxName, Res0, !IO),
+    % [RFC 7162] HIGHESTMODSEQ is only required once a CONDSTORE enabling
+    % command is issued.
+    select(IMAP, RemoteMailboxName, [condstore], Res0, !IO),
     (
         Res0 = ok(result(Status, Text, Alerts)),
         report_alerts(Log, Alerts, !IO),
