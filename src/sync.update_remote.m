@@ -282,7 +282,7 @@ get_batch_max(KnownUIDs, uid(BatchMin), MaybeRangeMax,
         ResultSet = difference(KnownUIDs,
             make_interval_set(uid(zero), uid(BatchMin - one)))
     ),
-    ( count(ResultSet) =< max_batch_size ->
+    ( count(ResultSet) =< integer(max_batch_size) ->
         BatchMax = star,
         MaybeNextBatchMin = no
     ;

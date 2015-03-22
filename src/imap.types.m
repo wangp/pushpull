@@ -4,7 +4,6 @@
 :- interface.
 
 :- import_module diet.
-:- import_module enum.
 :- import_module integer.
 :- import_module set.
 
@@ -284,8 +283,9 @@
 
 %-----------------------------------------------------------------------------%
 
-    % XXX diet uses int internally but UIDs may overflow 32-bit signed ints
-:- instance enum(uid).
+:- instance diet_element(uid).
+
+:- func count(diet(uid)) = integer.
 
 :- pred mod_seq_value < mod_seq_value.
 :- mode in < in is semidet.
@@ -303,7 +303,7 @@
     <= sequence_set_number(T).
 
 :- pred diet_to_sequence_set(diet(T)::in, sequence_set(T)::out) is semidet
-    <= (enum(T), sequence_set_number(T)).
+    <= (diet_element(T), sequence_set_number(T)).
 
 :- func make_astring(string) = astring.
 
@@ -327,19 +327,19 @@
 
 %-----------------------------------------------------------------------------%
 
-    % XXX diet uses int internally but UIDs may overflow 32-bit signed ints
-:- instance enum(uid) where [
-    from_int(Int) = uid(integer(Int)) :- Int > 0,
-    to_int(uid(Integer)) = Int :-
-    (
-        ( string.to_int(to_string(Integer), IntPrime) ->
-            Int = IntPrime
-        ;
-            sorry($module, $pred,
-                "UID to int conversion failed (probably overflow)")
-        )
-    )
+:- instance diet_element(uid) where [
+    less_than(uid(X), uid(Y)) :- X < Y,
+    successor(uid(X)) = uid(X + one),
+    predecessor(uid(X)) = uid(X - one)
 ].
+
+count(UIDs) = Count :-
+    foldl_intervals(count_2, UIDs, zero, Count).
+
+:- pred count_2(uid::in, uid::in, integer::in, integer::out) is det.
+
+count_2(uid(Lo), uid(Hi), Count0, Count) :-
+    Count = Count0 + (Hi - Lo + one).
 
 %-----------------------------------------------------------------------------%
 

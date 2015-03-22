@@ -17,6 +17,7 @@
 
 :- import_module diet.
 :- import_module int.
+:- import_module integer.
 :- import_module list.
 :- import_module map.
 :- import_module pair.
@@ -160,8 +161,8 @@ propagate_flag_deltas_by_group_2(Log, Db, IMAP, Changes, Group,
     Group = group(UIDs, PairingIds),
 
     log_info(Log,
-        format("Applying changes to %d remote messages (%d of %d): %s",
-            [i(count(UIDs)), i(Count), i(NumGroups),
+        format("Applying changes to %s remote messages (%d of %d): %s",
+            [s(to_string(count(UIDs))), i(Count), i(NumGroups),
             s(show_changes(Changes))]), !IO),
 
     ( diet_to_sequence_set(UIDs, SequenceSet) ->
