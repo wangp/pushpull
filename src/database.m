@@ -391,7 +391,7 @@
 :- instance convert(string, uid) where [
     convert(S, uid(Integer)) :-
     (
-        Integer = integer.from_string(S),
+        integer.from_string(S, Integer),
         Integer > zero
     )
 ].
@@ -399,7 +399,7 @@
 :- instance convert(string, mod_seq_value) where [
     convert(S, mod_seq_value(Integer)) :-
     (
-        Integer = integer.from_string(S),
+        integer.from_string(S, Integer),
         Integer > zero
     )
 ].
@@ -407,7 +407,7 @@
 :- instance convert(string, mod_seq_valzer) where [
     convert(S, mod_seq_valzer(Integer)) :-
     (
-        Integer = integer.from_string(S),
+        integer.from_string(S, Integer),
         Integer >= zero
     )
 ].

@@ -217,7 +217,7 @@ number_int(Src, Int, !PS) :-
 number(Src, Integer, !PS) :-
     one_or_more_chars(char.is_digit, Src, Chars, !PS),
     string.from_char_list(Chars, String),
-    integer.from_string(String) = Integer,
+    integer.from_string(String, Integer),
     zero =< Integer, Integer < det_from_string("4294967296").
 
 :- pred nz_number(src::in, integer::out, ps::in, ps::out) is semidet.
@@ -226,7 +226,7 @@ nz_number(Src, Integer, !PS) :-
     digit_nz(Src, Char, !PS),
     zero_or_more_chars(char.is_digit, Src, Chars, !PS),
     string.from_char_list([Char | Chars], String),
-    integer.from_string(String) = Integer,
+    integer.from_string(String, Integer),
     Integer < det_from_string("4294967296").
 
 :- pred digit_nz(src::in, char::out, ps::in, ps::out) is semidet.
@@ -248,7 +248,7 @@ mod_seq_value(Src, mod_seq_value(N), !PS) :-
 mod_seq_valzer(Src, Integer, !PS) :-
     one_or_more_chars(char.is_digit, Src, Chars, !PS),
     string.from_char_list(Chars, String),
-    integer.from_string(String) = Integer,
+    integer.from_string(String, Integer),
     zero =< Integer, Integer < det_from_string("18446744073709551615").
 
 :- pred astring(src::in, astring::out, ps::in, ps::out, io::di, io::uo) is det.
