@@ -39,6 +39,12 @@
 :- import_module sync.
 :- import_module terminal_attr.
 
+:- type result_restart == pair(maybe_result, restart).
+
+:- type restart
+    --->    stop
+    ;       delayed_restart.
+
 :- type idle_next
     --->    quit
     ;       sync(requires_check)
@@ -131,12 +137,41 @@ main_3(Log, Config, Password, Db, Inotify, !IO) :-
     LocalMailboxPath = make_local_mailbox_path(Config, LocalMailboxName),
     LocalMailboxPath = local_mailbox_path(DirName),
     DirCache0 = dir_cache.init(dirname(DirName)),
-    main_4(Log, Config, Password, Db, Inotify, DirCache0, !IO).
+    main_4(Log, Config, Password, Db, Inotify, DirCache0, _, !IO).
 
 :- pred main_4(log::in, prog_config::in, password::in, database::in,
-    inotify(S)::in, dir_cache::in, io::di, io::uo) is det.
+    inotify(S)::in, dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
-main_4(Log, Config, Password, Db, Inotify, DirCache0, !IO) :-
+main_4(Log, Config, Password, Db, Inotify, !DirCache, !IO) :-
+    main_5(Log, Config, Password, Db, Inotify, Restart, !DirCache, !IO),
+    (
+        Restart = stop
+    ;
+        Restart = delayed_restart,
+        MaybeDelay = Config ^ restart_after_error_seconds,
+        (
+            MaybeDelay = yes(Delay),
+            log_notice(Log,
+                format("Restarting after %d second delay.\n", [i(Delay)]),
+                !IO),
+            sleep(Delay, !IO),
+            get_sigint_count(SigInt, !IO),
+            ( SigInt > 0 ->
+                log_notice(Log, "Stopping.\n", !IO)
+            ;
+                log_notice(Log, "Restarting.\n", !IO),
+                main_4(Log, Config, Password, Db, Inotify, !DirCache, !IO)
+            )
+        ;
+            MaybeDelay = no
+        )
+    ).
+
+:- pred main_5(log::in, prog_config::in, password::in, database::in,
+    inotify(S)::in, restart::out, dir_cache::in, dir_cache::out,
+    io::di, io::uo) is det.
+
+main_5(Log, Config, Password, Db, Inotify, Restart, !DirCache, !IO) :-
     open_connection(Log, Config, ResBio, !IO),
     (
         ResBio = ok(Bio),
@@ -147,42 +182,35 @@ main_4(Log, Config, Password, Db, Inotify, DirCache0, !IO) :-
             do_login(Log, Config, Password, IMAP, ResLogin, !IO),
             (
                 ResLogin = yes,
-                logged_in(Log, Config, Db, IMAP, Inotify, Res,
-                    DirCache0, DirCache1, !IO),
+                logged_in(Log, Config, Db, IMAP, Inotify, Res - Restart,
+                    !DirCache, !IO),
                 (
-                    Res = ok,
-                    Restart = no
+                    Res = ok
                 ;
                     Res = eof,
-                    report_error(Log, "unexpected eof", !IO),
-                    Restart = yes
+                    report_error(Log, "unexpected eof", !IO)
                 ;
                     Res = error(Error),
-                    report_error(Log, Error, !IO),
-                    Restart = no
+                    report_error(Log, Error, !IO)
                 )
             ;
                 ResLogin = no,
-                Restart = no,
-                DirCache1 = DirCache0
+                % XXX probably should not restart if the password was
+                % rejected
+                Restart = delayed_restart
             ),
             logout_and_close(IMAP, ResLogout, !IO),
-            log_debug(Log, string(ResLogout), !IO),
-            (
-                Restart = yes,
-                log_notice(Log, "Restarting.\n", !IO),
-                main_4(Log, Config, Password, Db, Inotify, DirCache1, !IO)
-            ;
-                Restart = no
-            )
+            log_debug(Log, string(ResLogout), !IO)
         ;
             ResOpen = error(Error),
-            report_error(Log, Error, !IO)
+            report_error(Log, Error, !IO),
+            Restart = delayed_restart
         )
         % Bio freed already.
     ;
         ResBio = error(Error),
-        report_error(Log, Error, !IO)
+        report_error(Log, Error, !IO),
+        Restart = delayed_restart
     ).
 
 :- pred debugging_grade is semidet.
@@ -401,7 +429,7 @@ do_login(Log, Config, Password, IMAP, Res, !IO) :-
 %-----------------------------------------------------------------------------%
 
 :- pred logged_in(log::in, prog_config::in, database::in, imap::in,
-    inotify(S)::in, maybe_result::out, dir_cache::in, dir_cache::out,
+    inotify(S)::in, result_restart::out, dir_cache::in, dir_cache::out,
     io::di, io::uo) is det.
 
 logged_in(Log, Config, Db, IMAP, Inotify, Res, !DirCache, !IO) :-
@@ -440,14 +468,14 @@ logged_in(Log, Config, Db, IMAP, Inotify, Res, !DirCache, !IO) :-
                             scan_all, Res, !DirCache, !IO)
                     ;
                         ResLookup = error(Error),
-                        Res = error(Error)
+                        Res = error(Error) - stop
                     )
                 ;
                     ResInsert = error(Error),
-                    Res = error(Error)
+                    Res = error(Error) - stop
                 )
             ;
-                Res = error("Cannot support this server.")
+                Res = error("Cannot support this server.") - stop
             )
         ;
             ( Status = no
@@ -455,19 +483,19 @@ logged_in(Log, Config, Db, IMAP, Inotify, Res, !DirCache, !IO) :-
             ; Status = bye
             ; Status = continue
             ),
-            Res = error(Text)
+            Res = error(Text) - stop % perhaps restartable
         )
     ;
         Res0 = eof,
-        Res = eof
+        Res = eof - delayed_restart
     ;
         Res0 = error(Error),
-        Res = error(Error)
+        Res = error(Error) - delayed_restart
     ).
 
 :- pred sync_and_repeat(log::in, prog_config::in, database::in, imap::in,
     inotify(S)::in, mailbox_pair::in, requires_check::in, update_method::in,
-    maybe_result::out, dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+    result_restart::out, dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
 sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, Shortcut0,
         DirCacheUpdate0, Res, !DirCache, !IO) :-
@@ -481,12 +509,12 @@ sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, Shortcut0,
             LastModSeqValzer, Shortcut0, DirCacheUpdate0, ResSync,
             !DirCache, !IO),
         (
-            ResSync = ok,
+            ResSync = ok(ok),
             get_sigint_count(SigInt, !IO),
             ( SigInt > 0 ->
-                Res = ok
+                Res = ok - stop
             ; Config ^ idle = no ->
-                Res = ok
+                Res = ok - stop
             ;
                 sync_and_repeat_2(Log, Config, IMAP, Inotify, Res1,
                     DirCacheUpdate1, !DirCache, !IO),
@@ -497,23 +525,28 @@ sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, Shortcut0,
                         Res, !DirCache, !IO)
                 ;
                     Res1 = ok(quit),
-                    Res = ok
+                    Res = ok - stop
                 ;
-                    ( Res1 = eof
-                    ; Res1 = error(_)
-                    ),
-                    Res = convert(Res1)
+                    Res1 = eof,
+                    Res = eof - delayed_restart
+                ;
+                    Res1 = error(Error),
+                    Res = error(Error) - delayed_restart % sometimes
                 )
             )
         ;
-            ( ResSync = eof
-            ; ResSync = error(_)
-            ),
-            Res = ResSync
+            ResSync = ok(error(PostSyncError)),
+            Res = error(PostSyncError) - stop
+        ;
+            ResSync = eof,
+            Res = eof - delayed_restart
+        ;
+            ResSync = error(Error),
+            Res = error(Error) - delayed_restart % sometimes
         )
     ;
         ResLastModSeqValzer = error(Error),
-        Res = error(Error)
+        Res = error(Error) - stop
     ).
 
 :- pred sync_and_repeat_2(log::in, prog_config::in, imap::in, inotify(S)::in,

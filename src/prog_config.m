@@ -17,6 +17,7 @@
 
 :- type prog_config
     --->    prog_config(
+                restart_after_error_seconds :: maybe(int),
                 maybe_log_filename :: maybe(string),
                 log_level :: level,
                 db_filename :: string,
@@ -109,6 +110,17 @@ load_prog_config(FileName, PairingName, Res, !IO) :-
     list(string)::in, list(string)::out, io::di, io::uo) is cc_multi.
 
 make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
+    ( nonempty(Config, "general", "restart_after_error_seconds", Seconds0) ->
+        ( nonnegative_int(Seconds0, Seconds) ->
+            RestartAfterErrorSeconds = yes(Seconds)
+        ;
+            RestartAfterErrorSeconds = no,
+            cons("general.restart_after_error_seconds invalid: " ++ Seconds0, !Errors)
+        )
+    ;
+        RestartAfterErrorSeconds = no
+    ),
+
     ( nonempty(Config, "log", "file", LogFileName) ->
         MaybeLogFileName = yes(LogFileName)
     ;
@@ -278,7 +290,8 @@ make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
         CommandPostSyncLocal = maybe.no
     ),
 
-    ProgConfig = prog_config(MaybeLogFileName, LogLevel, DbFileName,
+    ProgConfig = prog_config(RestartAfterErrorSeconds,
+        MaybeLogFileName, LogLevel, DbFileName,
         MaildirRoot, Fsync, Buckets, Quiesce, LocalMailboxName,
         Host, CertMatchName, UserName, MaybePassword, RemoteMailboxName,
         Idle, IdleTimeoutSecs, SyncOnIdleTimeout, MaybeCertificateFile,

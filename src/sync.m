@@ -4,6 +4,7 @@
 :- interface.
 
 :- import_module io.
+:- import_module maybe.
 
 :- import_module database.
 :- import_module dir_cache.
@@ -26,8 +27,8 @@
 
 :- pred sync_mailboxes(log::in, prog_config::in, database::in, imap::in,
     inotify(S)::in, mailbox_pair::in, mod_seq_valzer::in, requires_check::in,
-    update_method::in, maybe_result::out, dir_cache::in, dir_cache::out,
-    io::di, io::uo) is det.
+    update_method::in, maybe_result(maybe_error)::out,
+    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -68,8 +69,8 @@ sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
 
 :- pred sync_mailboxes_2(log::in, prog_config::in, database::in, imap::in,
     inotify(S)::in, mailbox_pair::in, mod_seq_valzer::in, requires_check::in,
-    update_method::in, maybe_result::out, dir_cache::in, dir_cache::out,
-    bool::in, bool::out, io::di, io::uo) is det.
+    update_method::in, maybe_result(maybe_error)::out,
+    dir_cache::in, dir_cache::out, bool::in, bool::out, io::di, io::uo) is det.
 
 sync_mailboxes_2(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
         RequiresCheck, DirCacheUpdate, !:Res, !DirCache, !LocalChanges, !IO) :-
@@ -149,10 +150,17 @@ sync_mailboxes_2(Log, Config, Db, IMAP, Inotify, MailboxPair, LastModSeqValzer,
     ;
         true
     ),
-    ( !.Res = ok ->
-        maybe_call_command_post_sync(Log, Config, !.LocalChanges, !:Res, !IO)
+    (
+        !.Res = ok,
+        maybe_call_command_post_sync(Log, Config, !.LocalChanges, PostSync,
+            !IO),
+        !:Res = ok(PostSync)
     ;
-        true
+        !.Res = eof,
+        !:Res = eof
+    ;
+        !.Res = error(Error),
+        !:Res = error(Error)
     ).
 
 :- pred force_check_local(inotify(S)::in, check::in, check::out,
@@ -208,7 +216,7 @@ propagate_flag_deltas(Log, Config, Db, IMAP, MailboxPair, Res,
     ).
 
 :- pred maybe_call_command_post_sync(log::in, prog_config::in, bool::in,
-    maybe_result::out, io::di, io::uo) is det.
+    maybe_error::out, io::di, io::uo) is det.
 
 maybe_call_command_post_sync(Log, Config, LocalChanges, Res, !IO) :-
     (
@@ -221,7 +229,7 @@ maybe_call_command_post_sync(Log, Config, LocalChanges, Res, !IO) :-
     ).
 
 :- pred call_command_post_sync(log::in, prog_config::in,
-    maybe_result::out, io::di, io::uo) is det.
+    maybe_error::out, io::di, io::uo) is det.
 
 call_command_post_sync(Log, Config, Res, !IO) :-
     MaybeCommand = Config ^ command_post_sync_local_change,

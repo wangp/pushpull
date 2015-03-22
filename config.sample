@@ -1,3 +1,6 @@
+[general]
+restart_after_error_seconds = 600
+
 [log]
 file = plugsink.log
 level = info
