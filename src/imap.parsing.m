@@ -67,8 +67,6 @@
 :- import_module exception.
 :- import_module string.
 
-:- import_module digit.
-
 %-----------------------------------------------------------------------------%
 
 eof(_, []).
@@ -109,7 +107,7 @@ digit_char(Src, C, !PS) :-
 
 digit(Src, I, !PS) :-
     digit_char(Src, C, !PS),
-    digit.decimal_digit_to_int(C, I).
+    char.decimal_digit_to_int(C, I).
 
 two_digit(Src, I, !PS) :-
     digit(Src, A, !PS),
