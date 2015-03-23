@@ -43,6 +43,7 @@
 
 :- type restart
     --->    stop
+    ;       immediate_restart
     ;       delayed_restart.
 
 :- type idle_next
@@ -146,6 +147,10 @@ main_4(Log, Config, Password, Db, Inotify, !DirCache, !IO) :-
     main_5(Log, Config, Password, Db, Inotify, Restart, !DirCache, !IO),
     (
         Restart = stop
+    ;
+        Restart = immediate_restart,
+        log_notice(Log, "Restarting.\n", !IO),
+        main_4(Log, Config, Password, Db, Inotify, !DirCache, !IO)
     ;
         Restart = delayed_restart,
         MaybeDelay = Config ^ restart_after_error_seconds,
@@ -528,7 +533,7 @@ sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, Shortcut0,
                     Res = ok - stop
                 ;
                     Res1 = eof,
-                    Res = eof - delayed_restart
+                    Res = eof - immediate_restart
                 ;
                     Res1 = error(Error),
                     Res = error(Error) - delayed_restart % sometimes
@@ -539,7 +544,7 @@ sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, Shortcut0,
             Res = error(PostSyncError) - stop
         ;
             ResSync = eof,
-            Res = eof - delayed_restart
+            Res = eof - immediate_restart
         ;
             ResSync = error(Error),
             Res = error(Error) - delayed_restart % sometimes
