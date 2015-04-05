@@ -185,27 +185,40 @@ main_5(Log, Config, Password, Db, Inotify, Restart, !DirCache, !IO) :-
         (
             ResOpen = ok(IMAP),
             do_login(Log, Config, Password, IMAP, ResLogin, !IO),
+            % ResLogin already logged.
             (
-                ResLogin = yes,
-                logged_in(Log, Config, Db, IMAP, Inotify, Res - Restart,
-                    !DirCache, !IO),
+                ResLogin = ok,
+                logged_in(Log, Config, Db, IMAP, Inotify,
+                    ResPostLogin - Restart, !DirCache, !IO),
                 (
-                    Res = ok
+                    ResPostLogin = ok
                 ;
-                    Res = eof,
-                    report_error(Log, "unexpected eof", !IO)
+                    ResPostLogin = eof,
+                    log_notice(Log, "Connection was closed prematurely.", !IO)
                 ;
-                    Res = error(Error),
+                    ResPostLogin = error(Error),
                     report_error(Log, Error, !IO)
                 )
             ;
-                ResLogin = no,
-                % XXX probably should not restart if the password was
-                % rejected
+                ResLogin = eof,
+                ResPostLogin = eof,
+                Restart = delayed_restart
+            ;
+                ResLogin = error(LoginError),
+                ResPostLogin = error(LoginError),
+                % XXX separate permanent and transient login failures
                 Restart = delayed_restart
             ),
-            logout_and_close(IMAP, ResLogout, !IO),
-            log_debug(Log, string(ResLogout), !IO)
+            (
+                ( ResPostLogin = ok
+                ; ResPostLogin = error(_)
+                ),
+                logout(IMAP, ResLogout, !IO),
+                log_debug(Log, string(ResLogout), !IO)
+            ;
+                ResPostLogin = eof
+            ),
+            close(IMAP, !IO)
         ;
             ResOpen = error(Error),
             report_error(Log, Error, !IO),
@@ -267,7 +280,7 @@ prompt_password(username(UserName), HostPort, Res, !IO) :-
             Res = ok(Password)
         ;
             ResRead = eof,
-            Res = error("unexpected eof")
+            Res = error("unexpected eof in " ++ $pred)
         ;
             ResRead = error(Error),
             Res = error(io.error_message(Error))
@@ -400,7 +413,7 @@ log_certificate_names(Log, certificate_names(CommonName, DnsNames), !IO) :-
 %-----------------------------------------------------------------------------%
 
 :- pred do_login(log::in, prog_config::in, password::in, imap::in,
-    bool::out, io::di, io::uo) is det.
+    maybe_result::out, io::di, io::uo) is det.
 
 do_login(Log, Config, Password, IMAP, Res, !IO) :-
     UserName = Config ^ username,
@@ -411,24 +424,24 @@ do_login(Log, Config, Password, IMAP, Res, !IO) :-
         (
             ResLogin = ok,
             log_info(Log, LoginMessage, !IO),
-            Res = yes
+            Res = ok
         ;
             ( ResLogin = no
             ; ResLogin = bad
             ; ResLogin = bye
             ; ResLogin = continue
             ),
-            report_error(Log, LoginMessage, !IO),
-            Res = no
+            log_error(Log, LoginMessage, !IO),
+            Res = error(LoginMessage)
         )
     ;
         Res0 = eof,
-        report_error(Log, "unexpected eof", !IO),
-        Res = no
+        report_error(Log, "unexpected eof in" ++ $pred, !IO),
+        Res = eof
     ;
         Res0 = error(Error),
         report_error(Log, Error, !IO),
-        Res = no
+        Res = error(Error)
     ).
 
 %-----------------------------------------------------------------------------%
@@ -728,7 +741,8 @@ idle_until_done(Log, Config, IMAP, Inotify, EndTime, Res, !DirCache, !IO) :-
                 ; Status = bye
                 ; Status = continue
                 ),
-                Res = error("unexpected response to IDLE DONE: " ++ DoneText)
+                Res = error("unexpected response to IDLE DONE: " ++
+                    DoneText)
             )
         ;
             Res1 = eof,
@@ -857,6 +871,7 @@ do_read_idle_response(Log, IMAP, Res, !RequiresCheck, !IO) :-
         Res = ok
     ;
         ResRead = ok(bye - Alerts),
+        log_notice(Log, "Received BYE from server.", !IO),
         report_alerts(Log, Alerts, !IO),
         Res = eof
     ;

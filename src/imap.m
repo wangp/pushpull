@@ -66,12 +66,14 @@
 :- pred open(openssl.bio::in, maybe_error(imap)::out, list(alert)::out,
     io::di, io::uo) is det.
 
+:- pred close(imap::in, io::di, io::uo) is det.
+
 :- pred login(imap::in, username::in, imap.password::in, imap_result::out,
     io::di, io::uo) is det.
 
 :- pred noop(imap::in, imap_result::out, io::di, io::uo) is det.
 
-:- pred logout_and_close(imap::in, imap_result::out, io::di, io::uo) is det.
+:- pred logout(imap::in, imap_result::out, io::di, io::uo) is det.
 
 :- func mailbox(string) = mailbox.
 
@@ -276,7 +278,7 @@ open(Bio, Res, Alerts, !IO) :-
         )
     ;
         ResGreeting = eof,
-        Res = error("unexpected eof"),
+        Res = error("unexpected eof in " ++ $pred),
         Alerts = []
     ;
         ResGreeting = error(Error),
@@ -366,6 +368,24 @@ make_imap(Bio, ConnState, MaybeCaps, IMAP, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
+close(IMAP, !IO) :-
+    close_pipe(IMAP, !IO).
+
+:- pred close_pipe(imap::in, io::di, io::uo) is det.
+
+close_pipe(IMAP, !IO) :-
+    IMAP = imap(PipeMutvar, _TagMutvar, _StateMutvar),
+    get_mutvar(PipeMutvar, MaybePipe, !IO),
+    (
+        MaybePipe = open(Bio),
+        bio_free_all(Bio, !IO),
+        set_mutvar(PipeMutvar, closed, !IO)
+    ;
+        MaybePipe = closed
+    ).
+
+%-----------------------------------------------------------------------------%
+
 :- pred command_wrapper_low(pred(imap, T, io, io),
     list(connection_state), imap, maybe_error(T), io, io).
 :- mode command_wrapper_low(in(pred(in, out, di, uo) is det),
@@ -409,19 +429,6 @@ close_pipe_on_logout(IMAP, !IO) :-
         ; ConnStateAfter = idle_authenticated(_)
         ; ConnStateAfter = idle_selected(_)
         )
-    ).
-
-:- pred close_pipe(imap::in, io::di, io::uo) is det.
-
-close_pipe(IMAP, !IO) :-
-    IMAP = imap(PipeMutvar, _TagMutvar, _StateMutvar),
-    get_mutvar(PipeMutvar, MaybePipe, !IO),
-    (
-        MaybePipe = open(Bio),
-        bio_free_all(Bio, !IO),
-        set_mutvar(PipeMutvar, closed, !IO)
-    ;
-        MaybePipe = closed
     ).
 
 :- pred get_connection_state(imap::in, connection_state::out, io::di, io::uo)
@@ -690,7 +697,7 @@ apply_noop_response(Response, unit, !State, !Alerts, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-logout_and_close(IMAP, Res, !IO) :-
+logout(IMAP, Res, !IO) :-
     command_wrapper(do_logout, [not_authenticated, authenticated, selected],
         IMAP, Res, !IO),
     close_pipe(IMAP, !IO).
@@ -1291,26 +1298,43 @@ read_single_idle_response(IMAP, Res, !IO) :-
 
 apply_idle_untagged_response(ResponseData, Stop - Alerts, !State, !R, !IO) :-
     apply_untagged_response(ResponseData, !State, [], Alerts, !R),
-    ( stop_idling(ResponseData) ->
-        Stop = stop_idling
+    ( stop_idling(ResponseData, StopPrime) ->
+        Stop = StopPrime
     ;
         Stop = continue_idling
     ).
 
-:- pred stop_idling(untagged_response_data::in) is semidet.
+:- pred stop_idling(untagged_response_data::in, stop_or_continue::out)
+    is semidet.
 
-stop_idling(ResponseData) :-
+stop_idling(ResponseData, Stop) :-
     require_complete_switch [ResponseData]
     (
         ResponseData = cond_or_bye(Cond, _),
-        % Dovecot sends OK Still here which we can ignore.
-        Cond \= ok
+        require_complete_switch [Cond]
+        (
+            Cond = ok,
+            % Dovecot sends "OK Still here" which we can ignore.
+            fail
+        ;
+            Cond = no,
+            Stop = stop_idling
+        ;
+            Cond = bad,
+            Stop = stop_idling
+        ;
+            Cond = bye,
+            Stop = bye
+        ;
+            Cond = continue, % unexpected
+            fail
+        )
     ;
-        ResponseData = mailbox_data(_)
-    ;
-        ResponseData = message_data(_)
-    ;
-        ResponseData = capability_data(_)
+        ( ResponseData = mailbox_data(_)
+        ; ResponseData = message_data(_)
+        ; ResponseData = capability_data(_)
+        ),
+        Stop = stop_idling
     ).
 
 %-----------------------------------------------------------------------------%
