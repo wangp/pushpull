@@ -5,7 +5,7 @@
 
 :- import_module io.
 
-:- pred main(io::di, io::uo) is cc_multi.
+:- pred real_main(io::di, io::uo) is cc_multi.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -57,7 +57,7 @@
 
 %-----------------------------------------------------------------------------%
 
-main(!IO) :-
+real_main(!IO) :-
     io.command_line_arguments(Args, !IO),
     ( Args = [ConfigFileName, PairingName] ->
         load_prog_config(ConfigFileName, PairingName, LoadRes, !IO),

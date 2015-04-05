@@ -1,9 +1,9 @@
 # Default target for mmc --make.
-MAIN_TARGET = main
+MAIN_TARGET = plugsink
 
 # Linking.
-MLLIBS-main += -lsqlite3
-MLLIBS-main += -lssl -lcrypto
+MLLIBS-plugsink += -lsqlite3
+MLLIBS-plugsink += -lssl -lcrypto
 
 # General optimisation flags.
 MCFLAGS += --optimise-constructor-last-call
