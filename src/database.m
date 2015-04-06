@@ -520,6 +520,11 @@ misc_init = "
     /* Foreign keys are off by default */
     PRAGMA foreign_keys = ON;
 
+    /* Take persistent lock */
+    PRAGMA locking_mode = EXCLUSIVE;
+    BEGIN EXCLUSIVE;
+    COMMIT;
+
     ATTACH DATABASE ':memory:' AS mem;
 ".
 
