@@ -31,6 +31,7 @@
                 username :: username,
                 password :: maybe(password),
                 mailbox :: mailbox,
+                mailbox_string :: string,
                 idle :: bool,
                 idle_timeout_seconds :: int,
                 sync_on_idle_timeout :: bool,
@@ -273,14 +274,17 @@ make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
         ),
 
         ( nonempty(PairingSection, "remote", RemoteMailboxName0) ->
-            RemoteMailboxName = mailbox(RemoteMailboxName0)
+            RemoteMailboxName = mailbox(RemoteMailboxName0),
+            RemoteMailboxString = RemoteMailboxName0
         ;
             RemoteMailboxName = mailbox(""),
+            RemoteMailboxString = "",
             cons("missing remote in section: " ++ PairingSectionName, !Errors)
         )
     ;
         LocalMailboxName = local_mailbox_name(""),
         RemoteMailboxName = mailbox(""),
+        RemoteMailboxString = "",
         cons("missing section: " ++ PairingSectionName, !Errors)
     ),
 
@@ -293,7 +297,8 @@ make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
     ProgConfig = prog_config(RestartAfterErrorSeconds,
         MaybeLogFileName, LogLevel, DbFileName,
         MaildirRoot, Fsync, Buckets, Quiesce, LocalMailboxName,
-        Host, CertMatchName, UserName, MaybePassword, RemoteMailboxName,
+        Host, CertMatchName, UserName, MaybePassword,
+        RemoteMailboxName, RemoteMailboxString,
         Idle, IdleTimeoutSecs, SyncOnIdleTimeout, MaybeCertificateFile,
         CommandPostSyncLocal).
 

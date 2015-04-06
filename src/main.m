@@ -14,6 +14,7 @@
 
 :- import_module benchmarking.
 :- import_module bool.
+:- import_module dir.
 :- import_module int.
 :- import_module integer.
 :- import_module list.
@@ -23,6 +24,7 @@
 
 :- import_module database.
 :- import_module dir_cache.
+:- import_module file_util.
 :- import_module gettimeofday.
 :- import_module imap.
 :- import_module imap.types.
@@ -451,7 +453,6 @@ do_login(Log, Config, Password, IMAP, Res, !IO) :-
     io::di, io::uo) is det.
 
 logged_in(Log, Config, Db, IMAP, Inotify, Res, !DirCache, !IO) :-
-    LocalMailboxName = Config ^ local_mailbox_name,
     RemoteMailboxName = Config ^ mailbox,
     % [RFC 7162] HIGHESTMODSEQ is only required once a CONDSTORE enabling
     % command is issued.
@@ -473,25 +474,8 @@ logged_in(Log, Config, Db, IMAP, Inotify, Res, !DirCache, !IO) :-
                 MaybeUIDValidity = yes(UIDValidity),
                 MaybeHighestModSeqValue = yes(highestmodseq(_))
             ->
-                insert_or_ignore_mailbox_pair(Db, LocalMailboxName,
-                    RemoteMailboxName, UIDValidity, ResInsert, !IO),
-                (
-                    ResInsert = ok,
-                    lookup_mailbox_pair(Db, LocalMailboxName,
-                        RemoteMailboxName, UIDValidity, ResLookup, !IO),
-                    (
-                        ResLookup = ok(MailboxPair),
-                        sync_and_repeat(Log, Config, Db, IMAP, Inotify,
-                            MailboxPair, requires_check(check, check),
-                            scan_all, Res, !DirCache, !IO)
-                    ;
-                        ResLookup = error(Error),
-                        Res = error(Error) - stop
-                    )
-                ;
-                    ResInsert = error(Error),
-                    Res = error(Error) - stop
-                )
+                logged_in_selected(Log, Config, Db, IMAP, Inotify, UIDValidity,
+                    Res, !DirCache, !IO)
             ;
                 Res = error("Cannot support this server.") - stop
             )
@@ -510,6 +494,214 @@ logged_in(Log, Config, Db, IMAP, Inotify, Res, !DirCache, !IO) :-
         Res0 = error(Error),
         Res = error(Error) - delayed_restart
     ).
+
+:- pred logged_in_selected(log::in, prog_config::in, database::in, imap::in,
+    inotify(S)::in, uidvalidity::in, result_restart::out,
+    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+
+logged_in_selected(Log, Config, Db, IMAP, Inotify, UIDValidity, Res,
+        !DirCache, !IO) :-
+    LocalMailboxName = Config ^ local_mailbox_name,
+    LocalMailboxPath = make_local_mailbox_path(Config, LocalMailboxName),
+    LocalMailboxPath = local_mailbox_path(DirName),
+    RemoteMailboxName = Config ^ mailbox,
+    RemoteMailboxString = Config ^ mailbox_string,
+    % XXX maybe avoid interactive prompt after idling
+    check_sane_pairing(Db, LocalMailboxName, LocalMailboxPath,
+        RemoteMailboxName - RemoteMailboxString, UIDValidity, ResSane, !IO),
+    (
+        ResSane = ok,
+        insert_or_ignore_mailbox_pair(Db, LocalMailboxName, RemoteMailboxName,
+            UIDValidity, ResInsert, !IO),
+        (
+            ResInsert = ok,
+            lookup_mailbox_pair(Db, LocalMailboxName, RemoteMailboxName,
+                UIDValidity, ResLookup, !IO),
+            (
+                ResLookup = ok(MailboxPair),
+                log_notice(Log,
+                    format("Will synchronise '%s' with IMAP folder '%s'",
+                        [s(DirName), s(RemoteMailboxString)]), !IO),
+                sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair,
+                    requires_check(check, check), scan_all, Res,
+                    !DirCache, !IO)
+            ;
+                ResLookup = not_found,
+                Res = error("mailbox_pair not found") - stop
+            ;
+                ResLookup = error(Error),
+                Res = error(Error) - stop
+            )
+        ;
+            ResInsert = error(Error),
+            Res = error(Error) - stop
+        )
+    ;
+        ResSane = error(Error),
+        Res = error(Error) - stop
+    ).
+
+%-----------------------------------------------------------------------------%
+
+:- pred check_sane_pairing(database::in, local_mailbox_name::in,
+    local_mailbox_path::in, pair(mailbox, string)::in, uidvalidity::in,
+    maybe_error::out, io::di, io::uo) is det.
+
+check_sane_pairing(Db, LocalMailboxName, LocalMailboxPath,
+        RemoteMailboxName - RemoteMailboxString, UIDValidity, Res, !IO) :-
+    lookup_mailbox_pair(Db, LocalMailboxName, RemoteMailboxName, UIDValidity,
+        ResLookup, !IO),
+    (
+        (
+            ResLookup = ok(_),
+            KnownInDb = yes
+        ;
+            ResLookup = not_found,
+            KnownInDb = no
+        ),
+        check_sane_pairing_2(LocalMailboxPath, RemoteMailboxString,
+            UIDValidity, KnownInDb, Res, !IO)
+    ;
+        ResLookup = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred check_sane_pairing_2(local_mailbox_path::in, string::in,
+    uidvalidity::in, bool::in, maybe_error::out, io::di, io::uo) is det.
+
+check_sane_pairing_2(LocalMailboxPath, RemoteMailboxString, UIDValidity,
+        KnownInDb, Res, !IO) :-
+    LocalMailboxPath = local_mailbox_path(DirName),
+    file_exists(DirName, ResExists, !IO),
+    (
+        ResExists = yes(IsDir),
+        (
+            IsDir = yes,
+            DirExists = yes,
+            check_sane_pairing_3(LocalMailboxPath, DirExists,
+                RemoteMailboxString, UIDValidity, KnownInDb, Res, !IO)
+        ;
+            IsDir = no,
+            Res = error(DirName ++ " is not a directory")
+        )
+    ;
+        ResExists = no,
+        DirExists = no,
+        check_sane_pairing_3(LocalMailboxPath, DirExists,
+            RemoteMailboxString, UIDValidity, KnownInDb, Res, !IO)
+    ;
+        ResExists = error(Error),
+        Res = error(Error)
+    ).
+
+:- pred check_sane_pairing_3(local_mailbox_path::in, bool::in, string::in,
+    uidvalidity::in, bool::in, maybe_error::out, io::di, io::uo) is det.
+
+check_sane_pairing_3(LocalMailboxPath, DirExists, RemoteMailboxString,
+        UIDValidity, KnownInDb, Res, !IO) :-
+    (
+        KnownInDb = yes,
+        DirExists = yes,
+        Res = ok
+    ;
+        KnownInDb = yes,
+        DirExists = no,
+        % Every message in the remote mailbox would be marked as deleted if we
+        % continued.
+        LocalMailboxPath = local_mailbox_path(DirName),
+        Res = error(string.format(
+            "The directory '%s' does not exist but the pairing " ++
+            "is already known to the database.",
+            [s(DirName)]))
+    ;
+        KnownInDb = no,
+        DirExists = yes,
+        prompt_first_synchronisation(LocalMailboxPath, RemoteMailboxString,
+            UIDValidity, ResAnswer, !IO),
+        (
+            ResAnswer = ok(yes),
+            Res = ok
+        ;
+            ResAnswer = ok(no),
+            Res = error("stopped")
+        ;
+            ResAnswer = error(Error),
+            Res = error(Error)
+        )
+    ;
+        KnownInDb = no,
+        DirExists = no,
+        LocalMailboxPath = local_mailbox_path(DirName),
+        prompt_make_directory(DirName, ResAnswer, !IO),
+        (
+            ResAnswer = ok(yes),
+            dir.make_directory(DirName, ResMakeDir, !IO),
+            (
+                ResMakeDir = ok,
+                Res = ok
+            ;
+                ResMakeDir = error(Error),
+                Res = error(io.error_message(Error))
+            )
+        ;
+            ResAnswer = ok(no),
+            Res = error("stopped")
+        ;
+            ResAnswer = error(Error),
+            Res = error(Error)
+        )
+    ).
+
+:- pred prompt_first_synchronisation(local_mailbox_path::in, string::in,
+    uidvalidity::in, maybe_error(bool)::out, io::di, io::uo) is det.
+
+prompt_first_synchronisation(LocalMailboxPath, RemoteMailboxString,
+        UIDValidity, Res, !IO) :-
+    LocalMailboxPath = local_mailbox_path(DirName),
+    UIDValidity = uidvalidity(UIDValidity0),
+    io.format(
+        "This appears to be the first time synchronising '%s'\n" ++
+        "with IMAP folder '%s' (UIDVALIDITY %s).\n",
+        [s(DirName), s(RemoteMailboxString), s(to_string(UIDValidity0))], !IO),
+    prompt_bool("Continue? [y,n] ", Res, !IO).
+
+:- pred prompt_make_directory(string::in, maybe_error(bool)::out,
+    io::di, io::uo) is det.
+
+prompt_make_directory(DirName, Res, !IO) :-
+    prompt_bool(
+        string.format("Create the directory '%s'? [y,n] ", [s(DirName)]),
+        Res, !IO).
+
+:- pred prompt_bool(string::in, maybe_error(bool)::out, io::di, io::uo) is det.
+
+prompt_bool(Prompt, Res, !IO) :-
+    io.write_string(Prompt, !IO),
+    io.flush_output(!IO),
+    io.read_line_as_string(ResRead, !IO),
+    (
+        ResRead = ok(String),
+        ( yes_no(to_lower(strip(String)), Bool) ->
+            Res = ok(Bool)
+        ;
+            prompt_bool(Prompt, Res, !IO)
+        )
+    ;
+        ResRead = eof,
+        Res = error("eof received")
+    ;
+        ResRead = error(Error),
+        Res = error(io.error_message(Error))
+    ).
+
+:- pred yes_no(string::in, bool::out) is semidet.
+
+yes_no("y", yes).
+yes_no("yes", yes).
+yes_no("n", no).
+yes_no("no", no).
+
+%-----------------------------------------------------------------------------%
 
 :- pred sync_and_repeat(log::in, prog_config::in, database::in, imap::in,
     inotify(S)::in, mailbox_pair::in, requires_check::in, update_method::in,

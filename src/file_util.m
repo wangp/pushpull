@@ -5,9 +5,14 @@
 
 :- import_module bool.
 :- import_module io.
-:- import_module maybe.
 
-:- pred file_exists(string::in, maybe_error(bool)::out, io::di, io::uo) is det.
+:- type file_exists_result
+    --->    yes(bool)    % is_dir
+    ;       no
+    ;       error(string).
+
+:- pred file_exists(string::in, file_exists_result::out, io::di, io::uo)
+    is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -23,19 +28,21 @@
 %-----------------------------------------------------------------------------%
 
 file_exists(Path, Res, !IO) :-
-    file_exists_2(Path, RC, Error, !IO),
+    file_exists_2(Path, RC, IsDir, Error, !IO),
     ( RC = 0 ->
-        Res = ok(yes)
+        Res = yes(IsDir)
     ; RC = 1 ->
-        Res = ok(no)
+        Res = no
     ;
         Res = error(Error)
     ).
 
-:- pred file_exists_2(string::in, int::out, string::out, io::di, io::uo) is det.
+:- pred file_exists_2(string::in, int::out, bool::out, string::out,
+    io::di, io::uo) is det.
 
 :- pragma foreign_proc("C",
-    file_exists_2(Path::in, RC::out, Error::out, _IO0::di, _IO::uo),
+    file_exists_2(Path::in, RC::out, IsDir::out, Error::out,
+        _IO0::di, _IO::uo),
     [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
         may_not_duplicate],
 "
@@ -46,11 +53,14 @@ file_exists(Path, Res, !IO) :-
     RC = stat(Path, &stbuf);
     if (RC == 0) {
         Error = MR_make_string_const("""");
+        IsDir = S_ISDIR(stbuf.st_mode) ? MR_YES : MR_NO;
     } else if (errno == ENOENT) {
         RC = 1;
+        IsDir = MR_NO;
         Error = MR_make_string_const("""");
     } else {
         RC = -1;
+        IsDir = MR_NO;
         errno_msg = MR_strerror(errno, errbuf, sizeof(errbuf));
         MR_make_aligned_string_copy_msg(Error, errno_msg, MR_ALLOC_ID);
     }
