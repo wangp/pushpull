@@ -269,6 +269,7 @@
 :- import_module unit.
 
 :- import_module binary_string.
+:- import_module file_util.
 :- import_module sqlite3.
 
 %-----------------------------------------------------------------------------%
@@ -438,24 +439,16 @@
 %-----------------------------------------------------------------------------%
 
 open_database(FileName, Res, !IO) :-
-    FollowSymlinks = yes,
-    io.file_type(FollowSymlinks, FileName, ResFileType, !IO),
+    file_exists(FileName, ResExists, !IO),
     (
-        ResFileType = ok(FileType),
-        (
-            ( FileType = regular_file
-            ; FileType = unknown
-            )
-        ->
-            open_existing_database(FileName, Res, !IO)
-        ;
-            Res = error("unxpected file type for database path")
-        )
+        ResExists = ok(yes),
+        open_existing_database(FileName, Res, !IO)
     ;
-        % Assume the database does not exist.
-        % XXX better we had a io.file_exists predicate
-        ResFileType = error(_),
+        ResExists = ok(no),
         open_new_database(FileName, Res, !IO)
+    ;
+        ResExists = error(Error),
+        Res = error(FileName ++ ": " ++ Error)
     ).
 
 :- pred open_new_database(string::in, maybe_error(database)::out,
