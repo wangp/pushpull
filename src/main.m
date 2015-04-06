@@ -301,7 +301,7 @@ open_connection(Log, Config, Res, !IO) :-
     HostPort = Config ^ hostport,
     MaybeCertificateFile = Config ^ certificate_file,
 
-    log_info(Log, "Connecting to " ++ HostPort, !IO),
+    log_notice(Log, "Connecting to " ++ HostPort, !IO),
     openssl.library_init(!IO),
     connect_handshake(tlsv1_client_method, HostPort, MaybeCertificateFile,
         ResBio, !IO),
@@ -713,7 +713,7 @@ sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, Shortcut0,
         !IO),
     (
         ResLastModSeqValzer = ok(LastModSeqValzer @ mod_seq_valzer(Low)),
-        log_info(Log,
+        log_notice(Log,
             format("Synchronising from MODSEQ %s", [s(to_string(Low))]), !IO),
         sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair,
             LastModSeqValzer, Shortcut0, DirCacheUpdate0, ResSync,
@@ -864,7 +864,7 @@ idle_until_sync(Log, Config, IMAP, Inotify, Res, !DirCache, !IO) :-
     EndTime = StartTime + IdleTimeoutSecs,
 
     % Send IDLE command.
-    log_info(Log, "Idling", !IO),
+    log_notice(Log, "Idling", !IO),
     idle(IMAP, Res0, !IO),
     (
         Res0 = ok(result(Status, IdleText, IdleAlerts)),

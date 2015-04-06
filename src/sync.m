@@ -236,7 +236,7 @@ call_command_post_sync(Log, Config, Res, !IO) :-
     (
         MaybeCommand = yes(Words),
         Command = join_list(" ", map(compose(quote_arg, word_string), Words)),
-        log_info(Log, "Calling command: " ++ Command, !IO),
+        log_notice(Log, "Calling command: " ++ Command, !IO),
         io.call_system(Command, CallRes, !IO),
         (
             CallRes = ok(ExitStatus),

@@ -160,7 +160,7 @@ propagate_flag_deltas_by_group_2(Log, Db, IMAP, Changes, Group,
         Count, NumGroups, Res, !IO) :-
     Group = group(UIDs, PairingIds),
 
-    log_info(Log,
+    log_notice(Log,
         format("Applying changes to %s remote messages (%d of %d): %s",
             [s(to_string(count(UIDs))), i(Count), i(NumGroups),
             s(show_changes(Changes))]), !IO),

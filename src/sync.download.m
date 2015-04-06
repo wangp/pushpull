@@ -480,7 +480,7 @@ verify_unpaired_local_message(Log, DirCache, RemoteMessage, UnpairedLocal,
     (
         ResFind = found(DirName, BaseName, _InfoSuffix),
         DirName / BaseName = path(Path),
-        log_info(Log,
+        log_notice(Log,
             format("Verifying UID %s (%d of %d) is %s",
                 [s(to_string(UID)), i(Count), i(Total), s(Path)]), !IO),
         verify_file(Path, RawMessageLf, Res, !IO)
