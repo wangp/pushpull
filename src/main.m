@@ -216,7 +216,28 @@ main_5(Log, Config, Password, Db, Inotify, Restart, !DirCache, !IO) :-
                 ; ResPostLogin = error(_)
                 ),
                 logout(IMAP, ResLogout, !IO),
-                log_debug(Log, string(ResLogout), !IO)
+                (
+                    ResLogout = ok(result(Status, LogoutText, LogoutAlerts)),
+                    report_alerts(Log, LogoutAlerts, !IO),
+                    (
+                        Status = ok,
+                        log_debug(Log, LogoutText, !IO),
+                        log_notice(Log, "Logged out.", !IO)
+                    ;
+                        ( Status = no
+                        ; Status = bad
+                        ; Status = bye
+                        ; Status = continue
+                        ),
+                        log_error(Log, LogoutText, !IO)
+                    )
+                ;
+                    ResLogout = eof,
+                    log_warning(Log, "Connection closed before logout.", !IO)
+                ;
+                    ResLogout = error(LogoutError),
+                    report_error(Log, LogoutError, !IO)
+                )
             ;
                 ResPostLogin = eof
             ),
