@@ -69,6 +69,9 @@
 
 :- type fn_flags == string. % sorted, no duplicates
 
+:- mutable(last_timeofday, {int, int}, {-1, -1}, ground,
+    [untrailed, attach_to_io_state]).
+
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
@@ -84,7 +87,7 @@ generate_unique_name(DirName, Res, !IO) :-
 
 generate_unique_name_2(DirName, Pid, HostName, Res, !IO) :-
     DirName = dirname(DirNameString),
-    gettimeofday(Sec, Usec, !IO),
+    safer_gettimeofday(Sec, Usec, !IO),
     string.format("%d.M%dP%d.%s", [i(Sec), i(Usec), i(Pid), s(HostName)],
         UniqueName),
     Path = DirNameString / UniqueName,
@@ -106,6 +109,26 @@ safe_gethostname(HostName, !IO) :-
     get_hostname(HostName0, !IO),
     string.replace_all(HostName0, "/", "_", HostName1),
     string.replace_all(HostName1, ":", "_", HostName).
+
+:- pred safer_gettimeofday(int::out, int::out, io::di, io::uo) is det.
+
+safer_gettimeofday(Sec, Usec, !IO) :-
+    % Make sure not to return the same time of day as before. It can happen
+    % when the IMAP server is on the same machine and perhaps the granularity
+    % of gettimeofday is worse than we wish.
+    get_last_timeofday({Sec0, Usec0}, !IO),
+    gettimeofday(Sec1, Usec1, !IO),
+    (
+        Usec0 = Usec1,
+        Sec0 = Sec1
+    ->
+        % Might be worth sleeping for a microsecond or so here.
+        safer_gettimeofday(Sec, Usec, !IO)
+    ;
+        Sec = Sec1,
+        Usec = Usec1,
+        set_last_timeofday({Sec, Usec}, !IO)
+    ).
 
 %-----------------------------------------------------------------------------%
 
