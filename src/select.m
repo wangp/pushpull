@@ -24,6 +24,7 @@
 
 :- implementation.
 
+:- import_module bool.
 :- import_module int.
 
 :- pragma foreign_type("C", fd_set, "fd_set").
@@ -44,21 +45,43 @@
     FD_ZERO(&Set);
 ").
 
-:- pred fd_set(int::in, fd_set::in, fd_set::out) is det.
+:- pred fd_set(int::in, bool::out, fd_set::in, fd_set::out) is det.
 
 :- pragma foreign_proc("C",
-    fd_set(Fd::in, Set0::in, Set::out),
+    fd_set(Fd::in, Ok::out, Set0::in, Set::out),
     [will_not_call_mercury, promise_pure, thread_safe],
 "
     Set = Set0;
-    FD_SET(Fd, &Set);
+    if (Fd >= 0 && Fd < FD_SETSIZE) {
+        FD_SET(Fd, &Set);
+        Ok = MR_YES;
+    } else {
+        Ok = MR_NO;
+    }
 ").
+
+:- pred fd_set_list(list(int)::in, bool::out, fd_set::in, fd_set::out) is det.
+
+fd_set_list([], yes, !Set).
+fd_set_list([Fd | Fds], Ok, !Set) :-
+    fd_set(Fd, Ok0, !Set),
+    (
+        Ok0 = yes,
+        fd_set_list(Fds, Ok, !Set)
+    ;
+        Ok0 = no,
+        Ok = no
+    ).
 
 :- pragma foreign_proc("C",
     fd_isset(Set::in, Fd::in),
     [will_not_call_mercury, promise_pure, thread_safe],
 "
-    SUCCESS_INDICATOR = FD_ISSET(Fd, &Set);
+    if (Fd >= 0 && Fd < FD_SETSIZE) {
+        SUCCESS_INDICATOR = FD_ISSET(Fd, &Set);
+    } else {
+        SUCCESS_INDICATOR = MR_FALSE;
+    }
 ").
 
 %-----------------------------------------------------------------------------%
@@ -68,17 +91,23 @@ select_read(Fds, TimeoutSeconds, Res, !IO) :-
         Res = timeout
     ;
         fd_zero(FdSet0),
-        list.foldl(fd_set, Fds, FdSet0, FdSet1),
-        list.foldl(max, Fds, 0, MaxFd),
-        select_read_2(MaxFd, FdSet1, TimeoutSeconds, RC, FdSet, !IO),
-        ( RC > 0 ->
-            Res = ready(RC, FdSet)
-        ; RC = 0 ->
-            Res = timeout
-        ; RC = -2 ->
-            Res = interrupt
+        fd_set_list(Fds, Ok, FdSet0, FdSet1),
+        (
+            Ok = yes,
+            list.foldl(max, Fds, 0, MaxFd),
+            select_read_2(MaxFd, FdSet1, TimeoutSeconds, RC, FdSet, !IO),
+            ( RC > 0 ->
+                Res = ready(RC, FdSet)
+            ; RC = 0 ->
+                Res = timeout
+            ; RC = -2 ->
+                Res = interrupt
+            ;
+                Res = error("select failed")
+            )
         ;
-            Res = error("select failed")
+            Ok = no,
+            Res = error("file descriptor out of range for select()")
         )
     ).
 
