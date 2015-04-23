@@ -289,7 +289,7 @@ open(Bio, Res, Alerts, !IO) :-
         Res = ok(_)
     ;
         Res = error(_),
-        bio_free_all(Bio, !IO)
+        bio_destroy(Bio, !IO)
     ).
 
 :- pred wait_for_greeting(pipe::in, maybe_result(greeting)::out,
@@ -378,7 +378,7 @@ close_pipe(IMAP, !IO) :-
     get_mutvar(PipeMutvar, MaybePipe, !IO),
     (
         MaybePipe = open(Bio),
-        bio_free_all(Bio, !IO),
+        bio_destroy(Bio, !IO),
         set_mutvar(PipeMutvar, closed, !IO)
     ;
         MaybePipe = closed

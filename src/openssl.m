@@ -35,7 +35,7 @@
 :- pred bio_do_handshake(bio::in, maybe_error(certificate_names)::out,
     io::di, io::uo) is det.
 
-:- pred bio_free_all(bio::in, io::di, io::uo) is det.
+:- pred bio_destroy(bio::in, io::di, io::uo) is det.
 
 :- pred bio_get_fd(bio::in, maybe_error(int)::out, io::di, io::uo) is det.
 
@@ -165,8 +165,10 @@ do_setup(const SSL_METHOD *method, const char *host,
     SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
 
     bio = BIO_new_ssl_connect(ctx);
+
+    SSL_CTX_free(ctx); /* decrement reference count */
+
     if (bio == NULL) {
-        SSL_CTX_free(ctx);
         *error = MR_make_string_const(""BIO_new_ssl_connect failed"");
         return NULL;
     }
@@ -371,10 +373,11 @@ get_dns_names(X509 *cert, MR_AllocSiteInfoPtr alloc_id)
 %-----------------------------------------------------------------------------%
 
 :- pragma foreign_proc("C",
-    bio_free_all(Bio::in, _IO0::di, _IO::uo),
+    bio_destroy(Bio::in, _IO0::di, _IO::uo),
     [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
         may_not_duplicate],
 "
+    BIO_ssl_shutdown(Bio);
     BIO_free_all(Bio);
 ").
 

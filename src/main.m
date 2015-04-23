@@ -116,6 +116,8 @@ main_2(Log, Config, !IO) :-
             maybe_prompt_password(Config, ResPassword, !IO),
             (
                 ResPassword = ok(Password),
+                % Initialise OpenSSL once only.
+                openssl.library_init(!IO),
                 main_3(Log, Config, Password, Db, Inotify, !IO)
             ;
                 ResPassword = error(Error),
@@ -323,7 +325,6 @@ open_connection(Log, Config, Res, !IO) :-
     MaybeCertificateFile = Config ^ certificate_file,
 
     log_notice(Log, "Connecting to " ++ HostPort, !IO),
-    openssl.library_init(!IO),
     connect_handshake(tlsv1_client_method, HostPort, MaybeCertificateFile,
         ResBio, !IO),
     (
@@ -336,7 +337,7 @@ open_connection(Log, Config, Res, !IO) :-
             log_info(Log, "Peer certificate matches name '" ++
                 Expected ++ "'", !IO)
         ;
-            bio_free_all(Bio, !IO),
+            bio_destroy(Bio, !IO),
             log_certificate_names(Log, CertificateNames, !IO),
             Res = error("Peer certificate does not match name '" ++
                 Expected ++ "'")
@@ -381,7 +382,7 @@ connect_handshake(Method, HostPort, MaybeCertificateFile, Res, !IO) :-
             Res = ok(_)
         ;
             Res = error(_),
-            bio_free_all(Bio, !IO)
+            bio_destroy(Bio, !IO)
         )
     ;
         ResBio = error(Error),
