@@ -27,9 +27,6 @@
 :- pred setup(method::in, string::in, maybe(string)::in, maybe_error(bio)::out,
     io::di, io::uo) is det.
 
-    % Ugly.
-:- pred print_errors(io.output_stream::in, io::di, io::uo) is det.
-
 :- pred bio_do_connect(bio::in, maybe_error::out, io::di, io::uo) is det.
 
 :- pred bio_do_handshake(bio::in, maybe_error(certificate_names)::out,
@@ -122,7 +119,8 @@ setup(Method, Host, MaybeCertificateFile, Res, !IO) :-
         Res = ok(Bio)
     ;
         Ok = no,
-        Res = error(Error)
+        make_error_message(Error, Message, !IO),
+        Res = error(Message)
     ).
 
 :- pred setup_2(method_ptr::in, string::in, string::in, bool::out, bio::out,
@@ -191,21 +189,12 @@ do_setup(const SSL_METHOD *method, const char *host,
 
 %-----------------------------------------------------------------------------%
 
-:- pragma foreign_proc("C",
-    print_errors(Stream::in, _IO0::di, _IO::uo),
-    [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
-        may_not_duplicate],
-"
-    ERR_print_errors_fp(MR_file(* (MercuryFile *) Stream));
-").
-
-%-----------------------------------------------------------------------------%
-
 bio_do_connect(Bio, Res, !IO) :-
     bio_do_connect_2(Bio, RC, !IO),
     ( RC =< 0 ->
         % We should not have to retry.
-        Res = error("error connecting to server")
+        make_error_message("error connecting to server", Message, !IO),
+        Res = error(Message)
     ;
         Res = ok
     ).
@@ -217,6 +206,7 @@ bio_do_connect(Bio, Res, !IO) :-
     [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
         may_not_duplicate],
 "
+    ERR_clear_error();
     RC = BIO_do_connect(Sbio);
 ").
 
@@ -225,7 +215,8 @@ bio_do_connect(Bio, Res, !IO) :-
 bio_do_handshake(Bio, Res, !IO) :-
     bio_do_handshake_2(Bio, RC, !IO),
     ( RC =< 0 ->
-        Res = error("error establishing SSL connection")
+        make_error_message("error establishing SSL connection", Message, !IO),
+        Res = error(Message)
     ;
         check_peer_certificate(Bio, Res, !IO)
     ).
@@ -237,6 +228,7 @@ bio_do_handshake(Bio, Res, !IO) :-
     [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
         may_not_duplicate],
 "
+    ERR_clear_error();
     RC = BIO_do_handshake(Bio);
 ").
 
@@ -379,6 +371,7 @@ get_dns_names(X509 *cert, MR_AllocSiteInfoPtr alloc_id)
 "
     BIO_ssl_shutdown(Bio);
     BIO_free_all(Bio);
+    ERR_clear_error();
 ").
 
 %-----------------------------------------------------------------------------%
@@ -386,7 +379,8 @@ get_dns_names(X509 *cert, MR_AllocSiteInfoPtr alloc_id)
 bio_get_fd(Bio, Res, !IO) :-
     bio_get_fd_2(Bio, Fd, !IO),
     ( Fd = -1 ->
-        Res = error("BIO not initialised")
+        make_error_message("BIO_get_fd failed", Message, !IO),
+        Res = error(Message)
     ;
         Res = ok(Fd)
     ).
@@ -397,6 +391,7 @@ bio_get_fd(Bio, Res, !IO) :-
     bio_get_fd_2(Bio::in, Fd::out, _IO0::di, _IO::uo),
     [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io],
 "
+    ERR_clear_error();
     Fd = BIO_get_fd(Bio, NULL);
 ").
 
@@ -407,7 +402,8 @@ bio_read_byte(Bio, Res, !IO) :-
     ( NumRead > 0 ->
         Res = ok(Byte)
     ; NumRead = -2 ->
-        Res = error(io.make_io_error("read not implemented for this BIO type"))
+        make_error_message("BIO_read failed", Message, !IO),
+        Res = error(io.make_io_error(Message))
     ;
         % We should not have to retry.
         Res = eof
@@ -422,6 +418,7 @@ bio_read_byte(Bio, Res, !IO) :-
 "
     unsigned char buf[1];
 
+    ERR_clear_error();
     NumRead = BIO_read(Bio, buf, sizeof(buf));
 
 #ifdef VALGRIND_WORKAROUND_OPENSSL
@@ -446,7 +443,8 @@ bio_read_bytes(Bio, NumOctets, Res, !IO) :-
             Res = error(io.make_io_error(Message))
         )
     ; Error = -2 ->
-        Res = error(io.make_io_error("read not implemented for this BIO type"))
+        make_error_message("BIO_read failed", Message, !IO),
+        Res = error(io.make_io_error(Message))
     ;
         Res = eof
     ).
@@ -466,6 +464,8 @@ bio_read_bytes(Bio, NumOctets, Res, !IO) :-
     data = allocate_binary_string_buffer(NumOctets, &system_heap, MR_ALLOC_ID);
     NumRead = 0;
     Error = 0;
+
+    ERR_clear_error();
 
     while (NumRead < NumOctets) {
         const int remaining = NumOctets - NumRead;
@@ -508,10 +508,13 @@ bio_write_binary_string(Bio, BinaryString, Res, !IO) :-
         bio_write_binary_string_2(Bio, BinaryString, NumWrite, !IO),
         ( NumWrite = Length ->
             Res = ok
-        ; NumWrite > 0 ->
-            Res = error("partial write")
         ;
-            Res = error("error writing")
+            ( NumWrite > 0 ->
+                make_error_message("BIO_write incomplete write", Message, !IO)
+            ;
+                make_error_message("BIO_write failed", Message, !IO)
+            ),
+            Res = error(Message)
         )
     ).
 
@@ -524,6 +527,7 @@ bio_write_binary_string(Bio, BinaryString, Res, !IO) :-
     [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
         may_not_duplicate],
 "
+    ERR_clear_error();
     NumWritten = BIO_write(Bio, BinaryString->data, BinaryString->len);
 ").
 
@@ -532,7 +536,8 @@ bio_write_binary_string(Bio, BinaryString, Res, !IO) :-
 bio_flush(Bio, Res, !IO) :-
     bio_flush_2(Bio, RC, !IO),
     ( RC = -1 ->
-        Res = error("error flushing")
+        make_error_message("BIO_flush failed", Message, !IO),
+        Res = error(Message)
     ;
         Res = ok
     ).
@@ -544,7 +549,46 @@ bio_flush(Bio, Res, !IO) :-
     [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
         may_not_duplicate],
 "
+    ERR_clear_error();
     RC = BIO_flush(Bio);
+").
+
+%-----------------------------------------------------------------------------%
+
+:- pred make_error_message(string::in, string::out, io::di, io::uo) is det.
+
+make_error_message(Prefix, Message, !IO) :-
+    get_error_strings(Details, !IO),
+    Message = string.join_list("; ", [Prefix | Details]).
+
+:- pred get_error_strings(list(string)::out, io::di, io::uo) is det.
+
+get_error_strings(Errors, !IO) :-
+    get_error_string(Error, !IO),
+    ( Error = "" ->
+        Errors = []
+    ;
+        get_error_strings(ErrorsTail, !IO),
+        Errors = [Error | ErrorsTail] % lcmc
+    ).
+
+:- pred get_error_string(string::out, io::di, io::uo) is det.
+
+:- pragma foreign_proc("C",
+    get_error_string(String::out, _IO0::di, _IO::uo),
+    [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
+        may_not_duplicate],
+"
+    unsigned long e;
+    char buf[128];
+
+    e = ERR_get_error();
+    if (e == 0) {
+        String = MR_make_string_const("""");
+    } else {
+        ERR_error_string_n(e, buf, sizeof(buf));
+        MR_make_aligned_string_copy_msg(String, buf, MR_ALLOC_ID);
+    }
 ").
 
 %-----------------------------------------------------------------------------%

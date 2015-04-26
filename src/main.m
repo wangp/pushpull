@@ -344,9 +344,7 @@ open_connection(Log, Config, Res, !IO) :-
         )
     ;
         ResBio = error(Error),
-        Res = error(Error),
-        % XXX ugly
-        openssl.print_errors(io.stderr_stream, !IO)
+        Res = error(Error)
     ).
 
 :- pred connect_handshake(method::in, string::in, maybe(string)::in,
