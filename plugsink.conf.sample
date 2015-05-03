@@ -1,35 +1,103 @@
 [general]
-restart_after_error_seconds = 600
+    # After an error, wait this many seconds then start over.
+    restart_after_error_seconds = 600
 
 [log]
-file = plugsink.log
-level = info
+    # Path to log file.
+    file = plugsink.log
+
+    # Logging level: debug, info, notice, warning, error
+    level = info
 
 [ssl]
-certificate_file = /etc/ssl/certs/ca-certificates.crt
+    # Path to trusted CA certificates for verification of the IMAP
+    # server's certificate.
+    certificate_file = /etc/ssl/certs/ca-certificates.crt
 
 [local]
-state = /home/user/Maildir/.plugsink/state.db
-maildir = /home/user/Maildir
-fsync = yes
-buckets = no
-quiesce_seconds = 10
+    # Path to a file that will contain the state of the synchronisation
+    # between Maildir folders and IMAP folders. The file contains an
+    # SQLite database. Try not to lose it!
+    state = /home/user/Maildir/.plugsink/state.db
+
+    # Path to top-level Maildir directory. Local folders are stored
+    # under this directory.
+    maildir = /home/user/Maildir
+
+    # Whether to call fsync(2) to ensure files are flushed to disk when
+    # written. This is slower but safer. You may want to temporarily
+    # disable it when you first retrieve a large number of messages from
+    # an IMAP server, then re-enable it for future runs.
+    fsync = yes
+
+    # Wait this many seconds before starting a new synchronisation
+    # cycle, after the local Maildir folder is modified.
+    quiesce_seconds = 10
+
+    # This setting only affects where new message files are stored. If
+    # enabled, new messages will be stored into one of 256 subfolders
+    # below the Maildir folder, like this, where XX are two hexadecimal
+    # digits:
+    #
+    #	~/Maildir/foo/XX/cur/message-file
+    #
+    # Each such subfolder may be faster to scan than a single folder
+    # holding all of the message files. However, this storage scheme
+    # would only be suitable if the Maildir is only accessed through
+    # certain software (e.g. notmuch).
+    #
+    # Note that if you have a folder which HAPPENS to have one or more
+    # subfolders named XX (two hexadecimal digits) then
+    # plugsink will assume 
+    buckets = no
 
 [imap]
-host = imap.example.com:993
-certificate_match_name = imap.example.com
-username = user
-# Leave empty to prompt for password.
-# password =
-idle = no
-idle_timeout_minutes = 29
-sync_on_idle_timeout = no
+    # The IMAP server and port number. The server must support TLS.
+    host = imap.example.com:993
+
+    # Verify that the IMAP server sends a signed certificate matching this
+    # name.
+    certificate_match_name = imap.example.com
+
+    # Username for the IMAP account.
+    username = user
+
+    # Password for the IMAP account. Leave it empty if you wish to enter
+    # the password interactively.
+    password =
+
+    # Whether to keep the IMAP connection open with the IDLE command
+    # after a sychronisation cycle.
+    idle = no
+
+    # Re-enter idle mode after this many minutes.
+    idle_timeout_minutes = 29
+
+    # Whether to perform synchronisation after the IDLE command times
+    # out, even if the IMAP folder does not seem to have changed.
+    # GMail users may wish reduce idle_timeout_minutes and enable this
+    # option.
+    sync_on_idle_timeout = no
 
 [pairing INBOX]
-local = INBOX
-remote = INBOX
+    # A local Maildir folder and a remote IMAP folder to synchronise.
+    # You can define multiple pairings in a single configuration file,
+    # but only one pairing is synchronised at a time.
+    # The special IMAP folder name "INBOX" is case-insensitive.
+    local = INBOX
+    remote = INBOX
+
+[pairing All Mail]
+    # Example for GMail users. The prefix differs with locale.
+    local = All Mail
+    remote = [Google Mail]/All Mail
 
 [command]
-post_sync_local_change =
+    # Run this command after a synchronisation cycle where the local
+    # Maildir folder is changed. Notmuch users may want to run a script
+    # that tries "notmuch new" a few times (in case the notmuch database
+    # is locked). The script should return with exit status 0.
+    post_sync_local_change =
 
+#-----------------------------------------------------------------------------#
 # vim: ft=cfg
