@@ -40,7 +40,7 @@ Invocation
 
 Run it like this:
 
-    plugsink *config-file* *pairing*
+    plugsink CONFIG-FILE PAIRING
 
 The configuration file can be placed anywhere you like.
 See `plugsink.conf.sample` for the details.
@@ -63,7 +63,8 @@ Idling
 After the initial synchronisation cycle, plugsink can maintain an open
 connection to the IMAP server if the configuration key is set:
 
-    imap.idle = yes
+    [imap]
+    idle = yes
 
 Once a change is made to the Maildir folder, or a change is made to the
 IMAP folder, a new synchronisation cycle will be performed.
@@ -90,8 +91,8 @@ the IMAP system flags:
     S       \Seen
     D       \Draft
 
-(Other IMAP flags are recorded in the database but not otherwise visible as
-there is no standard way to express them in Maildir.)
+Other IMAP flags are recorded in the database but not otherwise visible as
+there is no standard way to express them in Maildir.
 
 plugsink does not permanently delete messages from the Maildir folder.
 If a message in the IMAP folder is deleted then the corresponding Maildir
@@ -119,7 +120,7 @@ Warning
 Be aware of what is known to the state database.  For now, this requires
 poking around the state database with SQLite commands.
 
-This is a bad sequence of events:
+Here is a bad sequence of events:
 
  1. you synchronise a Maildir folder `Foo` with an IMAP folder `RemoteFoo`
  2. you rename `Foo` to `Bar`
