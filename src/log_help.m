@@ -19,10 +19,6 @@
 
 :- implementation.
 
-:- import_module list.
-
-%-----------------------------------------------------------------------------%
-
 report_error(Log, Error, !IO) :-
     log_error(Log, Error, !IO),
     io.set_exit_status(1, !IO).

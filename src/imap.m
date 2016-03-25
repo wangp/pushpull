@@ -154,7 +154,6 @@
 
 :- import_module int.
 :- import_module integer.
-:- import_module maybe.
 :- import_module require.
 :- import_module store.
 :- import_module string.

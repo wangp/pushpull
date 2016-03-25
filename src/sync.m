@@ -38,7 +38,6 @@
 
 :- import_module bool.
 :- import_module list.
-:- import_module maybe.
 :- import_module std_util.
 :- import_module string.
 
@@ -56,7 +55,6 @@
 :- import_module sync.update_remote.
 :- import_module sync.upload.
 
-:- import_module dir_cache.
 :- import_module quote_arg.
 :- import_module shell_word.
 

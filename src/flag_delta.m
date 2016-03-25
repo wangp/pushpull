@@ -75,9 +75,7 @@
 :- import_module string.
 :- import_module unit.
 
-:- import_module imap.
 :- import_module imap.charclass.
-:- import_module imap.types.
 
 %-----------------------------------------------------------------------------%
 

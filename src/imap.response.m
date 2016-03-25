@@ -167,7 +167,6 @@
 :- implementation.
 
 :- import_module exception.
-:- import_module integer.
 :- import_module require.
 :- import_module set.
 :- import_module string.

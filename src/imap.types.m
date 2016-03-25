@@ -324,7 +324,6 @@
 
 :- implementation.
 
-:- import_module integer.
 :- import_module string.
 
 :- import_module imap.charclass.
