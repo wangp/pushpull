@@ -8,10 +8,14 @@
 
 :- pred gettimeofday(int::out, int::out, io::di, io::uo) is det.
 
+:- pred gettimeofday_float(float::out, io::di, io::uo) is det.
+
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
 :- implementation.
+
+:- import_module float.
 
 :- pragma foreign_decl("C", "
     #include <sys/time.h>
@@ -26,6 +30,10 @@
     Sec = tv.tv_sec;
     Usec = tv.tv_usec;
 ").
+
+gettimeofday_float(TimeOfDay, !IO) :-
+    gettimeofday(Sec, Usec, !IO),
+    TimeOfDay = float(Sec) + float(Usec) * 1e-6.
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et

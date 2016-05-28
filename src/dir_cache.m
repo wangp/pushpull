@@ -64,6 +64,7 @@
 :- import_module char.
 :- import_module dir.
 :- import_module int.
+:- import_module float.
 :- import_module map.
 :- import_module pair.
 :- import_module queue.
@@ -72,6 +73,7 @@
 :- import_module string.
 :- import_module time.
 
+:- import_module gettimeofday.
 :- import_module my_rbtree.
 :- import_module signal.
 
@@ -106,7 +108,7 @@
                 enum_basenames  :: basename_tree,
                 enum_count      :: int,
                 enum_queue      :: queue(scan_dir),
-                enum_progress   :: maybe(int)
+                enum_progress   :: maybe(float)
             ).
 
 :- type scan_dir == pair(dirname, context).
@@ -240,8 +242,8 @@ update_dir(Log, DirName - Context, Res, !Queue, !Dirs, !IO) :-
             Res = ok
         ;
             log_debug(Log, "Scanning " ++ DirNameString, !IO),
-            get_time(Time0, !IO),
-            ReportProgress = yes(Time0 + 2),
+            gettimeofday_float(Time0, !IO),
+            ReportProgress = yes(Time0 + 2.0),
             Info0 = enum_info(init, 0, !.Queue, ReportProgress),
             dir.foldl2(enumerate_files(Log, Context), DirNameString,
                 Info0, Res1, !IO),
@@ -295,7 +297,7 @@ enumerate_files(Log, Context, DirName, BaseName, FileType, Continue,
                 ReportProgress = no
             ;
                 ReportProgress0 = yes(Time0),
-                get_time(Time, !IO),
+                gettimeofday_float(Time, !IO),
                 ( Time >= Time0 ->
                     log_info(Log, "Scanning " ++ DirName ++ " ...", !IO),
                     ReportProgress = no
@@ -732,17 +734,6 @@ lower_hex_digit('c').
 lower_hex_digit('d').
 lower_hex_digit('e').
 lower_hex_digit('f').
-
-%-----------------------------------------------------------------------------%
-
-:- pred get_time(int::out, io::di, io::uo) is det.
-
-:- pragma foreign_proc("C",
-    get_time(Time::out, _IO0::di, _IO::uo),
-    [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io],
-"
-    Time = (MR_Integer) time(0);
-").
 
 %-----------------------------------------------------------------------------%
 % vim: ft=mercury ts=4 sts=4 sw=4 et
