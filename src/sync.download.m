@@ -582,7 +582,7 @@ do_save_raw_message(Config, path(TmpPath), DestDir, path(DestPath),
             lowio.close(Fd, ResClose, !IO),
             (
                 ResClose = ok,
-                set_file_atime_mtime(TmpPath, mktime(InternalDate),
+                set_file_atime_mtime(TmpPath, from_date_time(InternalDate),
                     ResTime, !IO),
                 (
                     ResTime = ok,

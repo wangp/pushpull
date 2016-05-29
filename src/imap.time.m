@@ -6,7 +6,7 @@
 
 :- import_module time.
 
-:- func mktime(date_time) = time_t.
+:- func from_date_time(date_time) = time_t.
 
 :- func make_date_time(time_t) = date_time.
 
@@ -25,7 +25,7 @@
 
 %-----------------------------------------------------------------------------%
 
-mktime(DateTime) = TimeT :-
+from_date_time(DateTime) = TimeT :-
     DateTime = date_time(Day, Month, Year, time(Hours, Minutes, Seconds), Zone),
 
     YearSince1900 = Year - 1900,
@@ -37,9 +37,7 @@ mktime(DateTime) = TimeT :-
         unexpected($module, $pred, "parse_zone failed")
     ),
 
-    % We cannot use the Mercury time module as it does not expose the tm_gmtoff
-    % extension.
-    TimeT = mktime(YearSince1900, MonthFromZero, MonthDayFromOne,
+    TimeT = tm2time(YearSince1900, MonthFromZero, MonthDayFromOne,
         Hours, Minutes, Seconds, GMTOff).
 
 :- pred parse_zone(zone::in, int::out) is semidet.
@@ -61,10 +59,10 @@ parse_zone(zone(Zone), GMTOff) :-
         GMTOff = -Secs
     ).
 
-:- func mktime(int, int, int, int, int, int, int) = time_t.
+:- func tm2time(int, int, int, int, int, int, int) = time_t.
 
 :- pragma foreign_proc("C",
-    mktime(YearSince1900::in, MonthFromZero::in, MonthDayFromOne::in,
+    tm2time(YearSince1900::in, MonthFromZero::in, MonthDayFromOne::in,
         Hours::in, Minutes::in, Seconds::in, GMTOff::in) = (TimeT::out),
     [will_not_call_mercury, promise_pure, thread_safe, may_not_duplicate],
 "
@@ -79,9 +77,14 @@ parse_zone(zone(Zone), GMTOff) :-
     tm.tm_mday = MonthDayFromOne;
     tm.tm_yday = -1;
     tm.tm_isdst = -1;
-    tm.tm_gmtoff = GMTOff; /* GNU/BSD extension */
 
-    TimeT = mktime(&tm);
+    /*
+    ** mktime() does not take tm.tm_gmtoff into account even when available,
+    ** i.e. it always assumes its input is in the local time zone.  Therefore
+    ** we use the timegm() function then adjust for the time zone manually.
+    */
+
+    TimeT = timegm(&tm) - GMTOff;
 ").
 
 %-----------------------------------------------------------------------------%
