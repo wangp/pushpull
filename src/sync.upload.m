@@ -207,7 +207,7 @@ do_upload_message(Log, IMAP, MailboxPair, FileData, Flags, Res, !IO) :-
     ),
 
     FileData = file_data(Message @ message(ContentLf), ModTime),
-    DateTime = make_date_time(ModTime),
+    local_date_time(ModTime, DateTime, !IO),
     append(IMAP, MailboxName, to_sorted_list(Flags), yes(DateTime), ContentLf,
         Res0, !IO),
     (

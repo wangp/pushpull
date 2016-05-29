@@ -8,7 +8,7 @@
 
 :- func from_date_time(date_time) = time_t.
 
-:- func make_date_time(time_t) = date_time.
+:- pred local_date_time(time_t::in, date_time::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -89,10 +89,10 @@ parse_zone(zone(Zone), GMTOff) :-
 
 %-----------------------------------------------------------------------------%
 
-make_date_time(Time) = DateTime :-
-    TM = time.localtime(Time),
-    TM = tm(YearSince1900, MonthFromZero, MonthDayFromOne,
-            Hours, Minutes, Seconds, _YearDay, _WeekDay, _IsDst),
+local_date_time(Time, DateTime, !IO) :-
+    localtime_2(Time,
+        YearSince1900, MonthFromZero, MonthDayFromOne,
+        Hours, Minutes, Seconds, _YearDay, _WeekDay, _IsDst, GMTOff, !IO),
 
     Year = 1900 + YearSince1900,
     ( month_from_zero(MonthPrime, MonthFromZero) ->
@@ -101,21 +101,34 @@ make_date_time(Time) = DateTime :-
         unexpected($module, $pred, "month_from_zero failed")
     ),
     MonthDayFromOne = Day,
-    Zone = make_zone(get_gmtoff(Time)),
+    Zone = make_zone(GMTOff),
 
     DateTime = date_time(Day, Month, Year, time(Hours, Minutes, Seconds), Zone).
 
-:- func get_gmtoff(time_t) = int.
+:- pred localtime_2(time_t::in, int::out, int::out, int::out, int::out, int::out,
+    int::out, int::out, int::out, int::out, int::out, io::di, io::uo) is det.
 
 :- pragma foreign_proc("C",
-    get_gmtoff(Time::in) = (GMTOff::out),
-    [will_not_call_mercury, promise_pure, thread_safe, may_not_duplicate],
+    localtime_2(Time::in, Y::out, Mth::out, Md::out,
+        H::out, Min::out, S::out, Yd::out, Wd::out, IsDst::out, GMTOff::out,
+        _IO0::di, _IO::uo),
+    [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
+        may_not_duplicate],
 "
     time_t t;
     struct tm tm;
 
     t = Time;
     localtime_r(&t, &tm);
+    Y   = tm.tm_year;
+    Mth = tm.tm_mon;
+    Md  = tm.tm_mday;
+    H   = tm.tm_hour;
+    Min = tm.tm_min;
+    S   = tm.tm_sec;
+    Yd  = tm.tm_yday;
+    Wd  = tm.tm_wday;
+    IsDst = tm.tm_isdst;
     GMTOff = tm.tm_gmtoff; /* GNU extension */
 ").
 
