@@ -4,7 +4,7 @@ DIFF = diff -u
 
 files = $(wildcard *.m ../src/*.m)
 
-TESTS = test_crc8 test_crc16
+TESTS = test_crc8 test_crc16 test_imap_time
 
 .PHONY: default
 default: $(addsuffix .runtest,$(TESTS))
@@ -17,5 +17,5 @@ Mercury.modules: $(files)
 
 .PHONY: %.runtest
 %.runtest: %
-	./$(<) > $(<).out && \
+	TZ='UTC-10' ./$(<) > $(<).out && \
 		$(DIFF) $(<).exp $(<).out
