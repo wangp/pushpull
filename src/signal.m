@@ -7,9 +7,9 @@
 :- import_module io.
 
 :- type signal
-    --->    sighup
-    ;       sigint
-    ;       sigpipe.
+    --->    sigint
+    ;       sigpipe
+    ;       sigusr1.
 
 :- type handler
     --->    ignore
@@ -17,8 +17,8 @@
 
 :- pred install_signal_handler(signal::in, handler::in, io::di, io::uo) is det.
 
-:- pred get_sighup_count(int::out, io::di, io::uo) is det.
 :- pred get_sigint_count(int::out, io::di, io::uo) is det.
+:- pred get_sigusr1_count(int::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
@@ -32,30 +32,30 @@
 ").
 
 :- pragma foreign_enum("C", signal/0, [
-    sighup - "SIGHUP",
     sigint - "SIGINT",
-    sigpipe - "SIGPIPE"
+    sigpipe - "SIGPIPE",
+    sigusr1 - "SIGUSR1"
 ]).
 
 %-----------------------------------------------------------------------------%
 
 :- pragma foreign_decl("C", local, "
-static sig_atomic_t sighup_count;
 static sig_atomic_t sigint_count;
 static sig_atomic_t sigpipe_count;
+static sig_atomic_t sigusr1_count;
 
 static void
 count_signal(int sig)
 {
     switch (sig) {
-        case SIGHUP:
-            sighup_count++;
-            break;
         case SIGINT:
             sigint_count++;
             break;
         case SIGPIPE:
             sigpipe_count++;
+            break;
+        case SIGUSR1:
+            sigusr1_count++;
             break;
     }
 }
@@ -89,19 +89,19 @@ install_signal_handler(Signal, Handler, !IO) :-
 %-----------------------------------------------------------------------------%
 
 :- pragma foreign_proc("C",
-    get_sighup_count(N::out, _IO0::di, _IO::uo),
-    [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
-        may_not_duplicate],
-"
-    N = sighup_count;
-").
-
-:- pragma foreign_proc("C",
     get_sigint_count(N::out, _IO0::di, _IO::uo),
     [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
         may_not_duplicate],
 "
     N = sigint_count;
+").
+
+:- pragma foreign_proc("C",
+    get_sigusr1_count(N::out, _IO0::di, _IO::uo),
+    [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
+        may_not_duplicate],
+"
+    N = sigusr1_count;
 ").
 
 %-----------------------------------------------------------------------------%

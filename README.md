@@ -71,7 +71,7 @@ IMAP folder, a new synchronisation cycle will be performed.
 
 Send a `SIGINT` signal (Ctrl-C) to the process to tell it to quit.
 
-Send a `SIGHUP` signal to the process to start a new synchronisation
+Send a `SIGUSR1` signal to the process to start a new synchronisation
 cycle immediately.
 
 
