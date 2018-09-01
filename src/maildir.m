@@ -16,19 +16,19 @@
 
 %-----------------------------------------------------------------------------%
 
+:- type env_info.
+
 :- type uniquename
     --->    uniquename(string).
-
-:- type new_or_cur
-    --->    new
-    ;       cur.
 
 :- type info_suffix
     --->    info_suffix(fn_flags, string). % after ":2,"; may be empty
 
 :- type fn_flags.
 
-:- pred generate_unique_name(dirname::in,
+:- pred get_environment_info(env_info::out, io::di, io::uo) is det.
+
+:- pred generate_unique_name(env_info::in, dirname::in,
     maybe_error({uniquename, path, filedes})::out, io::di, io::uo) is det.
 
 :- pred make_message_basename(uniquename::in, maybe(info_suffix)::in,
@@ -67,6 +67,12 @@
 :- import_module gettimeofday.
 :- import_module sys_util.
 
+:- type env_info
+    --->    env_info(
+                pid         :: int,
+                hostname    :: string
+            ).
+
 :- type fn_flags == string. % sorted, no duplicates
 
 :- mutable(last_timeofday, {int, int}, {-1, -1}, ground,
@@ -75,17 +81,21 @@
 %-----------------------------------------------------------------------------%
 %-----------------------------------------------------------------------------%
 
-generate_unique_name(DirName, Res, !IO) :-
-    % We follow the Dovecot file name generation algorithm
-    % (also notmuch insert).
+get_environment_info(EnvInfo, !IO) :-
     get_pid(Pid, !IO),
     safe_gethostname(HostName, !IO),
-    generate_unique_name_2(DirName, Pid, HostName, Res, !IO).
+    EnvInfo = env_info(Pid, HostName).
 
-:- pred generate_unique_name_2(dirname::in, int::in, string::in,
+generate_unique_name(EnvInfo, DirName, Res, !IO) :-
+    % We follow the Dovecot file name generation algorithm
+    % (also notmuch insert).
+    generate_unique_name_2(EnvInfo, DirName, Res, !IO).
+
+:- pred generate_unique_name_2(env_info::in, dirname::in,
     maybe_error({uniquename, path, filedes})::out, io::di, io::uo) is det.
 
-generate_unique_name_2(DirName, Pid, HostName, Res, !IO) :-
+generate_unique_name_2(EnvInfo, DirName, Res, !IO) :-
+    EnvInfo = env_info(Pid, HostName),
     DirName = dirname(DirNameString),
     safer_gettimeofday(Sec, Usec, !IO),
     string.format("%d.M%dP%d.%s", [i(Sec), i(Usec), i(Pid), s(HostName)],
@@ -97,7 +107,7 @@ generate_unique_name_2(DirName, Pid, HostName, Res, !IO) :-
         Res = ok({uniquename(UniqueName), path(Path), Fd})
     ;
         ResOpen = already_exists,
-        generate_unique_name_2(DirName, Pid, HostName, Res, !IO)
+        generate_unique_name_2(EnvInfo, DirName, Res, !IO)
     ;
         ResOpen = error(Error),
         Res = error("error opening " ++ Path ++ ": " ++ Error)

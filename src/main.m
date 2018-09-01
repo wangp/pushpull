@@ -32,6 +32,7 @@
 :- import_module inotify.
 :- import_module log.
 :- import_module log_help.
+:- import_module maildir.
 :- import_module maybe_result.
 :- import_module openssl.
 :- import_module path.
@@ -120,7 +121,8 @@ main_2(Log, Config, !IO) :-
                 ResPassword = ok(Password),
                 % Initialise OpenSSL once only.
                 openssl.library_init(!IO),
-                main_3(Log, Config, Password, Db, Inotify, !IO)
+                get_environment_info(EnvInfo, !IO),
+                main_3(Log, Config, Password, EnvInfo, Db, Inotify, !IO)
             ;
                 ResPassword = error(Error),
                 report_error(Log, Error, !IO)
@@ -136,21 +138,23 @@ main_2(Log, Config, !IO) :-
         report_error(Log, Error, !IO)
     ).
 
-:- pred main_3(log::in, prog_config::in, password::in, database::in,
-    inotify(S)::in, io::di, io::uo) is det.
+:- pred main_3(log::in, prog_config::in, password::in, env_info::in,
+    database::in, inotify(S)::in, io::di, io::uo) is det.
 
-main_3(Log, Config, Password, Db, Inotify, !IO) :-
+main_3(Log, Config, Password, EnvInfo, Db, Inotify, !IO) :-
     LocalMailboxName = Config ^ local_mailbox_name,
     LocalMailboxPath = make_local_mailbox_path(Config, LocalMailboxName),
     LocalMailboxPath = local_mailbox_path(DirName),
     DirCache0 = dir_cache.init(dirname(DirName)),
-    main_4(Log, Config, Password, Db, Inotify, DirCache0, _, !IO).
+    main_4(Log, Config, Password, EnvInfo, Db, Inotify, DirCache0, _, !IO).
 
-:- pred main_4(log::in, prog_config::in, password::in, database::in,
-    inotify(S)::in, dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+:- pred main_4(log::in, prog_config::in, password::in, env_info::in,
+    database::in, inotify(S)::in, dir_cache::in, dir_cache::out,
+    io::di, io::uo) is det.
 
-main_4(Log, Config, Password, Db, Inotify, !DirCache, !IO) :-
-    main_5(Log, Config, Password, Db, Inotify, Restart, !DirCache, !IO),
+main_4(Log, Config, Password, EnvInfo, Db, Inotify, !DirCache, !IO) :-
+    main_5(Log, Config, Password, EnvInfo, Db, Inotify, Restart,
+        !DirCache, !IO),
     get_sigint_or_sigterm_count(InterruptCount0, !IO),
     ( InterruptCount0 > 0 ->
         log_notice(Log, "Stopping.\n", !IO)
@@ -160,7 +164,7 @@ main_4(Log, Config, Password, Db, Inotify, !DirCache, !IO) :-
         ;
             Restart = immediate_restart,
             log_notice(Log, "Restarting.\n", !IO),
-            main_4(Log, Config, Password, Db, Inotify, !DirCache, !IO)
+            main_4(Log, Config, Password, EnvInfo, Db, Inotify, !DirCache, !IO)
         ;
             Restart = delayed_restart,
             MaybeDelay = Config ^ restart_after_error_seconds,
@@ -175,7 +179,8 @@ main_4(Log, Config, Password, Db, Inotify, !DirCache, !IO) :-
                     log_notice(Log, "Stopping.\n", !IO)
                 ;
                     log_notice(Log, "Restarting.\n", !IO),
-                    main_4(Log, Config, Password, Db, Inotify, !DirCache, !IO)
+                    main_4(Log, Config, Password, EnvInfo, Db, Inotify,
+                        !DirCache, !IO)
                 )
             ;
                 MaybeDelay = no
@@ -183,11 +188,11 @@ main_4(Log, Config, Password, Db, Inotify, !DirCache, !IO) :-
         )
     ).
 
-:- pred main_5(log::in, prog_config::in, password::in, database::in,
-    inotify(S)::in, restart::out, dir_cache::in, dir_cache::out,
+:- pred main_5(log::in, prog_config::in, password::in, env_info::in,
+    database::in, inotify(S)::in, restart::out, dir_cache::in, dir_cache::out,
     io::di, io::uo) is det.
 
-main_5(Log, Config, Password, Db, Inotify, Restart, !DirCache, !IO) :-
+main_5(Log, Config, Password, EnvInfo, Db, Inotify, Restart, !DirCache, !IO) :-
     open_connection(Log, Config, ResBio, !IO),
     (
         ResBio = ok(Bio),
@@ -199,7 +204,7 @@ main_5(Log, Config, Password, Db, Inotify, Restart, !DirCache, !IO) :-
             % ResLogin already logged.
             (
                 ResLogin = ok,
-                logged_in(Log, Config, Db, IMAP, Inotify,
+                logged_in(Log, Config, EnvInfo, Db, IMAP, Inotify,
                     ResPostLogin - Restart, !DirCache, !IO),
                 (
                     ResPostLogin = ok
@@ -475,11 +480,11 @@ do_login(Log, Config, Password, IMAP, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-:- pred logged_in(log::in, prog_config::in, database::in, imap::in,
-    inotify(S)::in, result_restart::out, dir_cache::in, dir_cache::out,
-    io::di, io::uo) is det.
+:- pred logged_in(log::in, prog_config::in, env_info::in, database::in,
+    imap::in, inotify(S)::in, result_restart::out,
+    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
-logged_in(Log, Config, Db, IMAP, Inotify, Res, !DirCache, !IO) :-
+logged_in(Log, Config, EnvInfo, Db, IMAP, Inotify, Res, !DirCache, !IO) :-
     RemoteMailboxName = Config ^ mailbox,
     % [RFC 7162] HIGHESTMODSEQ is only required once a CONDSTORE enabling
     % command is issued.
@@ -501,8 +506,8 @@ logged_in(Log, Config, Db, IMAP, Inotify, Res, !DirCache, !IO) :-
                 MaybeUIDValidity = yes(UIDValidity),
                 MaybeHighestModSeqValue = yes(highestmodseq(_))
             ->
-                logged_in_selected(Log, Config, Db, IMAP, Inotify, UIDValidity,
-                    Res, !DirCache, !IO)
+                logged_in_selected(Log, Config, EnvInfo, Db, IMAP, Inotify,
+                    UIDValidity, Res, !DirCache, !IO)
             ;
                 Res = error("Cannot support this server.") - stop
             )
@@ -522,11 +527,11 @@ logged_in(Log, Config, Db, IMAP, Inotify, Res, !DirCache, !IO) :-
         Res = error(Error) - delayed_restart
     ).
 
-:- pred logged_in_selected(log::in, prog_config::in, database::in, imap::in,
-    inotify(S)::in, uidvalidity::in, result_restart::out,
-    dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+:- pred logged_in_selected(log::in, prog_config::in, env_info::in,
+    database::in, imap::in, inotify(S)::in, uidvalidity::in,
+    result_restart::out, dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
-logged_in_selected(Log, Config, Db, IMAP, Inotify, UIDValidity, Res,
+logged_in_selected(Log, Config, EnvInfo, Db, IMAP, Inotify, UIDValidity, Res,
         !DirCache, !IO) :-
     LocalMailboxName = Config ^ local_mailbox_name,
     LocalMailboxPath = make_local_mailbox_path(Config, LocalMailboxName),
@@ -549,8 +554,8 @@ logged_in_selected(Log, Config, Db, IMAP, Inotify, UIDValidity, Res,
                 log_notice(Log,
                     format("Will synchronise '%s' with IMAP folder '%s'",
                         [s(DirName), s(RemoteMailboxString)]), !IO),
-                sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair,
-                    requires_check(check, check), scan_all, Res,
+                sync_and_repeat(Log, Config, EnvInfo, Db, IMAP, Inotify,
+                    MailboxPair, requires_check(check, check), scan_all, Res,
                     !DirCache, !IO)
             ;
                 ResLookup = not_found,
@@ -730,19 +735,20 @@ yes_no("no", no).
 
 %-----------------------------------------------------------------------------%
 
-:- pred sync_and_repeat(log::in, prog_config::in, database::in, imap::in,
-    inotify(S)::in, mailbox_pair::in, requires_check::in, update_method::in,
-    result_restart::out, dir_cache::in, dir_cache::out, io::di, io::uo) is det.
+:- pred sync_and_repeat(log::in, prog_config::in, env_info::in, database::in,
+    imap::in, inotify(S)::in, mailbox_pair::in, requires_check::in,
+    update_method::in, result_restart::out, dir_cache::in, dir_cache::out,
+    io::di, io::uo) is det.
 
-sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, Shortcut0,
-        DirCacheUpdate0, Res, !DirCache, !IO) :-
+sync_and_repeat(Log, Config, EnvInfo, Db, IMAP, Inotify, MailboxPair,
+        Shortcut0, DirCacheUpdate0, Res, !DirCache, !IO) :-
     lookup_remote_mailbox_modseqvalzer(Db, MailboxPair, ResLastModSeqValzer,
         !IO),
     (
         ResLastModSeqValzer = ok(LastModSeqValzer @ mod_seq_valzer(Low)),
         log_notice(Log,
             format("Synchronising from MODSEQ %s", [s(to_string(Low))]), !IO),
-        sync_mailboxes(Log, Config, Db, IMAP, Inotify, MailboxPair,
+        sync_mailboxes(Log, Config, EnvInfo, Db, IMAP, Inotify, MailboxPair,
             LastModSeqValzer, Shortcut0, DirCacheUpdate0, ResSync,
             !DirCache, !IO),
         (
@@ -758,7 +764,7 @@ sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, Shortcut0,
                     DirCacheUpdate1, !DirCache, !IO),
                 (
                     Res1 = ok(sync(RequiresCheck1)),
-                    sync_and_repeat(Log, Config, Db, IMAP, Inotify,
+                    sync_and_repeat(Log, Config, EnvInfo, Db, IMAP, Inotify,
                         MailboxPair, RequiresCheck1, DirCacheUpdate1,
                         Res, !DirCache, !IO)
                 ;
