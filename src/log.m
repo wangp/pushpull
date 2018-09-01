@@ -74,7 +74,8 @@ close_log(log(_Stderr, MaybeFileStream, _MinLevel), !IO) :-
 log(log(Stderr, MaybeFileStream, MaxLevel), Level, Message, !IO) :-
     ( to_int(Level) =< to_int(MaxLevel) ->
         time(Time, !IO),
-        Timestamp = timestamp(localtime(Time)),
+        localtime(Time, LocalTime, !IO),
+        Timestamp = timestamp(LocalTime),
         do_log(Stderr, Level, Timestamp, Message, !IO),
         (
             MaybeFileStream = yes(FileStream),
