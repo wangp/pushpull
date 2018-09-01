@@ -227,7 +227,8 @@ fn_flags_to_standard_flags(String, Set) :-
 
 standard_flags_to_fn_flags(Set, String) :-
     set.to_sorted_list(Set, Flags),
-    list.filter_map(flag_to_standard_char, Flags, Chars),
+    list.filter_map(flag_to_standard_char, Flags, UnsortedChars),
+    list.sort(UnsortedChars, Chars),
     string.from_char_list(Chars, String).
 
 :- pred char_to_standard_flag(char::in, flag::out) is semidet.
