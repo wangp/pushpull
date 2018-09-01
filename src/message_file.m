@@ -216,7 +216,7 @@ is_header_field(Line, Lines, RestLines, FieldName, FieldBody) :-
         string.unsafe_between(Line, Colon + 1, End, Body0),
         FieldName = string.rstrip(Name0),
         Body1 = string.lstrip(Body0),
-        takewhile(folded_line, Lines, BodyFolded, RestLines),
+        list.take_while(folded_line, Lines, BodyFolded, RestLines),
         string.append_list([Body1 | BodyFolded], FieldBody)
     ).
 
