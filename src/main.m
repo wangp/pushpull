@@ -104,6 +104,7 @@ main_2(Log, Config, !IO) :-
     ;
         install_signal_handler(sigint, count, !IO)
     ),
+    install_signal_handler(sigterm, count, !IO),
     install_signal_handler(sigpipe, ignore, !IO),
     install_signal_handler(sigusr1, count, !IO),
     DbFileName = Config ^ db_filename,
@@ -165,8 +166,8 @@ main_4(Log, Config, Password, Db, Inotify, !DirCache, !IO) :-
                 format("Restarting after %d second delay.\n", [i(Delay)]),
                 !IO),
             sleep(Delay, !IO),
-            get_sigint_count(SigInt, !IO),
-            ( SigInt > 0 ->
+            get_sigint_or_sigterm_count(InterruptCount, !IO),
+            ( InterruptCount > 0 ->
                 log_notice(Log, "Stopping.\n", !IO)
             ;
                 log_notice(Log, "Restarting.\n", !IO),
@@ -741,8 +742,8 @@ sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, Shortcut0,
             !DirCache, !IO),
         (
             ResSync = ok(ok),
-            get_sigint_count(SigInt, !IO),
-            ( SigInt > 0 ->
+            get_sigint_or_sigterm_count(InterruptCount, !IO),
+            ( InterruptCount > 0 ->
                 Res = ok - stop
             ; Config ^ idle = no ->
                 Res = ok - stop

@@ -8,6 +8,7 @@
 
 :- type signal
     --->    sigint
+    ;       sigterm
     ;       sigpipe
     ;       sigusr1.
 
@@ -17,7 +18,7 @@
 
 :- pred install_signal_handler(signal::in, handler::in, io::di, io::uo) is det.
 
-:- pred get_sigint_count(int::out, io::di, io::uo) is det.
+:- pred get_sigint_or_sigterm_count(int::out, io::di, io::uo) is det.
 :- pred get_sigusr1_count(int::out, io::di, io::uo) is det.
 
 %-----------------------------------------------------------------------------%
@@ -33,6 +34,7 @@
 
 :- pragma foreign_enum("C", signal/0, [
     sigint - "SIGINT",
+    sigterm - "SIGTERM",
     sigpipe - "SIGPIPE",
     sigusr1 - "SIGUSR1"
 ]).
@@ -41,6 +43,7 @@
 
 :- pragma foreign_decl("C", local, "
 static sig_atomic_t sigint_count;
+static sig_atomic_t sigterm_count;
 static sig_atomic_t sigpipe_count;
 static sig_atomic_t sigusr1_count;
 
@@ -50,6 +53,9 @@ count_signal(int sig)
     switch (sig) {
         case SIGINT:
             sigint_count++;
+            break;
+        case SIGTERM:
+            sigterm_count++;
             break;
         case SIGPIPE:
             sigpipe_count++;
@@ -89,11 +95,11 @@ install_signal_handler(Signal, Handler, !IO) :-
 %-----------------------------------------------------------------------------%
 
 :- pragma foreign_proc("C",
-    get_sigint_count(N::out, _IO0::di, _IO::uo),
+    get_sigint_or_sigterm_count(N::out, _IO0::di, _IO::uo),
     [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
         may_not_duplicate],
 "
-    N = sigint_count;
+    N = sigint_count + sigterm_count;
 ").
 
 :- pragma foreign_proc("C",

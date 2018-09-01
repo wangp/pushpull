@@ -207,8 +207,8 @@ update_by_scan(Log, Queue0, Res, DirCache0, DirCache, !IO) :-
     queue(scan_dir)::out, dirinfos::in, dirinfos::out, io::di, io::uo) is det.
 
 update_queue(Log, Res, !Queue, !Dirs, !IO) :-
-    signal.get_sigint_count(Sigint, !IO),
-    ( Sigint > 0 ->
+    signal.get_sigint_or_sigterm_count(InterruptCount, !IO),
+    ( InterruptCount > 0 ->
         Res = error("interrupted")
     ; queue.get(DirNameContext, !Queue) ->
         update_dir(Log, DirNameContext, Res0, !Queue, !Dirs, !IO),

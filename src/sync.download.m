@@ -172,8 +172,8 @@ handle_downloaded_messages(Log, Config, Database, MailboxPair,
             !Count, !DirCache, !LocalChanges, !IO),
         (
             Res0 = ok,
-            signal.get_sigint_count(Sigint, !IO),
-            ( Sigint > 0 ->
+            signal.get_sigint_or_sigterm_count(InterruptCount, !IO),
+            ( InterruptCount > 0 ->
                 Res = error("interrupted")
             ;
                 handle_downloaded_messages(Log, Config, Database, MailboxPair,
