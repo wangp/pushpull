@@ -488,7 +488,7 @@ set(K, V, black(K0, V0, L0, R0), Tree) :-
     % rotation cases.
 
 :- pred set_2(rbtree(K, V), K, V, rbtree(K, V)).
-:- mode set_2(di, di, di, uo) is det.
+% :- mode set_2(di, di, di, uo) is det.
 :- mode set_2(in, in, in, out) is det.
 
 % Red node always inserted at the bottom as it will be rotated into the
