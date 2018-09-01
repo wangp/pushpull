@@ -98,7 +98,7 @@ download_messages(Log, Config, Database, IMAP, MailboxPair, Total, Unpaireds,
 
 :- func max_batch_messages = int.
 
-max_batch_messages = 50.
+max_batch_messages = 1000.
 
 :- pred download_message_batch(log::in, prog_config::in, database::in,
     imap::in, mailbox_pair::in, int::in, list(unpaired_remote_message)::in,
