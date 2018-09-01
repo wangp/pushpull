@@ -14,7 +14,7 @@ MCFLAGS += --optimise-constructor-last-call
 MCFLAGS += --no-ansi-c
 
 # Module-specific options.
-#MCFLAGS-imap.io += --warn-non-tail-recursion self-and-mutual
+MCFLAGS-imap.io += --warn-non-tail-recursion self-and-mutual
 MCFLAGS-sync.flags_local += --exec-trace-tail-rec
 CFLAGS-binary_string += -D_GNU_SOURCE
 CFLAGS-string_util += -D_GNU_SOURCE
