@@ -151,30 +151,35 @@ main_3(Log, Config, Password, Db, Inotify, !IO) :-
 
 main_4(Log, Config, Password, Db, Inotify, !DirCache, !IO) :-
     main_5(Log, Config, Password, Db, Inotify, Restart, !DirCache, !IO),
-    (
-        Restart = stop
+    get_sigint_or_sigterm_count(InterruptCount0, !IO),
+    ( InterruptCount0 > 0 ->
+        log_notice(Log, "Stopping.\n", !IO)
     ;
-        Restart = immediate_restart,
-        log_notice(Log, "Restarting.\n", !IO),
-        main_4(Log, Config, Password, Db, Inotify, !DirCache, !IO)
-    ;
-        Restart = delayed_restart,
-        MaybeDelay = Config ^ restart_after_error_seconds,
         (
-            MaybeDelay = yes(Delay),
-            log_notice(Log,
-                format("Restarting after %d second delay.\n", [i(Delay)]),
-                !IO),
-            sleep(Delay, !IO),
-            get_sigint_or_sigterm_count(InterruptCount, !IO),
-            ( InterruptCount > 0 ->
-                log_notice(Log, "Stopping.\n", !IO)
-            ;
-                log_notice(Log, "Restarting.\n", !IO),
-                main_4(Log, Config, Password, Db, Inotify, !DirCache, !IO)
-            )
+            Restart = stop
         ;
-            MaybeDelay = no
+            Restart = immediate_restart,
+            log_notice(Log, "Restarting.\n", !IO),
+            main_4(Log, Config, Password, Db, Inotify, !DirCache, !IO)
+        ;
+            Restart = delayed_restart,
+            MaybeDelay = Config ^ restart_after_error_seconds,
+            (
+                MaybeDelay = yes(Delay),
+                log_notice(Log,
+                    format("Restarting after %d second delay.\n", [i(Delay)]),
+                    !IO),
+                sleep(Delay, !IO),
+                get_sigint_or_sigterm_count(InterruptCount1, !IO),
+                ( InterruptCount1 > 0 ->
+                    log_notice(Log, "Stopping.\n", !IO)
+                ;
+                    log_notice(Log, "Restarting.\n", !IO),
+                    main_4(Log, Config, Password, Db, Inotify, !DirCache, !IO)
+                )
+            ;
+                MaybeDelay = no
+            )
         )
     ).
 
@@ -748,6 +753,7 @@ sync_and_repeat(Log, Config, Db, IMAP, Inotify, MailboxPair, Shortcut0,
             ; Config ^ idle = no ->
                 Res = ok - stop
             ;
+                % Go into IDLE.
                 sync_and_repeat_2(Log, Config, IMAP, Inotify, Res1,
                     DirCacheUpdate1, !DirCache, !IO),
                 (
