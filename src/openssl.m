@@ -178,6 +178,12 @@ do_setup(const char *host_name_only, const char *host_and_port,
         return NULL;
     }
 
+    if (SSL_set_tlsext_host_name(ssl, host_name_only) != 1) {
+        BIO_free_all(bio);
+        *error = MR_make_string_const(""SSL_set_tlsext_host_name failed"");
+        return NULL;
+    }
+
     /* Don't want any retries. */
     SSL_set_mode(ssl, SSL_MODE_AUTO_RETRY);
 
