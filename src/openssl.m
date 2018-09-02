@@ -10,9 +10,6 @@
 
 :- import_module binary_string.
 
-:- type method
-    --->    tlsv1_client_method.
-
 :- type bio.
 
 :- type certificate_names
@@ -25,7 +22,7 @@
 
 :- pred library_init(io::di, io::uo) is det.
 
-:- pred setup(method::in, string::in, maybe(string)::in, maybe_error(bio)::out,
+:- pred setup(string::in, maybe(string)::in, maybe_error(bio)::out,
     io::di, io::uo) is det.
 
 :- pred bio_do_connect(bio::in, maybe_error::out, io::di, io::uo) is det.
@@ -59,10 +56,6 @@
 :- import_module int.
 :- import_module string.
 
-:- type method_ptr.
-
-:- pragma foreign_type("C", method_ptr, "const SSL_METHOD *").
-
 :- pragma foreign_type("C", bio, "BIO *").
 
 :- pragma foreign_decl("C", local, "
@@ -90,31 +83,15 @@
 
 %-----------------------------------------------------------------------------%
 
-:- func method_ptr(method) = method_ptr.
-
-method_ptr(tlsv1_client_method) = tlsv1_client_method.
-
-:- func tlsv1_client_method = method_ptr.
-
-:- pragma foreign_proc("C",
-    tlsv1_client_method = (Method::out),
-    [will_not_call_mercury, promise_pure, thread_safe, may_not_duplicate],
-"
-    Method = TLSv1_client_method();
-").
-
-%-----------------------------------------------------------------------------%
-
     % XXX perform host name checking, X509_check_host in OpenSSL 1.1
-setup(Method, Host, MaybeCertificateFile, Res, !IO) :-
+setup(Host, MaybeCertificateFile, Res, !IO) :-
     (
         MaybeCertificateFile = yes(CertificateFileOrEmpty)
     ;
         MaybeCertificateFile = no,
         CertificateFileOrEmpty = ""
     ),
-    setup_2(method_ptr(Method), Host, CertificateFileOrEmpty, Ok, Bio, Error,
-        !IO),
+    setup_2(Host, CertificateFileOrEmpty, Ok, Bio, Error, !IO),
     (
         Ok = yes,
         Res = ok(Bio)
@@ -124,34 +101,36 @@ setup(Method, Host, MaybeCertificateFile, Res, !IO) :-
         Res = error(Message)
     ).
 
-:- pred setup_2(method_ptr::in, string::in, string::in, bool::out, bio::out,
-    string::out, io::di, io::uo) is det.
+:- pred setup_2(string::in, string::in, bool::out, bio::out, string::out,
+    io::di, io::uo) is det.
 
 :- pragma foreign_proc("C",
-    setup_2(Method::in, Host::in, CertificateFile::in, Ok::out, Bio::out,
-        Error::out, _IO0::di, _IO::uo),
+    setup_2(Host::in, CertificateFile::in, Ok::out, Bio::out, Error::out,
+        _IO0::di, _IO::uo),
     [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
         may_not_duplicate],
 "
     Error = MR_make_string_const("""");
-    Bio = do_setup(Method, Host, CertificateFile, &Error);
+    Bio = do_setup(Host, CertificateFile, &Error);
     Ok = (Bio != NULL) ? MR_YES : MR_NO;
 ").
 
 :- pragma foreign_decl("C", local, "
 static BIO *
-do_setup(const SSL_METHOD *method, const char *host,
-    const char *certificate_file, MR_String *error)
+do_setup(const char *host, const char *certificate_file, MR_String *error)
 {
     SSL_CTX *ctx;
     SSL *ssl;
     BIO *bio;
 
-    ctx = SSL_CTX_new(method);
+    ctx = SSL_CTX_new(TLS_client_method());
     if (ctx == NULL) {
         *error = MR_make_string_const(""SSL_CTX_new failed"");
         return NULL;
     }
+
+    /* Exclude everything below TLSv1 */
+    SSL_CTX_set_min_proto_version(ctx, TLS1_VERSION);
 
     if (strlen(certificate_file) > 0 &&
         SSL_CTX_load_verify_locations(ctx, certificate_file, NULL) != 1)

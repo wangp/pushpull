@@ -337,8 +337,7 @@ open_connection(Log, Config, Res, !IO) :-
     MaybeCertificateFile = Config ^ certificate_file,
 
     log_notice(Log, "Connecting to " ++ HostPort, !IO),
-    connect_handshake(tlsv1_client_method, HostPort, MaybeCertificateFile,
-        ResBio, !IO),
+    connect_handshake(HostPort, MaybeCertificateFile, ResBio, !IO),
     (
         ResBio = ok(Bio - CertificateNames),
         log_debug(Log, "Verified peer certificate", !IO),
@@ -359,11 +358,11 @@ open_connection(Log, Config, Res, !IO) :-
         Res = error(Error)
     ).
 
-:- pred connect_handshake(method::in, string::in, maybe(string)::in,
+:- pred connect_handshake(string::in, maybe(string)::in,
     maybe_error(pair(bio, certificate_names))::out, io::di, io::uo) is det.
 
-connect_handshake(Method, HostPort, MaybeCertificateFile, Res, !IO) :-
-    setup(Method, HostPort, MaybeCertificateFile, ResBio, !IO),
+connect_handshake(HostPort, MaybeCertificateFile, Res, !IO) :-
+    setup(HostPort, MaybeCertificateFile, ResBio, !IO),
     (
         ResBio = ok(Bio),
         bio_do_connect(Bio, ResConnect, !IO),
