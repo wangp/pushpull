@@ -293,16 +293,17 @@ maybe_prompt_password(Config, Res, !IO) :-
     ;
         MaybePassword = no,
         UserName = Config ^ username,
-        HostPort = Config ^ hostport,
-        prompt_password(UserName, HostPort, Res, !IO)
+        HostNameOnly = Config ^ host_name_only,
+        Port = Config ^ port,
+        prompt_password(UserName, HostNameOnly, Port, Res, !IO)
     ).
 
-:- pred prompt_password(username::in, string::in, maybe_error(password)::out,
-    io::di, io::uo) is det.
+:- pred prompt_password(username::in, string::in, int::in,
+    maybe_error(password)::out, io::di, io::uo) is det.
 
-prompt_password(username(UserName), HostPort, Res, !IO) :-
-    string.format("Enter password for '%s' to '%s': ",
-        [s(UserName), s(HostPort)], Prompt),
+prompt_password(username(UserName), HostNameOnly, Port, Res, !IO) :-
+    string.format("Enter password for '%s' to '%s:%d': ",
+        [s(UserName), s(HostNameOnly), i(Port)], Prompt),
     io.write_string(Prompt, !IO),
     io.flush_output(!IO),
     set_echo(no, Res0, !IO),
@@ -333,36 +334,13 @@ prompt_password(username(UserName), HostPort, Res, !IO) :-
     io::di, io::uo) is det.
 
 open_connection(Log, Config, Res, !IO) :-
-    HostPort = Config ^ hostport,
+    HostNameOnly = Config ^ host_name_only,
+    Port = Config ^ port,
     MaybeCertificateFile = Config ^ certificate_file,
+    log_notice(Log, format("Connecting to %s:%d",
+        [s(HostNameOnly), i(Port)]), !IO),
 
-    log_notice(Log, "Connecting to " ++ HostPort, !IO),
-    connect_handshake(HostPort, MaybeCertificateFile, ResBio, !IO),
-    (
-        ResBio = ok(Bio - CertificateNames),
-        log_debug(Log, "Verified peer certificate", !IO),
-
-        Expected = Config ^ certificate_match_name,
-        ( match_certificate_name(Expected, CertificateNames) ->
-            Res = ok(Bio),
-            log_info(Log, "Peer certificate matches name '" ++
-                Expected ++ "'", !IO)
-        ;
-            bio_destroy(Bio, !IO),
-            log_certificate_names(Log, CertificateNames, !IO),
-            Res = error("Peer certificate does not match name '" ++
-                Expected ++ "'")
-        )
-    ;
-        ResBio = error(Error),
-        Res = error(Error)
-    ).
-
-:- pred connect_handshake(string::in, maybe(string)::in,
-    maybe_error(pair(bio, certificate_names))::out, io::di, io::uo) is det.
-
-connect_handshake(HostPort, MaybeCertificateFile, Res, !IO) :-
-    setup(HostPort, MaybeCertificateFile, ResBio, !IO),
+    setup(HostNameOnly, Port, MaybeCertificateFile, ResBio, !IO),
     (
         ResBio = ok(Bio),
         bio_do_connect(Bio, ResConnect, !IO),
@@ -370,11 +348,11 @@ connect_handshake(HostPort, MaybeCertificateFile, Res, !IO) :-
             ResConnect = ok,
             bio_do_handshake(Bio, ResHandshake, !IO),
             (
-                ResHandshake = ok(CertificateNames),
+                ResHandshake = ok,
                 set_timeouts(Bio, ResSetup, !IO),
                 (
                     ResSetup = ok,
-                    Res = ok(Bio - CertificateNames)
+                    Res = ok(Bio)
                 ;
                     ResSetup = error(Error),
                     Res = error(Error)
@@ -418,29 +396,6 @@ set_timeouts(Bio, Res, !IO) :-
     ;
         ResFd = error(Error),
         Res = error(Error)
-    ).
-
-:- pred match_certificate_name(string::in, certificate_names::in) is semidet.
-
-match_certificate_name(Expected, certificate_names(CommonName, DnsNames)) :-
-    (
-        member(Expected, DnsNames)
-    ;
-        CommonName = Expected
-    ).
-
-:- pred log_certificate_names(log::in, certificate_names::in, io::di, io::uo)
-    is det.
-
-log_certificate_names(Log, certificate_names(CommonName, DnsNames), !IO) :-
-    log_notice(Log, "Peer certificate has common name (CN): " ++ CommonName,
-        !IO),
-    (
-        DnsNames = []
-    ;
-        DnsNames = [_ | _],
-        log_notice(Log, "Peer certificate has DNS names: "
-            ++ join_list(", ", DnsNames), !IO)
     ).
 
 %-----------------------------------------------------------------------------%

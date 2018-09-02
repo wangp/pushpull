@@ -22,13 +22,12 @@
 
 :- pred library_init(io::di, io::uo) is det.
 
-:- pred setup(string::in, maybe(string)::in, maybe_error(bio)::out,
+:- pred setup(string::in, int::in, maybe(string)::in, maybe_error(bio)::out,
     io::di, io::uo) is det.
 
 :- pred bio_do_connect(bio::in, maybe_error::out, io::di, io::uo) is det.
 
-:- pred bio_do_handshake(bio::in, maybe_error(certificate_names)::out,
-    io::di, io::uo) is det.
+:- pred bio_do_handshake(bio::in, maybe_error::out, io::di, io::uo) is det.
 
 :- pred bio_destroy(bio::in, io::di, io::uo) is det.
 
@@ -83,15 +82,16 @@
 
 %-----------------------------------------------------------------------------%
 
-    % XXX perform host name checking, X509_check_host in OpenSSL 1.1
-setup(Host, MaybeCertificateFile, Res, !IO) :-
+setup(HostNameOnly, Port, MaybeCertificateFile, Res, !IO) :-
     (
         MaybeCertificateFile = yes(CertificateFileOrEmpty)
     ;
         MaybeCertificateFile = no,
         CertificateFileOrEmpty = ""
     ),
-    setup_2(Host, CertificateFileOrEmpty, Ok, Bio, Error, !IO),
+    HostAndPort = HostNameOnly ++ ":" ++ from_int(Port),
+    setup_2(HostNameOnly, HostAndPort, CertificateFileOrEmpty, Ok, Bio, Error,
+        !IO),
     (
         Ok = yes,
         Res = ok(Bio)
@@ -101,25 +101,27 @@ setup(Host, MaybeCertificateFile, Res, !IO) :-
         Res = error(Message)
     ).
 
-:- pred setup_2(string::in, string::in, bool::out, bio::out, string::out,
-    io::di, io::uo) is det.
+:- pred setup_2(string::in, string::in, string::in,
+    bool::out, bio::out, string::out, io::di, io::uo) is det.
 
 :- pragma foreign_proc("C",
-    setup_2(Host::in, CertificateFile::in, Ok::out, Bio::out, Error::out,
-        _IO0::di, _IO::uo),
+    setup_2(HostNameOnly::in, HostAndPort::in, CertificateFile::in,
+        Ok::out, Bio::out, Error::out, _IO0::di, _IO::uo),
     [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
         may_not_duplicate],
 "
     Error = MR_make_string_const("""");
-    Bio = do_setup(Host, CertificateFile, &Error);
+    Bio = do_setup(HostNameOnly, HostAndPort, CertificateFile, &Error);
     Ok = (Bio != NULL) ? MR_YES : MR_NO;
 ").
 
 :- pragma foreign_decl("C", local, "
 static BIO *
-do_setup(const char *host, const char *certificate_file, MR_String *error)
+do_setup(const char *host_name_only, const char *host_and_port,
+    const char *certificate_file, MR_String *error)
 {
     SSL_CTX *ctx;
+    X509_VERIFY_PARAM *param;
     SSL *ssl;
     BIO *bio;
 
@@ -132,15 +134,27 @@ do_setup(const char *host, const char *certificate_file, MR_String *error)
     /* Exclude everything below TLSv1 */
     SSL_CTX_set_min_proto_version(ctx, TLS1_VERSION);
 
-    if (strlen(certificate_file) > 0 &&
-        SSL_CTX_load_verify_locations(ctx, certificate_file, NULL) != 1)
-    {
-        SSL_CTX_free(ctx);
-        *error = MR_make_string_const(""SSL_CTX_load_verify_locations failed"");
-        return NULL;
+    if (strlen(certificate_file) > 0) {
+        if (SSL_CTX_load_verify_locations(ctx, certificate_file, NULL) != 1) {
+            SSL_CTX_free(ctx);
+            *error = MR_make_string_const(""SSL_CTX_load_verify_locations failed"");
+            return NULL;
+        }
     }
 
+    /* Enable peer verification */
     SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
+    SSL_CTX_set_verify_depth(ctx, 4);
+
+    /* Enable automatic hostname checks */
+    /* OpenSSL 1.1.0 has a simpler interface but that is not yet in LibreSSL */
+    param = SSL_CTX_get0_param(ctx);
+    X509_VERIFY_PARAM_set_hostflags(param, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+    if (X509_VERIFY_PARAM_set1_host(param, host_name_only, 0) != 1) {
+        SSL_CTX_free(ctx);
+        *error = MR_make_string_const(""X509_VERIFY_PARAM_set1_host failed"");
+        return NULL;
+    }
 
     bio = BIO_new_ssl_connect(ctx);
 
@@ -151,6 +165,12 @@ do_setup(const char *host, const char *certificate_file, MR_String *error)
         return NULL;
     }
 
+    if (BIO_set_conn_hostname(bio, host_and_port) != 1) {
+        BIO_free_all(bio);
+        *error = MR_make_string_const(""BIO_set_conn_hostname failed"");
+        return NULL;
+    }
+
     BIO_get_ssl(bio, &ssl);
     if (ssl == NULL) {
         BIO_free_all(bio);
@@ -158,10 +178,8 @@ do_setup(const char *host, const char *certificate_file, MR_String *error)
         return NULL;
     }
 
-	/* Don't want any retries. */
-	SSL_set_mode(ssl, SSL_MODE_AUTO_RETRY);
-
-    BIO_set_conn_hostname(bio, host);
+    /* Don't want any retries. */
+    SSL_set_mode(ssl, SSL_MODE_AUTO_RETRY);
 
     return bio;
 }
@@ -198,7 +216,7 @@ bio_do_handshake(Bio, Res, !IO) :-
         make_error_message("error establishing SSL connection", Message, !IO),
         Res = error(Message)
     ;
-        check_peer_certificate(Bio, Res, !IO)
+        Res = ok
     ).
 
 :- pred bio_do_handshake_2(bio::in, int::out, io::di, io::uo) is det.
@@ -210,136 +228,6 @@ bio_do_handshake(Bio, Res, !IO) :-
 "
     ERR_clear_error();
     RC = BIO_do_handshake(Bio);
-").
-
-%-----------------------------------------------------------------------------%
-
-:- pred check_peer_certificate(bio::in, maybe_error(certificate_names)::out,
-    io::di, io::uo) is det.
-
-check_peer_certificate(Bio, Res, !IO) :-
-    check_peer_certificate_2(Bio, Ok, CommonName, DnsNames, !IO),
-    (
-        Ok = yes,
-        Res = ok(certificate_names(CommonName, DnsNames))
-    ;
-        Ok = no,
-        Res = error("failed to verify peer certificate or get names")
-    ).
-
-:- pred check_peer_certificate_2(bio::in, bool::out, string::out,
-    list(string)::out, io::di, io::uo) is det.
-
-:- pragma foreign_proc("C",
-    check_peer_certificate_2(Bio::in, Ok::out, CommonName::out, DnsNames::out,
-        _IO0::di, _IO::uo),
-    [will_not_call_mercury, promise_pure, thread_safe, tabled_for_io,
-        may_not_duplicate],
-"
-    X509 *cert;
-
-    cert = get_peer_certificate(Bio);
-    if (cert != NULL) {
-        Ok = MR_YES;
-        CommonName = get_common_name(cert, MR_ALLOC_ID);
-        DnsNames = get_dns_names(cert, MR_ALLOC_ID);
-    } else {
-        Ok = MR_NO;
-        CommonName = MR_make_string_const("""");
-        DnsNames = MR_list_empty();
-    }
-").
-
-:- pragma foreign_decl("C", local, "
-static MR_String
-copy_asn1_string_utf8(ASN1_STRING *asn1_string, MR_AllocSiteInfoPtr alloc_id)
-{
-    MR_String s;
-    unsigned char *utf8;
-    int rc;
-
-    rc = ASN1_STRING_to_UTF8(&utf8, asn1_string);
-    if (rc < -1) {
-        return NULL;
-    }
-    MR_make_aligned_string_copy_msg(s, (const char *) utf8, alloc_id);
-    OPENSSL_free(utf8);
-    return s;
-}
-
-static X509 *
-get_peer_certificate(BIO *bio)
-{
-    SSL *ssl;
-    X509 *cert;
-
-    BIO_get_ssl(bio, &ssl);
-    if (ssl != NULL) {
-        cert = SSL_get_peer_certificate(ssl);
-        if (cert != NULL) {
-            if (SSL_get_verify_result(ssl) == X509_V_OK) {
-                return cert;
-            }
-        }
-    }
-
-    return NULL;
-}
-
-static MR_String
-get_common_name(X509 *cert, MR_AllocSiteInfoPtr alloc_id)
-{
-    X509_NAME *subj_name;
-    int index;
-    X509_NAME_ENTRY *entry;
-    ASN1_STRING *entry_data;
-
-    subj_name = X509_get_subject_name(cert);
-    if (subj_name != NULL) {
-        index = X509_NAME_get_index_by_NID(subj_name, NID_commonName, -1);
-        if (index >= 0) {
-            entry = X509_NAME_get_entry(subj_name, index);
-            if (entry != NULL) {
-                entry_data = X509_NAME_ENTRY_get_data(entry);
-                return copy_asn1_string_utf8(entry_data, alloc_id);
-            }
-        }
-    }
-
-    return NULL;
-}
-
-static MR_Word
-get_dns_names(X509 *cert, MR_AllocSiteInfoPtr alloc_id)
-{
-    GENERAL_NAMES *sans;
-    MR_Word list;
-
-    list = MR_list_empty();
-
-    sans = X509_get_ext_d2i(cert, NID_subject_alt_name, NULL, NULL);
-    if (sans != NULL) {
-        int n;
-        int i;
-
-        n = sk_GENERAL_NAME_num(sans);
-        for (i = n - 1; i >= 0; i--) {
-            GENERAL_NAME *san;
-
-            san = sk_GENERAL_NAME_value(sans, i);
-            if (san->type == GEN_DNS) {
-                MR_String s;
-
-                s = copy_asn1_string_utf8(san->d.dNSName, alloc_id);
-                if (s != NULL) {
-                    list = MR_list_cons((MR_Word) s, list);
-                }
-            }
-        }
-    }
-
-    return list;
-}
 ").
 
 %-----------------------------------------------------------------------------%

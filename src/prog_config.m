@@ -27,8 +27,8 @@
                 buckets :: buckets,
                 quiesce_seconds :: int,
                 local_mailbox_name :: local_mailbox_name,
-                hostport :: string,
-                certificate_match_name :: string,
+                host_name_only :: string,
+                port :: int,
                 username :: username,
                 password :: maybe(password),
                 mailbox :: mailbox,
@@ -199,18 +199,26 @@ make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
         Quiesce = 10
     ),
 
-    ( nonempty(Config, "imap", "host", Host0) ->
-        Host = Host0
+    ( nonempty(Config, "imap", "host", HostNameOnly0) ->
+        HostNameOnly = HostNameOnly0
     ;
-        Host = "",
+        HostNameOnly = "",
         cons("missing imap.host", !Errors)
     ),
 
-    ( nonempty(Config, "imap", "certificate_match_name", CertMatchName0) ->
-        CertMatchName = CertMatchName0
+    ( nonempty(Config, "imap", "port", PortString) ->
+        (
+            string.to_int(PortString, PortInt),
+            PortInt > 0,
+            PortInt =< 0xffff
+        ->
+            Port = PortInt
+        ;
+            Port = 0,
+            cons("invalid imap.port: " ++ PortString, !Errors)
+        )
     ;
-        CertMatchName = "",
-        cons("missing imap.certificate_match_name", !Errors)
+        Port = 993
     ),
 
     ( nonempty(Config, "imap", "username", UserName0) ->
@@ -298,7 +306,7 @@ make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
     ProgConfig = prog_config(RestartAfterErrorSeconds,
         MaybeLogFileName, LogLevel, DbFileName,
         MaildirRoot, Fsync, Buckets, Quiesce, LocalMailboxName,
-        Host, CertMatchName, UserName, MaybePassword,
+        HostNameOnly, Port, UserName, MaybePassword,
         RemoteMailboxName, RemoteMailboxString,
         Idle, IdleTimeoutSecs, SyncOnIdleTimeout, MaybeCertificateFile,
         CommandPostSyncLocal).

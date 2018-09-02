@@ -48,16 +48,15 @@
     #
     # Note that if you have a folder which HAPPENS to have one or more
     # subfolders named XX (two hexadecimal digits) then
-    # plugsink will assume 
+    # plugsink will assume ...
     buckets = no
 
 [imap]
-    # The IMAP server and port number. The server must support TLS.
-    host = imap.example.com:993
+    # The IMAP server. The server must support TLS.
+    host = imap.example.com
 
-    # Verify that the IMAP server sends a signed certificate matching this
-    # name.
-    certificate_match_name = imap.example.com
+    # The IMAP server port number (defaults to 993).
+    port = 993
 
     # Username for the IMAP account.
     username = user
