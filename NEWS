@@ -1,3 +1,17 @@
+plugsink 0.2 (2018-10-07)
+=========================
+Please note that the "imap.host" key in the configuration file no longer
+includes the port number.
+
+* Fix touching downloaded message files to the internal date.
+* Restart sync cycle upon SIGUSR1, not SIGHUP.
+* Logout cleanly on SIGTERM like SIGINT.
+* Fix ordering of Maildir flag chars.
+* Increase batch size when downloading messages.
+* Separate server host name and port in the configuration file.
+* Use OpenSSL host name checking.
+* Negotiate TLS protocol version instead of fixing at TLSv1.
+
 plugsink 0.1 (2015-05-03)
 =========================
 First public release.
