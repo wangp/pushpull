@@ -2,15 +2,19 @@ plugsink
 ========
 
 plugsink is a bidirectional IMAP/Maildir synchronisation tool.
-It synchronises one IMAP folder with one Maildir folder in a single run.
+It synchronises one IMAP folder with one Maildir folder, then optionally
+waits for a change to either the IMAP folder (using the IDLE command) or
+to the Maildir folder (using the inotify API) before synchronising again.
 I wrote it for me, but you might like it, too.
 
 **WARNING**: Use at your own risk.
 
-I use plugsink to synchronise my GMail account, and during development
-usually test against a Dovecot server in a virtual machine.
-Beyond that, it has not received any testing with any other IMAP server.
-Do your own testing and read the source code.
+plugsink is known to work with GMail, and was tested against Dovecot
+during its earlier development. I don't know if anyone else uses it,
+or has tested it with other IMAP servers.
+plugsink does not send the EXPUNGE command (yet) so it should not
+permanently delete your mail from the IMAP server, nonetheless I suggest
+you do your own testing. And read the source code.
 
 
 Requirements
