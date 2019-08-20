@@ -1694,14 +1694,14 @@ apply_selected_mailbox_response_code(ResponseCode, !Sel) :-
 apply_message_data(MessageData, !State, !R) :-
     (
         MessageData = expunge(_),
-        !State ^ expunge_seen := yes,
         (
             !.State ^ selected = yes(Sel0),
             decrement_exists(Sel0, Sel),
             !State ^ selected := yes(Sel)
         ;
             !.State ^ selected = no
-        )
+        ),
+        !State ^ expunge_seen := yes
     ;
         MessageData = fetch(MsgSeqNr, Atts),
         (
