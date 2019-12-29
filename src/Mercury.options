@@ -3,8 +3,8 @@ MAIN_TARGET = plugsink
 
 # Linking.
 MCFLAGS-plugsink += --mercury-linkage static
-MLLIBS-plugsink += -lsqlite3
-MLLIBS-plugsink += -lssl -lcrypto
+LDFLAGS-plugsink += -pthread -lsqlite3
+LDFLAGS-plugsink += -Wl,-Bstatic -lssl -lcrypto -Wl,-Bdynamic
 
 # General optimisation flags.
 MCFLAGS += --optimise-constructor-last-call
