@@ -195,7 +195,10 @@ propagate_flag_deltas_by_group_2(Log, Db, IMAP, Changes, Group,
 :- func show_changes(changes) = string.
 
 show_changes(changes(AddFlags, RemoveFlags)) =
-    ( empty(AddFlags), empty(RemoveFlags) ->
+    (
+        set.is_empty(AddFlags),
+        set.is_empty(RemoveFlags)
+    ->
         "(none)"
     ;
         join_list(" ",
@@ -225,7 +228,7 @@ store_remote_flags_add_rm(Log, IMAP, UIDs, changes(AddFlags, RemoveFlags), Res,
     is det.
 
 store_remote_flags_change(Log, IMAP, UIDs, Operation, ChangeFlags, Res, !IO) :-
-    ( set.empty(ChangeFlags) ->
+    ( set.is_empty(ChangeFlags) ->
         Res = ok
     ;
         uid_store(IMAP, UIDs, Operation, silent, to_sorted_list(ChangeFlags),
