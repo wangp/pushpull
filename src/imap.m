@@ -12,7 +12,7 @@
 :- import_module pair.
 
 :- include_module imap.charclass.
-:- include_module imap.time.
+:- include_module imap.date_time.
 :- include_module imap.types.
 
 :- import_module binary_string.

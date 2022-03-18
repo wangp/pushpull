@@ -1,7 +1,7 @@
 % plugsink - a bidirectional IMAP/Maildir synchronisation tool.
 % Copyright (C) 2015 Peter Wang
 
-:- module imap.time.
+:- module imap.date_time.
 :- interface.
 
 :- import_module time.

@@ -15,7 +15,7 @@
 :- import_module time.
 
 :- import_module imap.
-:- import_module imap.time.
+:- import_module imap.date_time.
 :- import_module imap.types.
 
 %-----------------------------------------------------------------------------%

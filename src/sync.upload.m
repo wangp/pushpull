@@ -27,7 +27,7 @@
 
 :- import_module binary_string.
 :- import_module flag_delta.
-:- import_module imap.time.
+:- import_module imap.date_time.
 :- import_module log.
 :- import_module log_help.
 :- import_module maildir.
