@@ -160,12 +160,12 @@
 :- import_module unit.
 
 :- include_module imap.command.
-:- include_module imap.io.
+:- include_module imap.read_write.
 :- include_module imap.parsing.
 :- include_module imap.response.
 
 :- import_module imap.command.
-:- import_module imap.io.
+:- import_module imap.read_write.
 :- import_module imap.parsing.
 :- import_module imap.response.
 

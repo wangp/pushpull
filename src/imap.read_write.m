@@ -1,7 +1,7 @@
 % plugsink - a bidirectional IMAP/Maildir synchronisation tool.
 % Copyright (C) 2015 Peter Wang
 
-:- module imap.io.
+:- module imap.read_write.
 :- interface.
 
 :- pred read_crlf_line_chop(pipe::in, io.result(list(int))::out,
