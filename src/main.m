@@ -43,6 +43,9 @@
 :- import_module sync.
 :- import_module terminal_attr.
 
+:- type test_auth_only
+    --->    test_auth_only(bool).
+
 :- type result_restart == pair(maybe_result, restart).
 
 :- type restart
@@ -62,12 +65,19 @@
 %-----------------------------------------------------------------------------%
 
 real_main(!IO) :-
-    io.command_line_arguments(Args, !IO),
+    io.command_line_arguments(Args0, !IO),
+    ( Args0 = ["--test-auth-only" | Args1] ->
+        TestAuth = test_auth_only(yes),
+        Args = Args1
+    ;
+        TestAuth = test_auth_only(no),
+        Args = Args0
+    ),
     ( Args = [ConfigFileName, PairingName] ->
         load_prog_config(ConfigFileName, PairingName, LoadRes, !IO),
         (
             LoadRes = ok(Config),
-            main_1(Config, !IO)
+            main_1(Config, TestAuth, !IO)
         ;
             LoadRes = errors(Errors),
             print_error("Errors in configuration file:", !IO),
@@ -81,15 +91,21 @@ real_main(!IO) :-
         io.set_exit_status(1, !IO)
     ).
 
-:- pred main_1(prog_config::in, io::di, io::uo) is det.
+:- pred main_1(prog_config::in, test_auth_only::in, io::di, io::uo) is det.
 
-main_1(Config, !IO) :-
+main_1(Config, TestAuth, !IO) :-
     MaybeLogFileName = Config ^ maybe_log_filename,
     Level = Config ^ log_level,
     open_log(MaybeLogFileName, Level, ResLog, !IO),
     (
         ResLog = ok(Log),
-        main_2(Log, Config, !IO),
+        (
+            TestAuth = test_auth_only(yes),
+            test_auth(Log, Config, !IO)
+        ;
+            TestAuth = test_auth_only(no),
+            main_2(Log, Config, !IO)
+        ),
         close_log(Log, !IO)
     ;
         ResLog = error(Error),
@@ -138,8 +154,8 @@ main_2(Log, Config0, !IO) :-
         report_error(Log, Error, !IO)
     ).
 
-:- pred main_3(log::in, prog_config::in, env_info::in,
-    database::in, inotify(S)::in, io::di, io::uo) is det.
+:- pred main_3(log::in, prog_config::in, env_info::in, database::in,
+    inotify(S)::in, io::di, io::uo) is det.
 
 main_3(Log, Config, EnvInfo, Db, Inotify, !IO) :-
     LocalMailboxName = Config ^ local_mailbox_name,
@@ -263,6 +279,60 @@ main_5(Log, Config, EnvInfo, Db, Inotify, Restart, !DirCache, !IO) :-
         ResBio = error(Error),
         report_error(Log, Error, !IO),
         Restart = delayed_restart
+    ).
+
+:- pred test_auth(log::in, prog_config::in, io::di, io::uo) is det.
+
+test_auth(Log, Config, !IO) :-
+    open_connection(Log, Config, ResBio, !IO),
+    (
+        ResBio = ok(Bio),
+        imap.open(Bio, ResOpen, OpenAlerts, !IO),
+        report_alerts(Log, OpenAlerts, !IO),
+        (
+            ResOpen = ok(IMAP),
+            do_login(Log, Config, IMAP, ResLogin, !IO),
+            % ResLogin already logged.
+            (
+                ResLogin = ok,
+                logout(IMAP, ResLogout, !IO),
+                (
+                    ResLogout = ok(result(Status, LogoutText, LogoutAlerts)),
+                    report_alerts(Log, LogoutAlerts, !IO),
+                    (
+                        Status = ok,
+                        log_debug(Log, LogoutText, !IO),
+                        log_notice(Log, "Logged out.", !IO)
+                    ;
+                        ( Status = no
+                        ; Status = bad
+                        ; Status = bye
+                        ; Status = continue
+                        ),
+                        log_error(Log, LogoutText, !IO)
+                    )
+                ;
+                    ResLogout = eof,
+                    log_warning(Log, "Connection closed before logout.", !IO)
+                ;
+                    ResLogout = error(LogoutError),
+                    report_error(Log, LogoutError, !IO)
+                )
+            ;
+                ResLogin = eof
+            ;
+                ResLogin = error(Error),
+                report_error(Log, Error, !IO)
+            ),
+            close(IMAP, !IO)
+        ;
+            ResOpen = error(Error),
+            report_error(Log, Error, !IO)
+        )
+        % Bio freed already.
+    ;
+        ResBio = error(Error),
+        report_error(Log, Error, !IO)
     ).
 
 :- pred debugging_grade is semidet.
