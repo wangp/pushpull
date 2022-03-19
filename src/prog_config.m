@@ -29,8 +29,7 @@
                 local_mailbox_name :: local_mailbox_name,
                 host_name_only :: string,
                 port :: int,
-                username :: username,
-                password :: maybe(password),
+                auth_method :: auth_method,
                 mailbox :: mailbox,
                 mailbox_string :: string,
                 idle :: bool,
@@ -59,6 +58,12 @@
 
 :- func make_local_mailbox_path(prog_config, local_mailbox_name)
     = local_mailbox_path.
+
+:- type auth_method
+    --->    auth_plain(
+                username :: username,
+                password :: maybe(password)
+            ).
 
 %-----------------------------------------------------------------------------%
 
@@ -234,15 +239,15 @@ make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
                 MaybePassword = yes(password(Password))
             ;
                 MaybePassword = no
-            )
+            ),
+
+            AuthMethod = auth_plain(UserName, MaybePassword)
         ;
-            UserName = username(""),
-            MaybePassword = no,
-            cons("invalid imap.auth: " ++ AuthMethod0, !Errors)
+            AuthMethod = auth_plain(username(""), no),
+            cons("unknown imap.auth: " ++ AuthMethod0, !Errors)
         )
     ;
-        UserName = username(""),
-        MaybePassword = no,
+        AuthMethod = auth_plain(username(""), no),
         cons("missing imap.auth", !Errors)
     ),
 
@@ -318,7 +323,7 @@ make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
     ProgConfig = prog_config(RestartAfterErrorSeconds,
         MaybeLogFileName, LogLevel, DbFileName,
         MaildirRoot, Fsync, Buckets, Quiesce, LocalMailboxName,
-        HostNameOnly, Port, UserName, MaybePassword,
+        HostNameOnly, Port, AuthMethod,
         RemoteMailboxName, RemoteMailboxString,
         Idle, IdleTimeoutSecs, SyncOnIdleTimeout, MaybeCertificateFile,
         CommandPostSyncLocal).

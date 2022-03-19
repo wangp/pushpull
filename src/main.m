@@ -99,7 +99,7 @@ main_1(Config, !IO) :-
 
 :- pred main_2(log::in, prog_config::in, io::di, io::uo) is det.
 
-main_2(Log, Config, !IO) :-
+main_2(Log, Config0, !IO) :-
     ( debugging_grade ->
         true
     ;
@@ -108,7 +108,7 @@ main_2(Log, Config, !IO) :-
     install_signal_handler(sigterm, count, !IO),
     install_signal_handler(sigpipe, ignore, !IO),
     install_signal_handler(sigusr1, count, !IO),
-    DbFileName = Config ^ db_filename,
+    DbFileName = Config0 ^ db_filename,
     log_info(Log, "Opening database " ++ DbFileName, !IO),
     open_database(DbFileName, ResOpenDb, !IO),
     (
@@ -116,13 +116,13 @@ main_2(Log, Config, !IO) :-
         inotify.init(ResInotify, !IO),
         (
             ResInotify = ok(Inotify),
-            maybe_prompt_password(Config, ResPassword, !IO),
+            maybe_prompt_password(Config0, ResPassword, !IO),
             (
-                ResPassword = ok(Password),
+                ResPassword = ok(Config),
                 % Initialise OpenSSL once only.
                 openssl.library_init(!IO),
                 get_environment_info(EnvInfo, !IO),
-                main_3(Log, Config, Password, EnvInfo, Db, Inotify, !IO)
+                main_3(Log, Config, EnvInfo, Db, Inotify, !IO)
             ;
                 ResPassword = error(Error),
                 report_error(Log, Error, !IO)
@@ -138,23 +138,21 @@ main_2(Log, Config, !IO) :-
         report_error(Log, Error, !IO)
     ).
 
-:- pred main_3(log::in, prog_config::in, password::in, env_info::in,
+:- pred main_3(log::in, prog_config::in, env_info::in,
     database::in, inotify(S)::in, io::di, io::uo) is det.
 
-main_3(Log, Config, Password, EnvInfo, Db, Inotify, !IO) :-
+main_3(Log, Config, EnvInfo, Db, Inotify, !IO) :-
     LocalMailboxName = Config ^ local_mailbox_name,
     LocalMailboxPath = make_local_mailbox_path(Config, LocalMailboxName),
     LocalMailboxPath = local_mailbox_path(DirName),
     DirCache0 = dir_cache.init(dirname(DirName)),
-    main_4(Log, Config, Password, EnvInfo, Db, Inotify, DirCache0, _, !IO).
+    main_4(Log, Config, EnvInfo, Db, Inotify, DirCache0, _, !IO).
 
-:- pred main_4(log::in, prog_config::in, password::in, env_info::in,
-    database::in, inotify(S)::in, dir_cache::in, dir_cache::out,
-    io::di, io::uo) is det.
+:- pred main_4(log::in, prog_config::in, env_info::in, database::in,
+    inotify(S)::in, dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
-main_4(Log, Config, Password, EnvInfo, Db, Inotify, !DirCache, !IO) :-
-    main_5(Log, Config, Password, EnvInfo, Db, Inotify, Restart,
-        !DirCache, !IO),
+main_4(Log, Config, EnvInfo, Db, Inotify, !DirCache, !IO) :-
+    main_5(Log, Config, EnvInfo, Db, Inotify, Restart, !DirCache, !IO),
     get_sigint_or_sigterm_count(InterruptCount0, !IO),
     ( InterruptCount0 > 0 ->
         log_notice(Log, "Stopping.\n", !IO)
@@ -164,7 +162,7 @@ main_4(Log, Config, Password, EnvInfo, Db, Inotify, !DirCache, !IO) :-
         ;
             Restart = immediate_restart,
             log_notice(Log, "Restarting.\n", !IO),
-            main_4(Log, Config, Password, EnvInfo, Db, Inotify, !DirCache, !IO)
+            main_4(Log, Config, EnvInfo, Db, Inotify, !DirCache, !IO)
         ;
             Restart = delayed_restart,
             MaybeDelay = Config ^ restart_after_error_seconds,
@@ -179,8 +177,7 @@ main_4(Log, Config, Password, EnvInfo, Db, Inotify, !DirCache, !IO) :-
                     log_notice(Log, "Stopping.\n", !IO)
                 ;
                     log_notice(Log, "Restarting.\n", !IO),
-                    main_4(Log, Config, Password, EnvInfo, Db, Inotify,
-                        !DirCache, !IO)
+                    main_4(Log, Config, EnvInfo, Db, Inotify, !DirCache, !IO)
                 )
             ;
                 MaybeDelay = no
@@ -188,11 +185,11 @@ main_4(Log, Config, Password, EnvInfo, Db, Inotify, !DirCache, !IO) :-
         )
     ).
 
-:- pred main_5(log::in, prog_config::in, password::in, env_info::in,
-    database::in, inotify(S)::in, restart::out, dir_cache::in, dir_cache::out,
+:- pred main_5(log::in, prog_config::in, env_info::in, database::in,
+    inotify(S)::in, restart::out, dir_cache::in, dir_cache::out,
     io::di, io::uo) is det.
 
-main_5(Log, Config, Password, EnvInfo, Db, Inotify, Restart, !DirCache, !IO) :-
+main_5(Log, Config, EnvInfo, Db, Inotify, Restart, !DirCache, !IO) :-
     open_connection(Log, Config, ResBio, !IO),
     (
         ResBio = ok(Bio),
@@ -200,7 +197,7 @@ main_5(Log, Config, Password, EnvInfo, Db, Inotify, Restart, !DirCache, !IO) :-
         report_alerts(Log, OpenAlerts, !IO),
         (
             ResOpen = ok(IMAP),
-            do_login(Log, Config, Password, IMAP, ResLogin, !IO),
+            do_login(Log, Config, IMAP, ResLogin, !IO),
             % ResLogin already logged.
             (
                 ResLogin = ok,
@@ -282,20 +279,31 @@ print_error(Error, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-:- pred maybe_prompt_password(prog_config::in, maybe_error(password)::out,
+:- pred maybe_prompt_password(prog_config::in, maybe_error(prog_config)::out,
     io::di, io::uo) is det.
 
-maybe_prompt_password(Config, Res, !IO) :-
-    MaybePassword = Config ^ password,
+maybe_prompt_password(Config0, Res, !IO) :-
+    AuthMethod0 = Config0 ^ auth_method,
     (
-        MaybePassword = yes(Password),
-        Res = ok(Password)
-    ;
-        MaybePassword = no,
-        UserName = Config ^ username,
-        HostNameOnly = Config ^ host_name_only,
-        Port = Config ^ port,
-        prompt_password(UserName, HostNameOnly, Port, Res, !IO)
+        AuthMethod0 = auth_plain(UserName, MaybePassword0),
+        (
+            MaybePassword0 = yes(_Password),
+            Res = ok(Config0)
+        ;
+            MaybePassword0 = no,
+            HostNameOnly = Config0 ^ host_name_only,
+            Port = Config0 ^ port,
+            prompt_password(UserName, HostNameOnly, Port, ResPrompt, !IO),
+            (
+                ResPrompt = ok(Password),
+                AuthMethod = auth_plain(UserName, yes(Password)),
+                Config = Config0 ^ auth_method := AuthMethod,
+                Res = ok(Config)
+            ;
+                ResPrompt = error(Error),
+                Res = error(Error)
+            )
+        )
     ).
 
 :- pred prompt_password(username::in, string::in, int::in,
@@ -400,11 +408,19 @@ set_timeouts(Bio, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-:- pred do_login(log::in, prog_config::in, password::in, imap::in,
-    maybe_result::out, io::di, io::uo) is det.
+:- pred do_login(log::in, prog_config::in, imap::in, maybe_result::out,
+    io::di, io::uo) is det.
 
-do_login(Log, Config, Password, IMAP, Res, !IO) :-
-    UserName = Config ^ username,
+do_login(Log, Config, IMAP, Res, !IO) :-
+    AuthMethod = Config ^ auth_method,
+    AuthMethod = auth_plain(UserName, MaybePassword),
+    (
+        MaybePassword = yes(Password)
+    ;
+        MaybePassword = no,
+        % Should not happen.
+        Password = password("")
+    ),
     imap.login(IMAP, UserName, Password, Res0, !IO),
     (
         Res0 = ok(result(ResLogin, LoginMessage, LoginAlerts)),
