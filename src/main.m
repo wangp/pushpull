@@ -374,6 +374,9 @@ maybe_prompt_password(Config0, Res, !IO) :-
                 Res = error(Error)
             )
         )
+    ;
+        AuthMethod0 = auth_oauth2(_),
+        Res = ok(Config0)
     ).
 
 :- pred prompt_password(username::in, string::in, int::in,
@@ -483,37 +486,44 @@ set_timeouts(Bio, Res, !IO) :-
 
 do_login(Log, Config, IMAP, Res, !IO) :-
     AuthMethod = Config ^ auth_method,
-    AuthMethod = auth_plain(UserName, MaybePassword),
     (
-        MaybePassword = yes(Password)
-    ;
-        MaybePassword = no,
-        % Should not happen.
-        Password = password("")
-    ),
-    imap.login(IMAP, UserName, Password, Res0, !IO),
-    (
-        Res0 = ok(result(ResLogin, LoginMessage, LoginAlerts)),
-        report_alerts(Log, LoginAlerts, !IO),
+        AuthMethod = auth_plain(UserName, MaybePassword),
         (
-            ResLogin = ok,
-            log_info(Log, LoginMessage, !IO),
-            Res = ok
+            MaybePassword = yes(Password)
         ;
-            ( ResLogin = no
-            ; ResLogin = bad
-            ; ResLogin = bye
-            ; ResLogin = continue
-            ),
-            log_error(Log, LoginMessage, !IO),
-            Res = error(LoginMessage)
+            MaybePassword = no,
+            % Should not happen.
+            Password = password("")
+        ),
+        imap.login(IMAP, UserName, Password, Res0, !IO),
+        (
+            Res0 = ok(result(ResLogin, LoginMessage, LoginAlerts)),
+            report_alerts(Log, LoginAlerts, !IO),
+            (
+                ResLogin = ok,
+                log_info(Log, LoginMessage, !IO),
+                Res = ok
+            ;
+                ( ResLogin = no
+                ; ResLogin = bad
+                ; ResLogin = bye
+                ; ResLogin = continue
+                ),
+                log_error(Log, LoginMessage, !IO),
+                Res = error(LoginMessage)
+            )
+        ;
+            Res0 = eof,
+            report_error(Log, "unexpected eof in" ++ $pred, !IO),
+            Res = eof
+        ;
+            Res0 = error(Error),
+            report_error(Log, Error, !IO),
+            Res = error(Error)
         )
     ;
-        Res0 = eof,
-        report_error(Log, "unexpected eof in" ++ $pred, !IO),
-        Res = eof
-    ;
-        Res0 = error(Error),
+        AuthMethod = auth_oauth2(_OACommand),
+        Error = "OAuth2 not yet implemented",
         report_error(Log, Error, !IO),
         Res = error(Error)
     ).

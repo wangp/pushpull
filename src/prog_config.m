@@ -63,6 +63,9 @@
     --->    auth_plain(
                 username :: username,
                 password :: maybe(password)
+            )
+    ;       auth_oauth2(
+                oauth2_command :: maybe(list(word))
             ).
 
 %-----------------------------------------------------------------------------%
@@ -227,7 +230,8 @@ make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
     ),
 
     ( nonempty(Config, "imap", "auth", AuthMethod0) ->
-        ( string.to_lower(AuthMethod0) = "plain" ->
+        string.to_lower(AuthMethod0, AuthMethodLower0),
+        ( AuthMethodLower0 = "plain" ->
             ( nonempty(Config, "imap", "auth_plain_username", UserName0) ->
                 UserName = username(UserName0)
             ;
@@ -242,6 +246,17 @@ make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
             ),
 
             AuthMethod = auth_plain(UserName, MaybePassword)
+        ; AuthMethodLower0 = "oauth2" ->
+            (
+                nonempty(Config, "imap", "auth_oauth2_command",
+                    OAuthCommandString)
+            ->
+                parse_command(OAuthCommandString, MaybeOAuthCommand, !Errors),
+                AuthMethod = auth_oauth2(MaybeOAuthCommand)
+            ;
+                AuthMethod = auth_plain(username(""), no),
+                cons("missing imap.auth_oauth2_command", !Errors)
+            )
         ;
             AuthMethod = auth_plain(username(""), no),
             cons("unknown imap.auth: " ++ AuthMethod0, !Errors)

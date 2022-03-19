@@ -58,7 +58,7 @@
     # The IMAP server port number (defaults to 993).
     port = 993
 
-    # Authentication method: only plain for now.
+    # Authentication method: 'plain' or 'oauth2'
     auth = plain
 
     # (plain auth) Username for the IMAP account.
@@ -67,6 +67,10 @@
     # (plain auth) Password for the IMAP account.
     # Leave it empty if you wish to enter the password interactively.
     auth_plain_password =
+
+    # (oauth2) Specify a command to generate an OAuth2 string on
+    # standard output. The output must be base64 encoded.
+    auth_oauth2_command = my-oauth2-helper-script user@example.com
 
     # Whether to keep the IMAP connection open with the IDLE command
     # after a sychronisation cycle.
