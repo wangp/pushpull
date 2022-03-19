@@ -221,17 +221,29 @@ make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
         Port = 993
     ),
 
-    ( nonempty(Config, "imap", "username", UserName0) ->
-        UserName = username(UserName0)
+    ( nonempty(Config, "imap", "auth", AuthMethod0) ->
+        ( string.to_lower(AuthMethod0) = "plain" ->
+            ( nonempty(Config, "imap", "auth_plain_username", UserName0) ->
+                UserName = username(UserName0)
+            ;
+                UserName = username(""),
+                cons("missing imap.auth_plain_username", !Errors)
+            ),
+
+            ( nonempty(Config, "imap", "auth_plain_password", Password) ->
+                MaybePassword = yes(password(Password))
+            ;
+                MaybePassword = no
+            )
+        ;
+            UserName = username(""),
+            MaybePassword = no,
+            cons("invalid imap.auth: " ++ AuthMethod0, !Errors)
+        )
     ;
         UserName = username(""),
-        cons("missing imap.username", !Errors)
-    ),
-
-    ( nonempty(Config, "imap", "password", Password) ->
-        MaybePassword = yes(password(Password))
-    ;
-        MaybePassword = no
+        MaybePassword = no,
+        cons("missing imap.auth", !Errors)
     ),
 
     ( nonempty(Config, "imap", "idle", Idle0) ->

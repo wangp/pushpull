@@ -58,12 +58,15 @@
     # The IMAP server port number (defaults to 993).
     port = 993
 
-    # Username for the IMAP account.
-    username = user
+    # Authentication method: only plain for now.
+    auth = plain
 
-    # Password for the IMAP account. Leave it empty if you wish to enter
-    # the password interactively.
-    password =
+    # (plain auth) Username for the IMAP account.
+    auth_plain_username = user
+
+    # (plain auth) Password for the IMAP account.
+    # Leave it empty if you wish to enter the password interactively.
+    auth_plain_password =
 
     # Whether to keep the IMAP connection open with the IDLE command
     # after a sychronisation cycle.
