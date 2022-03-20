@@ -65,7 +65,8 @@
                 password :: maybe(password)
             )
     ;       auth_oauth2(
-                oauth2_command :: maybe(list(word))
+                oauth2_command :: list(word),
+                oauth2_string :: maybe(oauth2_base64_string)
             ).
 
 %-----------------------------------------------------------------------------%
@@ -252,7 +253,14 @@ make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
                     OAuthCommandString)
             ->
                 parse_command(OAuthCommandString, MaybeOAuthCommand, !Errors),
-                AuthMethod = auth_oauth2(MaybeOAuthCommand)
+                (
+                    MaybeOAuthCommand = yes(OAuthCommand)
+                ;
+                    MaybeOAuthCommand = no,
+                    % Error already logged.
+                    OAuthCommand = []
+                ),
+                AuthMethod = auth_oauth2(OAuthCommand, no)
             ;
                 AuthMethod = auth_plain(username(""), no),
                 cons("missing imap.auth_oauth2_command", !Errors)

@@ -30,6 +30,9 @@
 :- type password
     --->    password(string).
 
+:- type oauth2_base64_string
+    --->    oauth2_base64_string(string).   % base64 encoded, non-empty
+
 :- type imap_result == maybe_result(imap_res).
 
 :- type imap_res
@@ -71,6 +74,9 @@
 
 :- pred login(imap::in, username::in, imap.password::in, imap_result::out,
     io::di, io::uo) is det.
+
+:- pred authenticate_oauth2(imap::in, oauth2_base64_string::in,
+    imap_result::out, io::di, io::uo) is det.
 
 :- pred noop(imap::in, imap_result::out, io::di, io::uo) is det.
 
@@ -637,6 +643,101 @@ apply_login_response(Response, unit, !State, !Alerts, !IO) :-
     ;
         ( FinalMaybeTag = bye
         ; FinalMaybeTag = continue % unexpected
+        ),
+        !State ^ connection_state := logout
+    ).
+
+%-----------------------------------------------------------------------------%
+
+authenticate_oauth2(IMAP, OAuthString, Res, !IO) :-
+    get_capabilities(IMAP, MaybeCaps0, !IO),
+    (
+        MaybeCaps0 = yes(Caps),
+        authenticate_oauth2_with_capabilities(IMAP, Caps, OAuthString,
+            Res, !IO)
+    ;
+        MaybeCaps0 = no,
+        capability(IMAP, Res0, !IO),
+        ( Res0 = ok(result(ok, _Text, _Alerts0)) ->
+            get_capabilities(IMAP, MaybeCaps, !IO),
+            (
+                MaybeCaps = yes(Caps)
+            ;
+                MaybeCaps = no,
+                Caps = []
+            ),
+            authenticate_oauth2_with_capabilities(IMAP, Caps, OAuthString,
+                Res, !IO)
+        ;
+            Res = Res0
+        )
+    ).
+
+:- pred authenticate_oauth2_with_capabilities(imap::in, list(capability)::in,
+    oauth2_base64_string::in, imap_result::out, io::di, io::uo) is det.
+
+authenticate_oauth2_with_capabilities(IMAP, Caps, OAuthString, Res, !IO) :-
+    ( not list.contains(Caps, atom("SASL-IR")) ->
+        Res = error("missing SASL-IR capability")
+    ; list.contains(Caps, atom("AUTH=XOAUTH2")) ->
+        do_authenticate(IMAP, "XOAUTH2", OAuthString, Res, !IO)
+    ; list.contains(Caps, atom("AUTH=OAUTHBEARER")) ->
+        % Note: the gmail-oauth2-tools oauth2.py script cannot produce the
+        % correct string for OAUTHBEARER so we prefer XOAUTH2 for now.
+        do_authenticate(IMAP, "OAUTHBEARER", OAuthString, Res, !IO)
+    ;
+        Res = error("server does not support OAuth2 authentication")
+    ).
+
+:- pred do_authenticate(imap::in, string::in, oauth2_base64_string::in,
+    imap_result::out, io::di, io::uo) is det.
+
+do_authenticate(IMAP, AuthMechName, OAuthString, Res, !IO) :-
+    get_new_tag(IMAP, Pipe, Tag, !IO),
+    OAuthString = oauth2_base64_string(InitialClientResponse),
+    Authenticate = authenticate(astring(AuthMechName),
+        astring(InitialClientResponse)),
+    make_command_stream(Tag - command_nonauth(Authenticate), CommandStream),
+    write_command_stream_sensitive(Pipe, Tag, CommandStream, Res0, !IO),
+    (
+        Res0 = ok,
+        wait_for_complete_response(Pipe, Tag, MaybeResponse, !IO),
+        (
+            MaybeResponse = ok(Response),
+            update_state(apply_authenticate_response, IMAP, Response, _ : unit,
+                [], Alerts, !IO),
+            Response = complete_response(_, FinalMaybeTag, FinalRespText),
+            make_result(FinalMaybeTag, FinalRespText, Alerts, Res)
+        ;
+            ( MaybeResponse = eof
+            ; MaybeResponse = error(_)
+            ),
+            Res = convert(MaybeResponse)
+        )
+    ;
+        ( Res0 = eof
+        ; Res0 = error(_)
+        ),
+        Res = convert(Res0)
+    ).
+
+:- pred apply_authenticate_response(complete_response::in, unit::out,
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
+    io::di, io::uo) is det.
+
+apply_authenticate_response(Response, unit, !State, !Alerts, !IO) :-
+    apply_complete_response(Response, !State, !Alerts, !IO),
+    Response = complete_response(_, FinalMaybeTag, _),
+    (
+        FinalMaybeTag = tagged(_, ok),
+        !State ^ connection_state := authenticated
+    ;
+        FinalMaybeTag = tagged(_, no)
+    ;
+        FinalMaybeTag = tagged(_, bad)
+    ;
+        ( FinalMaybeTag = bye
+        ; FinalMaybeTag = continue
         ),
         !State ^ connection_state := logout
     ).

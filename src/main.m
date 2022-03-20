@@ -23,6 +23,7 @@
 :- import_module pair.
 :- import_module string.
 
+:- import_module call_command.
 :- import_module database.
 :- import_module dir_cache.
 :- import_module file_util.
@@ -36,9 +37,11 @@
 :- import_module maybe_result.
 :- import_module openssl.
 :- import_module path.
+:- import_module process.
 :- import_module prog_config.
 :- import_module select.
 :- import_module setsockopt.
+:- import_module shell_word.
 :- import_module signal.
 :- import_module sync.
 :- import_module terminal_attr.
@@ -76,8 +79,16 @@ real_main(!IO) :-
     ( Args = [ConfigFileName, PairingName] ->
         load_prog_config(ConfigFileName, PairingName, LoadRes, !IO),
         (
-            LoadRes = ok(Config),
-            main_1(Config, TestAuth, !IO)
+            LoadRes = ok(Config0),
+            maybe_prompt_password(Config0, ResConfig, !IO),
+            (
+                ResConfig = ok(Config),
+                main_1(Config, TestAuth, !IO)
+            ;
+                ResConfig = error(Error),
+                print_error(Error, !IO),
+                io.set_exit_status(1, !IO)
+            )
         ;
             LoadRes = errors(Errors),
             print_error("Errors in configuration file:", !IO),
@@ -90,6 +101,70 @@ real_main(!IO) :-
             !IO),
         io.set_exit_status(1, !IO)
     ).
+
+%-----------------------------------------------------------------------------%
+
+:- pred maybe_prompt_password(prog_config::in, maybe_error(prog_config)::out,
+    io::di, io::uo) is det.
+
+maybe_prompt_password(Config0, Res, !IO) :-
+    AuthMethod0 = Config0 ^ auth_method,
+    (
+        AuthMethod0 = auth_plain(UserName, MaybePassword0),
+        (
+            MaybePassword0 = yes(_Password),
+            Res = ok(Config0)
+        ;
+            MaybePassword0 = no,
+            HostNameOnly = Config0 ^ host_name_only,
+            Port = Config0 ^ port,
+            prompt_password(UserName, HostNameOnly, Port, ResPrompt, !IO),
+            (
+                ResPrompt = ok(Password),
+                AuthMethod = auth_plain(UserName, yes(Password)),
+                Config = Config0 ^ auth_method := AuthMethod,
+                Res = ok(Config)
+            ;
+                ResPrompt = error(Error),
+                Res = error(Error)
+            )
+        )
+    ;
+        AuthMethod0 = auth_oauth2(_, _),
+        Res = ok(Config0)
+    ).
+
+:- pred prompt_password(username::in, string::in, int::in,
+    maybe_error(password)::out, io::di, io::uo) is det.
+
+prompt_password(username(UserName), HostNameOnly, Port, Res, !IO) :-
+    string.format("Enter password for '%s' to '%s:%d': ",
+        [s(UserName), s(HostNameOnly), i(Port)], Prompt),
+    io.write_string(Prompt, !IO),
+    io.flush_output(!IO),
+    set_echo(no, Res0, !IO),
+    (
+        Res0 = ok,
+        io.read_line_as_string(ResRead, !IO),
+        io.nl(!IO),
+        set_echo(yes, _, !IO),
+        (
+            ResRead = ok(Line),
+            Password = password(chomp(Line)),
+            Res = ok(Password)
+        ;
+            ResRead = eof,
+            Res = error("unexpected eof in " ++ $pred)
+        ;
+            ResRead = error(Error),
+            Res = error(io.error_message(Error))
+        )
+    ;
+        Res0 = error(Error),
+        Res = error(Error)
+    ).
+
+%-----------------------------------------------------------------------------%
 
 :- pred main_1(prog_config::in, test_auth_only::in, io::di, io::uo) is det.
 
@@ -115,7 +190,7 @@ main_1(Config, TestAuth, !IO) :-
 
 :- pred main_2(log::in, prog_config::in, io::di, io::uo) is det.
 
-main_2(Log, Config0, !IO) :-
+main_2(Log, Config, !IO) :-
     ( debugging_grade ->
         true
     ;
@@ -124,7 +199,7 @@ main_2(Log, Config0, !IO) :-
     install_signal_handler(sigterm, count, !IO),
     install_signal_handler(sigpipe, ignore, !IO),
     install_signal_handler(sigusr1, count, !IO),
-    DbFileName = Config0 ^ db_filename,
+    DbFileName = Config ^ db_filename,
     log_info(Log, "Opening database " ++ DbFileName, !IO),
     open_database(DbFileName, ResOpenDb, !IO),
     (
@@ -132,17 +207,10 @@ main_2(Log, Config0, !IO) :-
         inotify.init(ResInotify, !IO),
         (
             ResInotify = ok(Inotify),
-            maybe_prompt_password(Config0, ResPassword, !IO),
-            (
-                ResPassword = ok(Config),
-                % Initialise OpenSSL once only.
-                openssl.library_init(!IO),
-                get_environment_info(EnvInfo, !IO),
-                main_3(Log, Config, EnvInfo, Db, Inotify, !IO)
-            ;
-                ResPassword = error(Error),
-                report_error(Log, Error, !IO)
-            ),
+            % Initialise OpenSSL once only.
+            openssl.library_init(!IO),
+            get_environment_info(EnvInfo, !IO),
+            main_3(Log, Config, EnvInfo, Db, Inotify, !IO),
             inotify.close(Inotify, !IO)
         ;
             ResInotify = error(Error),
@@ -167,37 +235,50 @@ main_3(Log, Config, EnvInfo, Db, Inotify, !IO) :-
 :- pred main_4(log::in, prog_config::in, env_info::in, database::in,
     inotify(S)::in, dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
-main_4(Log, Config, EnvInfo, Db, Inotify, !DirCache, !IO) :-
-    main_5(Log, Config, EnvInfo, Db, Inotify, Restart, !DirCache, !IO),
-    get_sigint_or_sigterm_count(InterruptCount0, !IO),
-    ( InterruptCount0 > 0 ->
-        log_notice(Log, "Stopping.\n", !IO)
-    ;
-        (
+main_4(Log, Config0, EnvInfo, Db, Inotify, !DirCache, !IO) :-
+    % The OAuth2 access token may have expired, so run the command to get a
+    % (potentially) new OAuth2 string each time we authenticate.
+    maybe_get_oauth2_string(Log, Config0, ResConfig, !IO),
+    (
+        ResConfig = ok(Config),
+        main_5(Log, Config, EnvInfo, Db, Inotify, Restart0, !DirCache, !IO),
+        get_sigint_or_sigterm_count(InterruptCount0, !IO),
+        ( InterruptCount0 > 0 ->
+            log_notice(Log, "Stopping.\n", !IO),
             Restart = stop
         ;
-            Restart = immediate_restart,
-            log_notice(Log, "Restarting.\n", !IO),
-            main_4(Log, Config, EnvInfo, Db, Inotify, !DirCache, !IO)
-        ;
-            Restart = delayed_restart,
-            MaybeDelay = Config ^ restart_after_error_seconds,
-            (
-                MaybeDelay = yes(Delay),
-                log_notice(Log,
-                    format("Restarting after %d second delay.\n", [i(Delay)]),
-                    !IO),
-                sleep(Delay, !IO),
-                get_sigint_or_sigterm_count(InterruptCount1, !IO),
-                ( InterruptCount1 > 0 ->
-                    log_notice(Log, "Stopping.\n", !IO)
-                ;
-                    log_notice(Log, "Restarting.\n", !IO),
-                    main_4(Log, Config, EnvInfo, Db, Inotify, !DirCache, !IO)
-                )
+            Restart = Restart0
+        )
+    ;
+        ResConfig = error(OAuth2Error),
+        log_error(Log, OAuth2Error, !IO),
+        Config = Config0,
+        Restart = delayed_restart
+    ),
+    (
+        Restart = stop
+    ;
+        Restart = immediate_restart,
+        log_notice(Log, "Restarting.\n", !IO),
+        main_4(Log, Config, EnvInfo, Db, Inotify, !DirCache, !IO)
+    ;
+        Restart = delayed_restart,
+        MaybeDelay = Config ^ restart_after_error_seconds,
+        (
+            MaybeDelay = yes(Delay),
+            log_notice(Log,
+                format("Restarting after %d second delay.\n", [i(Delay)]),
+                !IO),
+            sleep(Delay, !IO),
+            get_sigint_or_sigterm_count(InterruptCount1, !IO),
+            ( InterruptCount1 > 0 ->
+                log_notice(Log, "Stopping.\n", !IO)
             ;
-                MaybeDelay = no
+                log_notice(Log, "Restarting.\n", !IO),
+                main_4(Log, Config, EnvInfo, Db, Inotify, !DirCache, !IO)
             )
+        ;
+            MaybeDelay = no
         )
     ).
 
@@ -213,7 +294,7 @@ main_5(Log, Config, EnvInfo, Db, Inotify, Restart, !DirCache, !IO) :-
         report_alerts(Log, OpenAlerts, !IO),
         (
             ResOpen = ok(IMAP),
-            do_login(Log, Config, IMAP, ResLogin, !IO),
+            do_auth_method(Log, Config, IMAP, ResLogin, !IO),
             % ResLogin already logged.
             (
                 ResLogin = ok,
@@ -283,55 +364,62 @@ main_5(Log, Config, EnvInfo, Db, Inotify, Restart, !DirCache, !IO) :-
 
 :- pred test_auth(log::in, prog_config::in, io::di, io::uo) is det.
 
-test_auth(Log, Config, !IO) :-
-    open_connection(Log, Config, ResBio, !IO),
+test_auth(Log, Config0, !IO) :-
+    maybe_get_oauth2_string(Log, Config0, ResConfig, !IO),
     (
-        ResBio = ok(Bio),
-        imap.open(Bio, ResOpen, OpenAlerts, !IO),
-        report_alerts(Log, OpenAlerts, !IO),
+        ResConfig = ok(Config),
+        open_connection(Log, Config, ResBio, !IO),
         (
-            ResOpen = ok(IMAP),
-            do_login(Log, Config, IMAP, ResLogin, !IO),
-            % ResLogin already logged.
+            ResBio = ok(Bio),
+            imap.open(Bio, ResOpen, OpenAlerts, !IO),
+            report_alerts(Log, OpenAlerts, !IO),
             (
-                ResLogin = ok,
-                logout(IMAP, ResLogout, !IO),
+                ResOpen = ok(IMAP),
+                do_auth_method(Log, Config, IMAP, ResLogin, !IO),
+                % ResLogin already logged.
                 (
-                    ResLogout = ok(result(Status, LogoutText, LogoutAlerts)),
-                    report_alerts(Log, LogoutAlerts, !IO),
+                    ResLogin = ok,
+                    logout(IMAP, ResLogout, !IO),
                     (
-                        Status = ok,
-                        log_debug(Log, LogoutText, !IO),
-                        log_notice(Log, "Logged out.", !IO)
+                        ResLogout = ok(result(Status, LogoutText, LogoutAlerts)),
+                        report_alerts(Log, LogoutAlerts, !IO),
+                        (
+                            Status = ok,
+                            log_debug(Log, LogoutText, !IO),
+                            log_notice(Log, "Logged out.", !IO)
+                        ;
+                            ( Status = no
+                            ; Status = bad
+                            ; Status = bye
+                            ; Status = continue
+                            ),
+                            log_error(Log, LogoutText, !IO)
+                        )
                     ;
-                        ( Status = no
-                        ; Status = bad
-                        ; Status = bye
-                        ; Status = continue
-                        ),
-                        log_error(Log, LogoutText, !IO)
+                        ResLogout = eof,
+                        log_warning(Log, "Connection closed before logout.", !IO)
+                    ;
+                        ResLogout = error(LogoutError),
+                        report_error(Log, LogoutError, !IO)
                     )
                 ;
-                    ResLogout = eof,
-                    log_warning(Log, "Connection closed before logout.", !IO)
+                    ResLogin = eof
                 ;
-                    ResLogout = error(LogoutError),
-                    report_error(Log, LogoutError, !IO)
-                )
+                    ResLogin = error(Error),
+                    report_error(Log, Error, !IO)
+                ),
+                close(IMAP, !IO)
             ;
-                ResLogin = eof
-            ;
-                ResLogin = error(Error),
+                ResOpen = error(Error),
                 report_error(Log, Error, !IO)
-            ),
-            close(IMAP, !IO)
+            )
+            % Bio freed already.
         ;
-            ResOpen = error(Error),
+            ResBio = error(Error),
             report_error(Log, Error, !IO)
         )
-        % Bio freed already.
     ;
-        ResBio = error(Error),
+        ResConfig = error(Error),
         report_error(Log, Error, !IO)
     ).
 
@@ -349,64 +437,57 @@ print_error(Error, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-:- pred maybe_prompt_password(prog_config::in, maybe_error(prog_config)::out,
-    io::di, io::uo) is det.
+:- pred maybe_get_oauth2_string(log::in, prog_config::in,
+    maybe_error(prog_config)::out, io::di, io::uo) is det.
 
-maybe_prompt_password(Config0, Res, !IO) :-
+maybe_get_oauth2_string(Log, Config0, Res, !IO) :-
     AuthMethod0 = Config0 ^ auth_method,
     (
-        AuthMethod0 = auth_plain(UserName, MaybePassword0),
-        (
-            MaybePassword0 = yes(_Password),
-            Res = ok(Config0)
-        ;
-            MaybePassword0 = no,
-            HostNameOnly = Config0 ^ host_name_only,
-            Port = Config0 ^ port,
-            prompt_password(UserName, HostNameOnly, Port, ResPrompt, !IO),
-            (
-                ResPrompt = ok(Password),
-                AuthMethod = auth_plain(UserName, yes(Password)),
-                Config = Config0 ^ auth_method := AuthMethod,
-                Res = ok(Config)
-            ;
-                ResPrompt = error(Error),
-                Res = error(Error)
-            )
-        )
-    ;
-        AuthMethod0 = auth_oauth2(_),
+        AuthMethod0 = auth_plain(_, _),
         Res = ok(Config0)
+    ;
+        AuthMethod0 = auth_oauth2(Command, _),
+        get_oauth2_string(Log, Command, ResOAuthString, !IO),
+        (
+            ResOAuthString = ok(OAuthString),
+            AuthMethod = auth_oauth2(Command, yes(OAuthString)),
+            Config = Config0 ^ auth_method := AuthMethod,
+            Res = ok(Config)
+        ;
+            ResOAuthString = error(Error),
+            Res = error(Error)
+        )
     ).
 
-:- pred prompt_password(username::in, string::in, int::in,
-    maybe_error(password)::out, io::di, io::uo) is det.
+:- pred get_oauth2_string(log::in, list(word)::in,
+    maybe_error(oauth2_base64_string)::out, io::di, io::uo) is det.
 
-prompt_password(username(UserName), HostNameOnly, Port, Res, !IO) :-
-    string.format("Enter password for '%s' to '%s:%d': ",
-        [s(UserName), s(HostNameOnly), i(Port)], Prompt),
-    io.write_string(Prompt, !IO),
-    io.flush_output(!IO),
-    set_echo(no, Res0, !IO),
+get_oauth2_string(Log, CommandWords, Res, !IO) :-
+    CommandStrings = list.map(word_string, CommandWords),
     (
-        Res0 = ok,
-        io.read_line_as_string(ResRead, !IO),
-        io.nl(!IO),
-        set_echo(yes, _, !IO),
+        CommandStrings = [Command | Args],
+        log_info(Log, "Calling command: " ++ Command, !IO),
+        call_command_capture_stdout(Command, Args, environ([]), CallRes, !IO),
         (
-            ResRead = ok(Line),
-            Password = password(chomp(Line)),
-            Res = ok(Password)
+            CallRes = ok(String0),
+            String = string.strip(String0),
+            ( String = "" ->
+                Res = error("auth_oauth2_command returned empty string")
+            ;
+                % TODO: verify base64
+                % Or we may want to construct the OAuth2 string ourselves:
+                %  base64("user=" {User}￼"^Aauth=Bearer " {Access Token} "^A^A")
+                OAuthString = oauth2_base64_string(String),
+                Res = ok(OAuthString)
+            )
         ;
-            ResRead = eof,
-            Res = error("unexpected eof in " ++ $pred)
-        ;
-            ResRead = error(Error),
-            Res = error(io.error_message(Error))
+            CallRes = error(Error),
+            Res = error("auth_oauth2_command error: " ++ io.error_message(Error))
         )
     ;
-        Res0 = error(Error),
-        Res = error(Error)
+        CommandStrings = [],
+        % Should not happen.
+        Res = error("empty command")
     ).
 
 %-----------------------------------------------------------------------------%
@@ -481,49 +562,54 @@ set_timeouts(Bio, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-:- pred do_login(log::in, prog_config::in, imap::in, maybe_result::out,
+:- pred do_auth_method(log::in, prog_config::in, imap::in, maybe_result::out,
     io::di, io::uo) is det.
 
-do_login(Log, Config, IMAP, Res, !IO) :-
+do_auth_method(Log, Config, IMAP, Res, !IO) :-
     AuthMethod = Config ^ auth_method,
     (
         AuthMethod = auth_plain(UserName, MaybePassword),
         (
-            MaybePassword = yes(Password)
+            MaybePassword = yes(Password),
+            imap.login(IMAP, UserName, Password, Res0, !IO)
         ;
             MaybePassword = no,
             % Should not happen.
-            Password = password("")
-        ),
-        imap.login(IMAP, UserName, Password, Res0, !IO),
-        (
-            Res0 = ok(result(ResLogin, LoginMessage, LoginAlerts)),
-            report_alerts(Log, LoginAlerts, !IO),
-            (
-                ResLogin = ok,
-                log_info(Log, LoginMessage, !IO),
-                Res = ok
-            ;
-                ( ResLogin = no
-                ; ResLogin = bad
-                ; ResLogin = bye
-                ; ResLogin = continue
-                ),
-                log_error(Log, LoginMessage, !IO),
-                Res = error(LoginMessage)
-            )
-        ;
-            Res0 = eof,
-            report_error(Log, "unexpected eof in" ++ $pred, !IO),
-            Res = eof
-        ;
-            Res0 = error(Error),
-            report_error(Log, Error, !IO),
-            Res = error(Error)
+            Res0 = error("no login password")
         )
     ;
-        AuthMethod = auth_oauth2(_OACommand),
-        Error = "OAuth2 not yet implemented",
+        AuthMethod = auth_oauth2(_Command, MaybeOAuthString),
+        (
+            MaybeOAuthString = yes(OAuthString),
+            imap.authenticate_oauth2(IMAP, OAuthString, Res0, !IO)
+        ;
+            MaybeOAuthString = no,
+            % Should not happen.
+            Res0 = error("no oauth2 string")
+        )
+    ),
+    (
+        Res0 = ok(result(ResLogin, LoginMessage, LoginAlerts)),
+        report_alerts(Log, LoginAlerts, !IO),
+        (
+            ResLogin = ok,
+            log_info(Log, LoginMessage, !IO),
+            Res = ok
+        ;
+            ( ResLogin = no
+            ; ResLogin = bad
+            ; ResLogin = bye
+            ; ResLogin = continue
+            ),
+            log_error(Log, LoginMessage, !IO),
+            Res = error(LoginMessage)
+        )
+    ;
+        Res0 = eof,
+        report_error(Log, "unexpected eof in" ++ $pred, !IO),
+        Res = eof
+    ;
+        Res0 = error(Error),
         report_error(Log, Error, !IO),
         Res = error(Error)
     ).

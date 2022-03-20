@@ -37,8 +37,18 @@
 
     % Valid only when in Not Authenticated state.
 :- type command_nonauth
-    --->    login(astring, astring). % userid, password
-    %;       authenticate
+    --->    login(
+                astring,    % userid
+                astring     % password
+            )
+    ;       authenticate(
+                % This uses the [RFC 4959] "SASL-IR" extended AUTHENTICATE
+                % command which takes a second argument.
+                astring,    % authentication mechanism name
+                astring     % initial client response
+                            % Must be base64 encoded, or "=" to represent as
+                            % zero-length string.
+            ).
     %;       starttls.
 
     % Valid only when in Selected state.
@@ -295,6 +305,14 @@ escape_for_quoted_string(S0) = S :-
         add(UserId),
         add(sp),
         add(Password)
+    ),
+    add(authenticate(AuthMechName, InitialClientResponse)) -->
+    (
+        add("AUTHENTICATE"),
+        add(sp),
+        add(AuthMechName),
+        add(sp),
+        add(InitialClientResponse)
     )
 ].
 
