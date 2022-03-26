@@ -67,7 +67,7 @@
     ;       auth_oauth2(
                 oauth2_username :: username,
                 oauth2_command :: list(word),
-                oauth2_sasl_string :: maybe(sasl_string)
+                oauth2_access_token :: oauth2_access_token
             ).
 
 %-----------------------------------------------------------------------------%
@@ -273,7 +273,8 @@ make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
                 cons("missing imap.auth_oauth2_command", !Errors)
             ),
 
-            AuthMethod = auth_oauth2(UserName, OAuthCommand, no)
+            AccessToken = oauth2_access_token(""), % dummy value
+            AuthMethod = auth_oauth2(UserName, OAuthCommand, AccessToken)
         ;
             AuthMethod = auth_plain(username(""), no),
             cons("unknown imap.auth: " ++ AuthMethod0, !Errors)

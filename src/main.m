@@ -23,6 +23,7 @@
 :- import_module pair.
 :- import_module string.
 
+:- import_module call_command.
 :- import_module database.
 :- import_module dir_cache.
 :- import_module file_util.
@@ -34,9 +35,9 @@
 :- import_module log_help.
 :- import_module maildir.
 :- import_module maybe_result.
-:- import_module oauth2.
 :- import_module openssl.
 :- import_module path.
+:- import_module process.
 :- import_module prog_config.
 :- import_module select.
 :- import_module setsockopt.
@@ -235,7 +236,7 @@ main_3(Log, Config, EnvInfo, Db, Inotify, !IO) :-
     inotify(S)::in, dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
 main_4(Log, Config0, EnvInfo, Db, Inotify, !DirCache, !IO) :-
-    maybe_refresh_oauth2_sasl_string(Log, Config0, ResConfig, !IO),
+    maybe_refresh_oauth2_access_token(Log, Config0, ResConfig, !IO),
     (
         ResConfig = ok(Config),
         main_5(Log, Config, EnvInfo, Db, Inotify, Restart0, !DirCache, !IO),
@@ -362,7 +363,7 @@ main_5(Log, Config, EnvInfo, Db, Inotify, Restart, !DirCache, !IO) :-
 :- pred test_auth(log::in, prog_config::in, io::di, io::uo) is det.
 
 test_auth(Log, Config0, !IO) :-
-    maybe_refresh_oauth2_sasl_string(Log, Config0, ResConfig, !IO),
+    maybe_refresh_oauth2_access_token(Log, Config0, ResConfig, !IO),
     (
         ResConfig = ok(Config),
         open_connection(Log, Config, ResBio, !IO),
@@ -434,26 +435,53 @@ print_error(Error, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-:- pred maybe_refresh_oauth2_sasl_string(log::in, prog_config::in,
+:- pred maybe_refresh_oauth2_access_token(log::in, prog_config::in,
     maybe_error(prog_config)::out, io::di, io::uo) is det.
 
-maybe_refresh_oauth2_sasl_string(Log, Config0, Res, !IO) :-
+maybe_refresh_oauth2_access_token(Log, Config0, Res, !IO) :-
     AuthMethod0 = Config0 ^ auth_method,
     (
         AuthMethod0 = auth_plain(_, _),
         Res = ok(Config0)
     ;
-        AuthMethod0 = auth_oauth2(UserName, Command, _),
-        get_imap_oauth2_sasl_string(Log, UserName, Command, Res0, !IO),
+        AuthMethod0 = auth_oauth2(UserName, Command, _AccessToken0),
+        get_oauth2_access_token(Log, Command, Res0, !IO),
         (
-            Res0 = ok(SASLString),
-            AuthMethod = auth_oauth2(UserName, Command, yes(SASLString)),
+            Res0 = ok(AccessToken),
+            AuthMethod = auth_oauth2(UserName, Command, AccessToken),
             Config = Config0 ^ auth_method := AuthMethod,
             Res = ok(Config)
         ;
             Res0 = error(Error),
             Res = error(Error)
         )
+    ).
+
+:- pred get_oauth2_access_token(log::in, list(word)::in,
+    maybe_error(oauth2_access_token)::out, io::di, io::uo) is det.
+
+get_oauth2_access_token(Log, CommandWords, Res, !IO) :-
+    CommandStrings = list.map(word_string, CommandWords),
+    (
+        CommandStrings = [Command | Args],
+        log_info(Log, "Calling command: " ++ Command, !IO),
+        call_command_capture_stdout(Command, Args, environ([]), CallRes, !IO),
+        (
+            CallRes = ok(String0),
+            String = string.strip(String0),
+            ( String = "" ->
+                Res = error("auth_oauth2_command returned empty string")
+            ;
+                Res = ok(oauth2_access_token(String))
+            )
+        ;
+            CallRes = error(Error),
+            Res = error("auth_oauth2_command error: " ++ io.error_message(Error))
+        )
+    ;
+        CommandStrings = [],
+        % Should not happen.
+        Res = error("empty command")
     ).
 
 %-----------------------------------------------------------------------------%
@@ -544,15 +572,11 @@ do_auth_method(Log, Config, IMAP, Res, !IO) :-
             Res0 = error("no login password")
         )
     ;
-        AuthMethod = auth_oauth2(_UserName, _Command, MaybeOAuthString),
-        (
-            MaybeOAuthString = yes(OAuthString),
-            imap.authenticate_oauth2(IMAP, OAuthString, Res0, !IO)
-        ;
-            MaybeOAuthString = no,
-            % Should not happen.
-            Res0 = error("no oauth2 string")
-        )
+        AuthMethod = auth_oauth2(UserName, _Command, AccessToken),
+        Host = Config ^ host_name_only,
+        Port = Config ^ port,
+        imap.authenticate_oauth2(IMAP, Host, Port, UserName, AccessToken, Res0,
+            !IO)
     ),
     (
         Res0 = ok(result(ResLogin, LoginMessage, LoginAlerts)),

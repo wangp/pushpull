@@ -13,6 +13,7 @@
 
 :- include_module imap.charclass.
 :- include_module imap.date_time.
+:- include_module imap.oauth2.      % exported for testing only
 :- include_module imap.types.
 
 :- import_module binary_string.
@@ -30,8 +31,8 @@
 :- type password
     --->    password(string).
 
-:- type sasl_string
-    --->    sasl_string(string).    % base64, non-empty
+:- type oauth2_access_token
+    --->    oauth2_access_token(string).
 
 :- type imap_result == maybe_result(imap_res).
 
@@ -75,8 +76,8 @@
 :- pred login(imap::in, username::in, imap.password::in, imap_result::out,
     io::di, io::uo) is det.
 
-:- pred authenticate_oauth2(imap::in, sasl_string::in, imap_result::out,
-    io::di, io::uo) is det.
+:- pred authenticate_oauth2(imap::in, string::in, int::in, username::in,
+    oauth2_access_token::in, imap_result::out, io::di, io::uo) is det.
 
 :- pred noop(imap::in, imap_result::out, io::di, io::uo) is det.
 
@@ -166,13 +167,14 @@
 :- import_module unit.
 
 :- include_module imap.command.
-:- include_module imap.read_write.
 :- include_module imap.parsing.
+:- include_module imap.read_write.
 :- include_module imap.response.
 
 :- import_module imap.command.
-:- import_module imap.read_write.
+:- import_module imap.oauth2.
 :- import_module imap.parsing.
+:- import_module imap.read_write.
 :- import_module imap.response.
 
 :- type imap
@@ -649,11 +651,12 @@ apply_login_response(Response, unit, !State, !Alerts, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-authenticate_oauth2(IMAP, SASLString, Res, !IO) :-
+authenticate_oauth2(IMAP, Host, Port, UserName, AccessToken, Res, !IO) :-
     get_capabilities(IMAP, MaybeCaps0, !IO),
     (
         MaybeCaps0 = yes(Caps),
-        authenticate_oauth2_with_capabilities(IMAP, Caps, SASLString, Res, !IO)
+        authenticate_oauth2_with_capabilities(IMAP, Caps, Host, Port,
+            UserName, AccessToken, Res, !IO)
     ;
         MaybeCaps0 = no,
         capability(IMAP, Res0, !IO),
@@ -665,25 +668,28 @@ authenticate_oauth2(IMAP, SASLString, Res, !IO) :-
                 MaybeCaps = no,
                 Caps = []
             ),
-            authenticate_oauth2_with_capabilities(IMAP, Caps, SASLString,
-                Res, !IO)
+            authenticate_oauth2_with_capabilities(IMAP, Caps, Host, Port,
+                UserName, AccessToken, Res, !IO)
         ;
             Res = Res0
         )
     ).
 
 :- pred authenticate_oauth2_with_capabilities(imap::in, list(capability)::in,
-    sasl_string::in, imap_result::out, io::di, io::uo) is det.
+    string::in, int::in, username::in, oauth2_access_token::in,
+    imap_result::out, io::di, io::uo) is det.
 
-authenticate_oauth2_with_capabilities(IMAP, Caps, SASLString, Res, !IO) :-
+authenticate_oauth2_with_capabilities(IMAP, Caps, Host, Port, UserName,
+        AccessToken, Res, !IO) :-
     ( not list.contains(Caps, atom("SASL-IR")) ->
         Res = error("missing SASL-IR capability")
-    ; list.contains(Caps, atom("AUTH=XOAUTH2")) ->
-        do_authenticate(IMAP, "XOAUTH2", SASLString, Res, !IO)
     ; list.contains(Caps, atom("AUTH=OAUTHBEARER")) ->
-        % XXX we don't yet construct OAUTHBEARER bearer tokens
-        % so prefer XOAUTH2 for now
+        make_oauthbearer_sasl_string(Host, Port, UserName, AccessToken,
+            SASLString),
         do_authenticate(IMAP, "OAUTHBEARER", SASLString, Res, !IO)
+    ; list.contains(Caps, atom("AUTH=XOAUTH2")) ->
+        make_xoauth2_sasl_string(UserName, AccessToken, SASLString),
+        do_authenticate(IMAP, "XOAUTH2", SASLString, Res, !IO)
     ;
         Res = error("server does not support OAuth2 authentication")
     ).
