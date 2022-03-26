@@ -231,57 +231,44 @@ make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
         Port = 993
     ),
 
-    ( nonempty(Config, "imap", "auth", AuthMethod0) ->
-        string.to_lower(AuthMethod0, AuthMethodLower0),
-        ( AuthMethodLower0 = "plain" ->
-            ( nonempty(Config, "imap", "auth_plain_username", UserName0) ->
-                UserName = username(UserName0)
-            ;
-                UserName = username(""),
-                cons("missing imap.auth_plain_username", !Errors)
-            ),
-
-            ( nonempty(Config, "imap", "auth_plain_password", Password) ->
-                MaybePassword = yes(password(Password))
-            ;
-                MaybePassword = no
-            ),
-
-            AuthMethod = auth_plain(UserName, MaybePassword)
-        ; AuthMethodLower0 = "oauth2" ->
-            ( nonempty(Config, "imap", "auth_oauth2_username", UserName0) ->
-                UserName = username(UserName0)
-            ;
-                UserName = username(""),
-                cons("missing imap.auth_oauth2_username", !Errors)
-            ),
-
-            (
-                nonempty(Config, "imap", "auth_oauth2_command",
-                    OAuthCommandString)
-            ->
-                parse_command(OAuthCommandString, MaybeOAuthCommand, !Errors),
-                (
-                    MaybeOAuthCommand = yes(OAuthCommand)
-                ;
-                    MaybeOAuthCommand = no,
-                    % Error already logged.
-                    OAuthCommand = []
-                )
-            ;
-                OAuthCommand = [],
-                cons("missing imap.auth_oauth2_command", !Errors)
-            ),
-
-            AccessToken = oauth2_access_token(""), % dummy value
-            AuthMethod = auth_oauth2(UserName, OAuthCommand, AccessToken)
+    ( nonempty(Config, "imap", "auth_plain_username", UserName0) ->
+        UserName = username(UserName0),
+        ( nonempty(Config, "imap", "auth_oauth2_username", _) ->
+            cons("both imap.auth_plain_username and " ++
+                "imap.auth_oauth2_username specified", !Errors)
         ;
-            AuthMethod = auth_plain(username(""), no),
-            cons("unknown imap.auth: " ++ AuthMethod0, !Errors)
-        )
+            true
+        ),
+        ( nonempty(Config, "imap", "auth_plain_password", Password) ->
+            MaybePassword = yes(password(Password))
+        ;
+            MaybePassword = no
+        ),
+        AuthMethod = auth_plain(UserName, MaybePassword)
+    ; nonempty(Config, "imap", "auth_oauth2_username", UserName0) ->
+        UserName = username(UserName0),
+        (
+            nonempty(Config, "imap", "auth_oauth2_command",
+                OAuthCommandString)
+        ->
+            parse_command(OAuthCommandString, MaybeOAuthCommand, !Errors),
+            (
+                MaybeOAuthCommand = yes(OAuthCommand)
+            ;
+                MaybeOAuthCommand = no,
+                % Error already logged.
+                OAuthCommand = []
+            )
+        ;
+            OAuthCommand = [],
+            cons("missing imap.auth_oauth2_command", !Errors)
+        ),
+        AccessToken = oauth2_access_token(""), % dummy value
+        AuthMethod = auth_oauth2(UserName, OAuthCommand, AccessToken)
     ;
         AuthMethod = auth_plain(username(""), no),
-        cons("missing imap.auth", !Errors)
+        cons("must specify one of imap.auth_plain_username or " ++
+            "imap.auth_oauth2_username", !Errors)
     ),
 
     ( nonempty(Config, "imap", "idle", Idle0) ->
