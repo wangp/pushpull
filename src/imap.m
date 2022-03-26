@@ -564,7 +564,7 @@ login(IMAP, UserName, Password, Res, !IO) :-
     get_capabilities(IMAP, MaybeCaps0, !IO),
     (
         MaybeCaps0 = yes(Caps),
-        check_login(IMAP, Caps, UserName, Password, Res, !IO)
+        login_with_capabilities(IMAP, Caps, UserName, Password, Res, !IO)
     ;
         MaybeCaps0 = no,
         capability(IMAP, Res0, !IO),
@@ -579,23 +579,22 @@ login(IMAP, UserName, Password, Res, !IO) :-
                 MaybeCaps = no,
                 Caps = []
             ),
-            check_login(IMAP, Caps, UserName, Password, Res, !IO)
+            login_with_capabilities(IMAP, Caps, UserName, Password, Res, !IO)
         ;
             Res = Res0
         )
     ).
 
-:- pred check_login(imap::in, capability_data::in, username::in, password::in,
-    imap_result::out, io::di, io::uo) is det.
+:- pred login_with_capabilities(imap::in, capability_data::in, username::in,
+    password::in, imap_result::out, io::di, io::uo) is det.
 
-check_login(IMAP, Caps, UserName, Password, Res, !IO) :-
-    (
-        list.member(atom("AUTH=PLAIN"), Caps),
-        not list.member(atom("LOGINDISABLED"), Caps)
-    ->
+login_with_capabilities(IMAP, Caps, UserName, Password, Res, !IO) :-
+    ( list.contains(Caps, atom("LOGINDISABLED")) ->
+        Res = error("server has disabled plaintext login")
+    ; list.contains(Caps, atom("AUTH=PLAIN")) ->
         do_login(UserName, Password, IMAP, Res, !IO)
     ;
-        Res = error("cannot login due to capabilities")
+        Res = error("server does not support plaintext login")
     ).
 
 :- pred do_login(username::in, password::in, imap::in, imap_result::out,
