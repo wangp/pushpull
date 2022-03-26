@@ -4,6 +4,7 @@ MAIN_TARGET =
 # Linking.
 MLLIBS-test_imap_time += -lssl -lcrypto
 MLLIBS-test_openssl += -lssl -lcrypto
+MLLIBS-test_oauth2 += -lssl -lcrypto
 
 # Add workspace-specific options here.
 -include Mercury.params

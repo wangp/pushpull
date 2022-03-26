@@ -68,8 +68,11 @@
     # Leave it empty if you wish to enter the password interactively.
     auth_plain_password =
 
-    # (oauth2) Specify a command to generate an OAuth2 string on
-    # standard output. The output must be base64 encoded.
+    # (oauth2) Username for OAuth2 authentication.
+    auth_oauth2_username = user@example.com
+
+    # (oauth2) Command for OAuth2 authentication.
+    # This must generate an OAuth2 access token on standard output.
     auth_oauth2_command = my-oauth2-helper-script user@example.com
 
     # Whether to keep the IMAP connection open with the IDLE command

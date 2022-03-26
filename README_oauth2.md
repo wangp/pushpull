@@ -52,9 +52,10 @@ Python 3 (at the time of writing).
     The result is a Refresh Token and a (temporary) Access Token.
     Note down the refresh token.
 
- 4. Write a helper script that can generate a base64-encoded OAuth2 string.
-    Since access tokens will expire (e.g. every hour), it will be necessary to
-    use the refresh token to generate a new access token every so often:
+ 4. Write a helper script that prints out an OAuth2 access token on standard
+    output. Since access tokens will expire (e.g. every hour), it will be
+    necessary to use the refresh token to generate a new access token
+    every so often:
 
         python2 oauth2.py \
             --user=<your email> \
@@ -62,13 +63,6 @@ Python 3 (at the time of writing).
             --client_secret=<the client-secret> \
             --refresh_token=<the refresh token> \
             --quiet
-
-    Then create the OAuth2 string using the access token:
-
-        python2 oauth2.py \
-            --user=<your email> \
-            --access_token=<the access token> \
-            --generate_oauth2_string --quiet
 
     You may want to keep all the secret tokens in a keyring or otherwise
     in an encrypted form.
@@ -78,6 +72,7 @@ Python 3 (at the time of writing).
         [imap]
         host = imap.gmail.com
         auth = oauth2
+        auth_oauth2_username = <your email>
         auth_oauth2_command = <your script and args>
 
  6. Test plugsink with:

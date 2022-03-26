@@ -65,8 +65,9 @@
                 password :: maybe(password)
             )
     ;       auth_oauth2(
+                oauth2_username :: username,
                 oauth2_command :: list(word),
-                oauth2_string :: maybe(oauth2_base64_string)
+                oauth2_sasl_string :: maybe(sasl_string)
             ).
 
 %-----------------------------------------------------------------------------%
@@ -248,6 +249,13 @@ make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
 
             AuthMethod = auth_plain(UserName, MaybePassword)
         ; AuthMethodLower0 = "oauth2" ->
+            ( nonempty(Config, "imap", "auth_oauth2_username", UserName0) ->
+                UserName = username(UserName0)
+            ;
+                UserName = username(""),
+                cons("missing imap.auth_oauth2_username", !Errors)
+            ),
+
             (
                 nonempty(Config, "imap", "auth_oauth2_command",
                     OAuthCommandString)
@@ -259,12 +267,13 @@ make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
                     MaybeOAuthCommand = no,
                     % Error already logged.
                     OAuthCommand = []
-                ),
-                AuthMethod = auth_oauth2(OAuthCommand, no)
+                )
             ;
-                AuthMethod = auth_plain(username(""), no),
+                OAuthCommand = [],
                 cons("missing imap.auth_oauth2_command", !Errors)
-            )
+            ),
+
+            AuthMethod = auth_oauth2(UserName, OAuthCommand, no)
         ;
             AuthMethod = auth_plain(username(""), no),
             cons("unknown imap.auth: " ++ AuthMethod0, !Errors)

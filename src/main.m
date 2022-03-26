@@ -23,7 +23,6 @@
 :- import_module pair.
 :- import_module string.
 
-:- import_module call_command.
 :- import_module database.
 :- import_module dir_cache.
 :- import_module file_util.
@@ -35,9 +34,9 @@
 :- import_module log_help.
 :- import_module maildir.
 :- import_module maybe_result.
+:- import_module oauth2.
 :- import_module openssl.
 :- import_module path.
-:- import_module process.
 :- import_module prog_config.
 :- import_module select.
 :- import_module setsockopt.
@@ -130,7 +129,7 @@ maybe_prompt_password(Config0, Res, !IO) :-
             )
         )
     ;
-        AuthMethod0 = auth_oauth2(_, _),
+        AuthMethod0 = auth_oauth2(_, _, _),
         Res = ok(Config0)
     ).
 
@@ -236,9 +235,7 @@ main_3(Log, Config, EnvInfo, Db, Inotify, !IO) :-
     inotify(S)::in, dir_cache::in, dir_cache::out, io::di, io::uo) is det.
 
 main_4(Log, Config0, EnvInfo, Db, Inotify, !DirCache, !IO) :-
-    % The OAuth2 access token may have expired, so run the command to get a
-    % (potentially) new OAuth2 string each time we authenticate.
-    maybe_get_oauth2_string(Log, Config0, ResConfig, !IO),
+    maybe_refresh_oauth2_sasl_string(Log, Config0, ResConfig, !IO),
     (
         ResConfig = ok(Config),
         main_5(Log, Config, EnvInfo, Db, Inotify, Restart0, !DirCache, !IO),
@@ -365,7 +362,7 @@ main_5(Log, Config, EnvInfo, Db, Inotify, Restart, !DirCache, !IO) :-
 :- pred test_auth(log::in, prog_config::in, io::di, io::uo) is det.
 
 test_auth(Log, Config0, !IO) :-
-    maybe_get_oauth2_string(Log, Config0, ResConfig, !IO),
+    maybe_refresh_oauth2_sasl_string(Log, Config0, ResConfig, !IO),
     (
         ResConfig = ok(Config),
         open_connection(Log, Config, ResBio, !IO),
@@ -437,57 +434,26 @@ print_error(Error, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-:- pred maybe_get_oauth2_string(log::in, prog_config::in,
+:- pred maybe_refresh_oauth2_sasl_string(log::in, prog_config::in,
     maybe_error(prog_config)::out, io::di, io::uo) is det.
 
-maybe_get_oauth2_string(Log, Config0, Res, !IO) :-
+maybe_refresh_oauth2_sasl_string(Log, Config0, Res, !IO) :-
     AuthMethod0 = Config0 ^ auth_method,
     (
         AuthMethod0 = auth_plain(_, _),
         Res = ok(Config0)
     ;
-        AuthMethod0 = auth_oauth2(Command, _),
-        get_oauth2_string(Log, Command, ResOAuthString, !IO),
+        AuthMethod0 = auth_oauth2(UserName, Command, _),
+        get_imap_oauth2_sasl_string(Log, UserName, Command, Res0, !IO),
         (
-            ResOAuthString = ok(OAuthString),
-            AuthMethod = auth_oauth2(Command, yes(OAuthString)),
+            Res0 = ok(SASLString),
+            AuthMethod = auth_oauth2(UserName, Command, yes(SASLString)),
             Config = Config0 ^ auth_method := AuthMethod,
             Res = ok(Config)
         ;
-            ResOAuthString = error(Error),
+            Res0 = error(Error),
             Res = error(Error)
         )
-    ).
-
-:- pred get_oauth2_string(log::in, list(word)::in,
-    maybe_error(oauth2_base64_string)::out, io::di, io::uo) is det.
-
-get_oauth2_string(Log, CommandWords, Res, !IO) :-
-    CommandStrings = list.map(word_string, CommandWords),
-    (
-        CommandStrings = [Command | Args],
-        log_info(Log, "Calling command: " ++ Command, !IO),
-        call_command_capture_stdout(Command, Args, environ([]), CallRes, !IO),
-        (
-            CallRes = ok(String0),
-            String = string.strip(String0),
-            ( String = "" ->
-                Res = error("auth_oauth2_command returned empty string")
-            ;
-                % TODO: verify base64
-                % Or we may want to construct the OAuth2 string ourselves:
-                %  base64("user=" {User}￼"^Aauth=Bearer " {Access Token} "^A^A")
-                OAuthString = oauth2_base64_string(String),
-                Res = ok(OAuthString)
-            )
-        ;
-            CallRes = error(Error),
-            Res = error("auth_oauth2_command error: " ++ io.error_message(Error))
-        )
-    ;
-        CommandStrings = [],
-        % Should not happen.
-        Res = error("empty command")
     ).
 
 %-----------------------------------------------------------------------------%
@@ -578,7 +544,7 @@ do_auth_method(Log, Config, IMAP, Res, !IO) :-
             Res0 = error("no login password")
         )
     ;
-        AuthMethod = auth_oauth2(_Command, MaybeOAuthString),
+        AuthMethod = auth_oauth2(_UserName, _Command, MaybeOAuthString),
         (
             MaybeOAuthString = yes(OAuthString),
             imap.authenticate_oauth2(IMAP, OAuthString, Res0, !IO)

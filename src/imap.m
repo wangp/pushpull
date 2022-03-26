@@ -30,8 +30,8 @@
 :- type password
     --->    password(string).
 
-:- type oauth2_base64_string
-    --->    oauth2_base64_string(string).   % base64 encoded, non-empty
+:- type sasl_string
+    --->    sasl_string(string).    % base64, non-empty
 
 :- type imap_result == maybe_result(imap_res).
 
@@ -75,8 +75,8 @@
 :- pred login(imap::in, username::in, imap.password::in, imap_result::out,
     io::di, io::uo) is det.
 
-:- pred authenticate_oauth2(imap::in, oauth2_base64_string::in,
-    imap_result::out, io::di, io::uo) is det.
+:- pred authenticate_oauth2(imap::in, sasl_string::in, imap_result::out,
+    io::di, io::uo) is det.
 
 :- pred noop(imap::in, imap_result::out, io::di, io::uo) is det.
 
@@ -649,12 +649,11 @@ apply_login_response(Response, unit, !State, !Alerts, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-authenticate_oauth2(IMAP, OAuthString, Res, !IO) :-
+authenticate_oauth2(IMAP, SASLString, Res, !IO) :-
     get_capabilities(IMAP, MaybeCaps0, !IO),
     (
         MaybeCaps0 = yes(Caps),
-        authenticate_oauth2_with_capabilities(IMAP, Caps, OAuthString,
-            Res, !IO)
+        authenticate_oauth2_with_capabilities(IMAP, Caps, SASLString, Res, !IO)
     ;
         MaybeCaps0 = no,
         capability(IMAP, Res0, !IO),
@@ -666,7 +665,7 @@ authenticate_oauth2(IMAP, OAuthString, Res, !IO) :-
                 MaybeCaps = no,
                 Caps = []
             ),
-            authenticate_oauth2_with_capabilities(IMAP, Caps, OAuthString,
+            authenticate_oauth2_with_capabilities(IMAP, Caps, SASLString,
                 Res, !IO)
         ;
             Res = Res0
@@ -674,27 +673,27 @@ authenticate_oauth2(IMAP, OAuthString, Res, !IO) :-
     ).
 
 :- pred authenticate_oauth2_with_capabilities(imap::in, list(capability)::in,
-    oauth2_base64_string::in, imap_result::out, io::di, io::uo) is det.
+    sasl_string::in, imap_result::out, io::di, io::uo) is det.
 
-authenticate_oauth2_with_capabilities(IMAP, Caps, OAuthString, Res, !IO) :-
+authenticate_oauth2_with_capabilities(IMAP, Caps, SASLString, Res, !IO) :-
     ( not list.contains(Caps, atom("SASL-IR")) ->
         Res = error("missing SASL-IR capability")
     ; list.contains(Caps, atom("AUTH=XOAUTH2")) ->
-        do_authenticate(IMAP, "XOAUTH2", OAuthString, Res, !IO)
+        do_authenticate(IMAP, "XOAUTH2", SASLString, Res, !IO)
     ; list.contains(Caps, atom("AUTH=OAUTHBEARER")) ->
-        % Note: the gmail-oauth2-tools oauth2.py script cannot produce the
-        % correct string for OAUTHBEARER so we prefer XOAUTH2 for now.
-        do_authenticate(IMAP, "OAUTHBEARER", OAuthString, Res, !IO)
+        % XXX we don't yet construct OAUTHBEARER bearer tokens
+        % so prefer XOAUTH2 for now
+        do_authenticate(IMAP, "OAUTHBEARER", SASLString, Res, !IO)
     ;
         Res = error("server does not support OAuth2 authentication")
     ).
 
-:- pred do_authenticate(imap::in, string::in, oauth2_base64_string::in,
+:- pred do_authenticate(imap::in, string::in, sasl_string::in,
     imap_result::out, io::di, io::uo) is det.
 
-do_authenticate(IMAP, AuthMechName, OAuthString, Res, !IO) :-
+do_authenticate(IMAP, AuthMechName, SASLString, Res, !IO) :-
     get_new_tag(IMAP, Pipe, Tag, !IO),
-    OAuthString = oauth2_base64_string(InitialClientResponse),
+    SASLString = sasl_string(InitialClientResponse),
     Authenticate = authenticate(astring(AuthMechName),
         astring(InitialClientResponse)),
     make_command_stream(Tag - command_nonauth(Authenticate), CommandStream),
