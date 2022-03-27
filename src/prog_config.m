@@ -66,7 +66,7 @@
             )
     ;       auth_oauth2(
                 oauth2_username :: username,
-                oauth2_command :: list(word),
+                oauth2_refresh_command :: list(word),
                 oauth2_access_token :: oauth2_access_token
             ).
 
@@ -231,24 +231,24 @@ make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
         Port = 993
     ),
 
-    ( nonempty(Config, "imap", "auth_plain_username", UserName0) ->
+    ( nonempty(Config, "imap", "login_username", UserName0) ->
         UserName = username(UserName0),
-        ( nonempty(Config, "imap", "auth_oauth2_username", _) ->
-            cons("both imap.auth_plain_username and " ++
-                "imap.auth_oauth2_username specified", !Errors)
+        ( nonempty(Config, "imap", "oauth2_username", _) ->
+            cons("both imap.login_username and " ++
+                "imap.oauth2_username specified", !Errors)
         ;
             true
         ),
-        ( nonempty(Config, "imap", "auth_plain_password", Password) ->
+        ( nonempty(Config, "imap", "login_password", Password) ->
             MaybePassword = yes(password(Password))
         ;
             MaybePassword = no
         ),
         AuthMethod = auth_plain(UserName, MaybePassword)
-    ; nonempty(Config, "imap", "auth_oauth2_username", UserName0) ->
+    ; nonempty(Config, "imap", "oauth2_username", UserName0) ->
         UserName = username(UserName0),
         (
-            nonempty(Config, "imap", "auth_oauth2_command",
+            nonempty(Config, "imap", "oauth2_refresh_command",
                 OAuthCommandString)
         ->
             parse_command(OAuthCommandString, MaybeOAuthCommand, !Errors),
@@ -261,14 +261,14 @@ make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
             )
         ;
             OAuthCommand = [],
-            cons("missing imap.auth_oauth2_command", !Errors)
+            cons("missing imap.oauth2_refresh_command", !Errors)
         ),
         AccessToken = oauth2_access_token(""), % dummy value
         AuthMethod = auth_oauth2(UserName, OAuthCommand, AccessToken)
     ;
         AuthMethod = auth_plain(username(""), no),
-        cons("must specify one of imap.auth_plain_username or " ++
-            "imap.auth_oauth2_username", !Errors)
+        cons("must specify one of imap.login_username or " ++
+            "imap.oauth2_username", !Errors)
     ),
 
     ( nonempty(Config, "imap", "idle", Idle0) ->

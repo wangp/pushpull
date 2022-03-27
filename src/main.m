@@ -470,13 +470,14 @@ get_oauth2_access_token(Log, CommandWords, Res, !IO) :-
             CallRes = ok(String0),
             String = string.strip(String0),
             ( String = "" ->
-                Res = error("auth_oauth2_command returned empty string")
+                Res = error("oauth2_refresh_command returned empty string")
             ;
                 Res = ok(oauth2_access_token(String))
             )
         ;
             CallRes = error(Error),
-            Res = error("auth_oauth2_command error: " ++ io.error_message(Error))
+            Res = error("oauth2_refresh_command error: " ++
+                io.error_message(Error))
         )
     ;
         CommandStrings = [],
