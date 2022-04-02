@@ -25,7 +25,6 @@
 :- implementation.
 
 :- import_module char.
-:- import_module require.
 
 :- inst open
     --->    open(ground).

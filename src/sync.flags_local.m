@@ -26,7 +26,6 @@
 :- import_module flag_delta.
 :- import_module lowio.
 :- import_module maildir.
-:- import_module maybe_result.
 :- import_module path.
 
 %-----------------------------------------------------------------------------%

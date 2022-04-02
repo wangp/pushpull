@@ -86,7 +86,6 @@
 
 :- import_module cord.
 :- import_module list.
-:- import_module require.
 :- import_module string.
 
 :- type acc == cord(chunk). % could probably be reverse list
