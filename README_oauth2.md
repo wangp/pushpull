@@ -71,9 +71,8 @@ Python 3 (at the time of writing).
 
         [imap]
         host = imap.gmail.com
-        auth = oauth2
-        auth_oauth2_username = <your email>
-        auth_oauth2_command = <your script and args>
+        oauth2_username = <your email>
+        oauth2_refresh_command = <your script and args>
 
  6. Test plugsink with:
 
