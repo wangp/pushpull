@@ -41,6 +41,7 @@
 :- import_module string.
 
 :- pragma foreign_decl("C", local, "
+    #include <fcntl.h>
     #include <unistd.h>
 ").
 
