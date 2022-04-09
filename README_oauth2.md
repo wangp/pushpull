@@ -28,6 +28,10 @@ Python 3 (at the time of writing).
 
         - under Test users, add your email as a test user
 
+      Note: while the app remains in the "Testing" state then any refresh
+      tokens will expire every 7 days. Unfortunately to "publishing" an "app"
+      requires jumping through hoops that make no sense for a single user.
+
     - Go to Credentials
 
         - click Create Credentials > OAuth client ID
