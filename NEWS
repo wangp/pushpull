@@ -3,6 +3,7 @@ plugsink 0.3-unreleased
 Please note that config keys related to authentication have changed.
 
 * Support OAuth2 authentication.
+* Support ~ expansion in config keys.
 
 plugsink 0.2 (2018-10-07)
 =========================
