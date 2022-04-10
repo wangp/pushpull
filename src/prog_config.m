@@ -255,7 +255,8 @@ make_prog_config(Config, Home, PairingName, ProgConfig, !Errors) :-
             nonempty(Config, "imap", "oauth2_refresh_command",
                 OAuthCommandString)
         ->
-            parse_command(OAuthCommandString, MaybeOAuthCommand, !Errors),
+            parse_command(Home, OAuthCommandString, MaybeOAuthCommand,
+                !Errors),
             (
                 MaybeOAuthCommand = yes(OAuthCommand)
             ;
@@ -340,7 +341,7 @@ make_prog_config(Config, Home, PairingName, ProgConfig, !Errors) :-
     ),
 
     ( nonempty(Config, "command", "post_sync_local_change", Command0) ->
-        parse_command(Command0, CommandPostSyncLocal, !Errors)
+        parse_command(Home, Command0, CommandPostSyncLocal, !Errors)
     ;
         CommandPostSyncLocal = maybe.no
     ),
@@ -411,13 +412,14 @@ default_log_level = info.
 
 max_idle_timeout_seconds = 29 * 60.
 
-:- pred parse_command(string::in, maybe(list(word))::out,
+:- pred parse_command(home::in, string::in, maybe(list(word))::out,
     list(string)::in, list(string)::out) is cc_multi.
 
-parse_command(S0, MaybeWords, !Errors) :-
+parse_command(Home, S0, MaybeWords, !Errors) :-
     shell_word.split(S0, ParseResult),
     (
-        ParseResult = ok(Words),
+        ParseResult = ok(Words0),
+        expand_tilde_home_in_shell_words(Home, Words0, Words),
         MaybeWords = yes(Words)
     ;
         (

@@ -75,7 +75,7 @@
     # Comment this out to use plain authentication.
     oauth2_username = user@example.com
 
-    # Specify a command for OAuth2 authentication.
+    # Specify a command for OAuth2 authentication. [tilde-expansion]
     # This must generate an OAuth2 access token on standard output.
     oauth2_refresh_command = get-oauth2-access-token user@example.com
 
@@ -106,10 +106,10 @@
     remote = [Google Mail]/All Mail
 
 [command]
-    # Run this command after a synchronisation cycle where the local
-    # Maildir folder is changed. Notmuch users may want to run a script
-    # that tries "notmuch new" a few times (in case the notmuch database
-    # is locked). The script should return with exit status 0.
+    # Command to run after a synchronisation cycle where the local Maildir
+    # folder is changed. [tilde-expansion]
+    # e.g. notmuch users may want to run "notmuch new".
+    # The command should return with exit status 0.
     post_sync_local_change =
 
 #-----------------------------------------------------------------------------#
