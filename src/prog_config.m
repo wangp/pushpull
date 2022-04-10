@@ -91,6 +91,7 @@
 :- import_module string.
 
 :- import_module config.
+:- import_module path_expand.
 
 %-----------------------------------------------------------------------------%
 
@@ -105,7 +106,8 @@ load_prog_config(FileName, PairingName, Res, !IO) :-
     load_config_file(FileName, LoadRes, !IO),
     (
         LoadRes = ok(Config),
-        make_prog_config(Config, PairingName, ProgConfig, [], RevErrors, !IO),
+        get_home_dir(Home, !IO),
+        make_prog_config(Config, Home, PairingName, ProgConfig, [], RevErrors),
         (
             RevErrors = [],
             Res = ok(ProgConfig)
@@ -118,10 +120,10 @@ load_prog_config(FileName, PairingName, Res, !IO) :-
         Res = errors([io.error_message(Error)])
     ).
 
-:- pred make_prog_config(config::in, string::in, prog_config::out,
-    list(string)::in, list(string)::out, io::di, io::uo) is cc_multi.
+:- pred make_prog_config(config::in, home::in, string::in, prog_config::out,
+    list(string)::in, list(string)::out) is cc_multi.
 
-make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
+make_prog_config(Config, Home, PairingName, ProgConfig, !Errors) :-
     ( nonempty(Config, "general", "restart_after_error_seconds", Seconds0) ->
         ( nonnegative_int(Seconds0, Seconds) ->
             RestartAfterErrorSeconds = yes(Seconds)
@@ -133,7 +135,8 @@ make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
         RestartAfterErrorSeconds = no
     ),
 
-    ( nonempty(Config, "log", "file", LogFileName) ->
+    ( nonempty(Config, "log", "file", LogFileName0) ->
+        expand_tilde_home(Home, LogFileName0, LogFileName),
         MaybeLogFileName = yes(LogFileName)
     ;
         MaybeLogFileName = no
@@ -151,14 +154,15 @@ make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
     ),
 
     ( nonempty(Config, "local", "state", DbFileName0) ->
-        DbFileName = DbFileName0
+        expand_tilde_home(Home, DbFileName0, DbFileName)
     ;
         DbFileName = "",
         cons("missing local.state", !Errors)
     ),
 
     ( nonempty(Config, "local", "maildir", MaildirRoot0) ->
-        MaildirRoot = maildir_root(MaildirRoot0)
+        expand_tilde_home(Home, MaildirRoot0, MaildirRoot1),
+        MaildirRoot = maildir_root(MaildirRoot1)
     ;
         MaildirRoot = maildir_root(""),
         cons("missing maildir.path", !Errors)
@@ -304,7 +308,8 @@ make_prog_config(Config, PairingName, ProgConfig, !Errors, !IO) :-
         SyncOnIdleTimeout = no
     ),
 
-    ( nonempty(Config, "ssl", "certificate_file", CertificateFile) ->
+    ( nonempty(Config, "ssl", "certificate_file", CertificateFile0) ->
+        expand_tilde_home(Home, CertificateFile0, CertificateFile),
         MaybeCertificateFile = yes(CertificateFile)
     ;
         MaybeCertificateFile = no

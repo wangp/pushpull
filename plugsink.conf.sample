@@ -1,28 +1,33 @@
+# Lines beginning with '#' are treated as comment lines.
+#
+# Keys marked with [tilde-expansion] may have values beginning with ~/
+# which will be replaced by the value of the HOME environment variable.
+
 [general]
     # After an error, wait this many seconds then start over.
     restart_after_error_seconds = 600
 
 [log]
-    # Path to log file.
-    file = plugsink.log
+    # Path to log file. [tilde-expansion]
+    file = ~/.config/plugsink/plugsink.log
 
     # Logging level: debug, info, notice, warning, error
     level = info
 
 [ssl]
     # Path to trusted CA certificates for verification of the IMAP
-    # server's certificate.
+    # server's certificate. [tilde-expansion]
     certificate_file = /etc/ssl/certs/ca-certificates.crt
 
 [local]
     # Path to a file that will contain the state of the synchronisation
-    # between Maildir folders and IMAP folders. The file contains an
-    # SQLite database. Try not to lose it!
-    state = /home/user/Maildir/.plugsink/state.db
+    # between Maildir folders and IMAP folders. [tilde-expansion]
+    # The file contains an SQLite database. Try not to lose it!
+    state = ~/.config/plugsink/state.db
 
     # Path to top-level Maildir directory. Local folders are stored
-    # under this directory.
-    maildir = /home/user/Maildir
+    # under this directory. [tilde-expansion]
+    maildir = ~/Maildir
 
     # Whether to call fsync(2) to ensure files are flushed to disk when
     # written. This is slower but safer. You may want to temporarily
