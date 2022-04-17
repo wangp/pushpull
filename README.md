@@ -139,12 +139,6 @@ corresponding messages in `RemoteFoo` as deleted.
 In the future we may try to prevent such bad behaviour, somehow.
 
 
-Synchronisation algorithm
-=========================
-
-To be documented.
-
-
 Debugging
 =========
 
