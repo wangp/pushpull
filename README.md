@@ -44,7 +44,7 @@ Invocation
 
 Run it like this:
 
-    plugsink CONFIG-FILE PAIRING
+    plugsink [OPTIONS] CONFIG-FILE PAIRING
 
 The configuration file can be placed anywhere you like.
 See `plugsink.conf.sample` for the details.
@@ -59,6 +59,18 @@ be synchronised.  For example, if the configuration file contains:
 then running the command `plugsink config-file "All Mail"` will synchronise
 the IMAP folder "[Google Mail]/All Mail" with the local folder `All Mail`
 under the top-level Maildir directory.
+
+Command line options
+--------------------
+
+`--test-auth-only`
+
+    Try logging into IMAP server only; don't synchronise.
+
+`--allow-mass-delete=NUM`
+
+    Allow a one-off synchronisation cycle even if more than NUM messages
+    are missing from the Maildir folder (see below).
 
 
 Idling
@@ -118,25 +130,28 @@ such as "All Mail" or "Trash".  I have this option enabled and it seems
 okay.
 
 
-Warning
-=======
+Mass delete prevention
+======================
 
-Be aware of what is known to the state database.  For now, this requires
-poking around the state database with SQLite commands.
-
-Here is a bad sequence of events:
+Consider this sequence of events:
 
  1. you synchronise a Maildir folder `Foo` with an IMAP folder `RemoteFoo`
  2. you rename `Foo` to `Bar`
  3. you create a empty folder `Foo`, and synchronise the new `Foo` with
     `RemoteFoo` again
 
-The user's intention may have been to re-download all the `RemoteFoo`
-messages into `Foo`.  Instead, plugsink thinks that all the messages it
-knew about from `Foo` have been deleted, and proceeds to mark all the
-corresponding messages in `RemoteFoo` as deleted.
+The intention here may have been to re-download all the `RemoteFoo` messages
+into `Foo`. However, as the state database knows of the files that messages
+that previously were in `Foo`, to the program, it looks as though all the
+message in `Foo` have been deleted, and therefore all the corresponding
+messages in `RemoteFoo` should be marked as well.
 
-In the future we may try to prevent such bad behaviour, somehow.
+To prevent this kind of mishap, plugsink will refuse to proceed if it
+discovers that too many (> 50) messages that previously existed in a Maildir
+folder have gone missing. If you are sure that you want to continue,
+run plugsink with the `--allow-mass-delete=NUM` option to perform a
+synchronisation cycle allowing up to NUM deleted files.
+The program will quit after one synchronisation cycle.
 
 
 Debugging

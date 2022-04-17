@@ -172,18 +172,19 @@ prompt_password(username(UserName), HostNameOnly, Port, Res, !IO) :-
 
 :- pred main_1(prog_config::in, prog_options::in, io::di, io::uo) is det.
 
-main_1(Config, Options, !IO) :-
-    MaybeLogFileName = Config ^ maybe_log_filename,
-    Level = Config ^ log_level,
+main_1(Config0, Options, !IO) :-
+    MaybeLogFileName = Config0 ^ maybe_log_filename,
+    Level = Config0 ^ log_level,
     open_log(MaybeLogFileName, Level, ResLog, !IO),
     (
         ResLog = ok(Log),
         TestAuth = Options ^ test_auth_only,
         (
             TestAuth = yes,
-            test_auth(Log, Config, !IO)
+            test_auth(Log, Config0, !IO)
         ;
             TestAuth = no,
+            apply_options_to_config(Log, Options, Config0, Config, !IO),
             main_2(Log, Config, !IO)
         ),
         close_log(Log, !IO)
@@ -192,6 +193,25 @@ main_1(Config, Options, !IO) :-
         io.write_string(Error, !IO),
         io.set_exit_status(1, !IO)
     ).
+
+:- pred apply_options_to_config(log::in, prog_options::in,
+    prog_config::in, prog_config::out, io::di, io::uo) is det.
+
+apply_options_to_config(Log, Options, !Config, !IO) :-
+    AllowMassDelete = Options ^ allow_mass_delete,
+    !Config ^ allow_mass_delete := AllowMassDelete,
+    (
+        !.Config ^ allow_mass_delete = yes(_),
+        !.Config ^ idle = yes
+    ->
+        !Config ^ idle := no,
+        log_info(Log, "IDLE disabled when --allow-mass-delete option is used",
+            !IO)
+    ;
+        true
+    ).
+
+%-----------------------------------------------------------------------------%
 
 :- pred main_2(log::in, prog_config::in, io::di, io::uo) is det.
 

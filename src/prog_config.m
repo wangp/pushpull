@@ -36,7 +36,10 @@
                 idle_timeout_seconds :: int,
                 sync_on_idle_timeout :: bool,
                 certificate_file :: maybe(string),
-                command_post_sync_local_change :: maybe(list(word))
+                command_post_sync_local_change :: maybe(list(word)),
+
+                % from option only
+                allow_mass_delete :: maybe(int)
             ).
 
 :- type maildir_root
@@ -346,13 +349,17 @@ make_prog_config(Config, Home, PairingName, ProgConfig, !Errors) :-
         CommandPostSyncLocal = maybe.no
     ),
 
+    % This is overridden by command line option.
+    AllowMassDelete = no,
+
     ProgConfig = prog_config(RestartAfterErrorSeconds,
         MaybeLogFileName, LogLevel, DbFileName,
         MaildirRoot, Fsync, Buckets, Quiesce, LocalMailboxName,
         HostNameOnly, Port, AuthMethod,
         RemoteMailboxName, RemoteMailboxString,
         Idle, IdleTimeoutSecs, SyncOnIdleTimeout, MaybeCertificateFile,
-        CommandPostSyncLocal).
+        CommandPostSyncLocal,
+        AllowMassDelete).
 
 :- pred nonempty(config::in, config.section::in, string::in,
     string::out) is semidet.

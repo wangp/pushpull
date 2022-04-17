@@ -10,7 +10,8 @@
 
 :- type prog_options
     --->    prog_options(
-                test_auth_only :: bool
+                test_auth_only :: bool,
+                allow_mass_delete :: maybe(int)
             ).
 
 :- pred parse_options(list(string)::in, list(string)::out,
@@ -23,11 +24,14 @@
 
 :- import_module char.
 :- import_module getopt.
+:- import_module int.
+:- import_module string.
 
 %-----------------------------------------------------------------------------%
 
 :- type option
-    --->    test_auth_only.
+    --->    test_auth_only
+    ;       allow_mass_delete.
 
 :- pred short_option(char::in, option::out) is semidet.
 
@@ -37,10 +41,12 @@ short_option(_, test_auth_only) :-
 :- pred long_option(string::in, option::out) is semidet.
 
 long_option("test-auth-only", test_auth_only).
+long_option("allow-mass-delete", allow_mass_delete).
 
 :- pred option_default(option::out, option_data::out) is multi.
 
 option_default(test_auth_only, bool(no)).
+option_default(allow_mass_delete, maybe_int(no)).
 
 %-----------------------------------------------------------------------------%
 
@@ -50,8 +56,18 @@ parse_options(Args, NonOptionArgs, Res) :-
     (
         MaybeOptionTable = ok(OptionTable),
         getopt.lookup_bool_option(OptionTable, test_auth_only, TestAuth),
-        Options = prog_options(TestAuth),
-        Res = ok(Options)
+        getopt.lookup_maybe_int_option(OptionTable, allow_mass_delete,
+            AllowMassDelete),
+        (
+            AllowMassDelete = yes(AllowMassDeleteInt),
+            AllowMassDeleteInt =< 0
+        ->
+            Res = error("option `--allow-mass-delete' requires " ++
+                "a positive integer argument")
+        ;
+            Options = prog_options(TestAuth, AllowMassDelete),
+            Res = ok(Options)
+        )
     ;
         MaybeOptionTable = error(OptionError),
         Res = error(option_error_to_string(OptionError))

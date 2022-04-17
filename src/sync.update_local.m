@@ -60,12 +60,9 @@ update_db_local_mailbox(Log, Config, Db, Inotify, MailboxPair, UpdateMethod,
                 % If many previously known messages are missing from the local
                 % mailbox then something may have gone wrong.
                 NumUnseenPairingIds = set_tree234.count(UnseenPairingIds),
-                ( NumUnseenPairingIds > 50 ->
-                    log_info(Log,
-                        "Detected " ++ from_int(NumUnseenPairingIds) ++
-                        " deleted files in local mailbox", !IO),
-                    Res = error("Too many files deleted in local mailbox")
-                ;
+                check_mass_deletion(Log, Config, NumUnseenPairingIds, Res0, !IO),
+                (
+                    Res0 = ok,
                     log_debug(Log, "Update database local message state", !IO),
                     update_pairings(Db, Changes, ResUpdate, !IO),
                     (
@@ -84,6 +81,9 @@ update_db_local_mailbox(Log, Config, Db, Inotify, MailboxPair, UpdateMethod,
                         ResUpdate = error(Error),
                         Res = error(Error)
                     )
+                ;
+                    Res0 = error(Error),
+                    Res = error(Error)
                 )
             ;
                 ResFold = error(Error),
@@ -128,6 +128,28 @@ detect_local_changes(Log, PairingId, Unique, LocalFlagDeltas0,
     ;
         % No longer in directory.
         insert(PairingId, !UnseenPairingIds)
+    ).
+
+%-----------------------------------------------------------------------------%
+
+:- pred check_mass_deletion(log::in, prog_config::in, int::in,
+    maybe_error::out, io::di, io::uo) is det.
+
+check_mass_deletion(Log, Config, NumUnseenPairingIds, Res, !IO) :-
+    AllowMassDelete = Config ^ allow_mass_delete,
+    (
+        AllowMassDelete = yes(MaxDeletes)
+    ;
+        AllowMassDelete = no,
+        MaxDeletes = 50
+    ),
+    ( NumUnseenPairingIds =< MaxDeletes ->
+        Res = ok
+    ;
+        log_warning(Log,
+            "Detected " ++ from_int(NumUnseenPairingIds) ++
+            " deleted files in local mailbox", !IO),
+        Res = error("Too many files deleted in local mailbox")
     ).
 
 %-----------------------------------------------------------------------------%
