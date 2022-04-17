@@ -39,15 +39,13 @@
 :- import_module path.
 :- import_module process.
 :- import_module prog_config.
+:- import_module prog_options.
 :- import_module select.
 :- import_module setsockopt.
 :- import_module shell_word.
 :- import_module signal.
 :- import_module sync.
 :- import_module terminal_attr.
-
-:- type test_auth_only
-    --->    test_auth_only(bool).
 
 :- type result_restart == pair(maybe_result, restart).
 
@@ -69,21 +67,27 @@
 
 real_main(!IO) :-
     io.command_line_arguments(Args0, !IO),
-    ( Args0 = ["--test-auth-only" | Args1] ->
-        TestAuth = test_auth_only(yes),
-        Args = Args1
+    parse_options(Args0, NonOptionArgs, MaybeOptions),
+    (
+        MaybeOptions = ok(Options),
+        main_0(Options, NonOptionArgs, !IO)
     ;
-        TestAuth = test_auth_only(no),
-        Args = Args0
-    ),
-    ( Args = [ConfigFileName, PairingName] ->
+        MaybeOptions = error(Error),
+        print_error(Error, !IO),
+        io.set_exit_status(1, !IO)
+    ).
+
+:- pred main_0(prog_options::in, list(string)::in, io::di, io::uo) is cc_multi.
+
+main_0(Options, NonOptionArgs, !IO) :-
+    ( NonOptionArgs = [ConfigFileName, PairingName] ->
         load_prog_config(ConfigFileName, PairingName, LoadRes, !IO),
         (
             LoadRes = ok(Config0),
             maybe_prompt_password(Config0, ResConfig, !IO),
             (
                 ResConfig = ok(Config),
-                main_1(Config, TestAuth, !IO)
+                main_1(Config, Options, !IO)
             ;
                 ResConfig = error(Error),
                 print_error(Error, !IO),
@@ -166,19 +170,20 @@ prompt_password(username(UserName), HostNameOnly, Port, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-:- pred main_1(prog_config::in, test_auth_only::in, io::di, io::uo) is det.
+:- pred main_1(prog_config::in, prog_options::in, io::di, io::uo) is det.
 
-main_1(Config, TestAuth, !IO) :-
+main_1(Config, Options, !IO) :-
     MaybeLogFileName = Config ^ maybe_log_filename,
     Level = Config ^ log_level,
     open_log(MaybeLogFileName, Level, ResLog, !IO),
     (
         ResLog = ok(Log),
+        TestAuth = Options ^ test_auth_only,
         (
-            TestAuth = test_auth_only(yes),
+            TestAuth = yes,
             test_auth(Log, Config, !IO)
         ;
-            TestAuth = test_auth_only(no),
+            TestAuth = no,
             main_2(Log, Config, !IO)
         ),
         close_log(Log, !IO)
