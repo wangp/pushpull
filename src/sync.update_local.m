@@ -57,23 +57,33 @@ update_db_local_mailbox(Log, Config, Db, Inotify, MailboxPair, UpdateMethod,
                 AllFiles, NewFiles, !IO),
             (
                 ResFold = ok,
-                log_debug(Log, "Update database local message state", !IO),
-                update_pairings(Db, Changes, ResUpdate, !IO),
-                (
-                    ResUpdate = ok,
-                    insert_pairings(Log, Db, MailboxPair, NewFiles, ResInsert,
-                        !IO),
+                % If many previously known messages are missing from the local
+                % mailbox then something may have gone wrong.
+                NumUnseenPairingIds = set_tree234.count(UnseenPairingIds),
+                ( NumUnseenPairingIds > 50 ->
+                    log_info(Log,
+                        "Detected " ++ from_int(NumUnseenPairingIds) ++
+                        " deleted files in local mailbox", !IO),
+                    Res = error("Too many files deleted in local mailbox")
+                ;
+                    log_debug(Log, "Update database local message state", !IO),
+                    update_pairings(Db, Changes, ResUpdate, !IO),
                     (
-                        ResInsert = ok,
-                        mark_expunged_local_messages(Log, Db, MailboxPair,
-                            UnseenPairingIds, Res, !IO)
+                        ResUpdate = ok,
+                        insert_pairings(Log, Db, MailboxPair, NewFiles, ResInsert,
+                            !IO),
+                        (
+                            ResInsert = ok,
+                            mark_expunged_local_messages(Log, Db, MailboxPair,
+                               UnseenPairingIds, Res, !IO)
+                        ;
+                            ResInsert = error(Error),
+                            Res = error(Error)
+                        )
                     ;
-                        ResInsert = error(Error),
+                        ResUpdate = error(Error),
                         Res = error(Error)
                     )
-                ;
-                    ResUpdate = error(Error),
-                    Res = error(Error)
                 )
             ;
                 ResFold = error(Error),
