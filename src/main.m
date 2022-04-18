@@ -28,6 +28,7 @@
 :- import_module dir_cache.
 :- import_module file_util.
 :- import_module gettimeofday.
+:- import_module help.
 :- import_module imap.
 :- import_module imap.types.
 :- import_module inotify.
@@ -66,43 +67,45 @@
 %-----------------------------------------------------------------------------%
 
 real_main(!IO) :-
+    io.progname_base("plugsink", ProgName, !IO),
     io.command_line_arguments(Args0, !IO),
     parse_options(Args0, NonOptionArgs, MaybeOptions),
     (
         MaybeOptions = ok(Options),
-        main_0(Options, NonOptionArgs, !IO)
+        ( Options ^ help = yes ->
+            print_help(ProgName, !IO)
+        ; NonOptionArgs = [ConfigFileName, PairingName] ->
+            main_0(Options, ConfigFileName, PairingName, !IO)
+        ;
+            print_error(usage_text(ProgName), !IO),
+            io.set_exit_status(1, !IO)
+        )
     ;
         MaybeOptions = error(Error),
         print_error(Error, !IO),
         io.set_exit_status(1, !IO)
     ).
 
-:- pred main_0(prog_options::in, list(string)::in, io::di, io::uo) is cc_multi.
+:- pred main_0(prog_options::in, string::in, string::in, io::di, io::uo)
+    is cc_multi.
 
-main_0(Options, NonOptionArgs, !IO) :-
-    ( NonOptionArgs = [ConfigFileName, PairingName] ->
-        load_prog_config(ConfigFileName, PairingName, LoadRes, !IO),
+main_0(Options, ConfigFileName, PairingName, !IO) :-
+    load_prog_config(ConfigFileName, PairingName, LoadRes, !IO),
+    (
+        LoadRes = ok(Config0),
+        maybe_prompt_password(Config0, ResConfig, !IO),
         (
-            LoadRes = ok(Config0),
-            maybe_prompt_password(Config0, ResConfig, !IO),
-            (
-                ResConfig = ok(Config),
-                main_1(Config, Options, !IO)
-            ;
-                ResConfig = error(Error),
-                print_error(Error, !IO),
-                io.set_exit_status(1, !IO)
-            )
+            ResConfig = ok(Config),
+            main_1(Config, Options, !IO)
         ;
-            LoadRes = errors(Errors),
-            print_error("Errors in configuration file:", !IO),
-            list.foldl(print_error, Errors, !IO),
+            ResConfig = error(Error),
+            print_error(Error, !IO),
             io.set_exit_status(1, !IO)
         )
     ;
-        io.progname_base("plugsink", ProgName, !IO),
-        print_error(format("Usage: %s config-file pairing", [s(ProgName)]),
-            !IO),
+        LoadRes = errors(Errors),
+        print_error("Errors in configuration file:", !IO),
+        list.foldl(print_error, Errors, !IO),
         io.set_exit_status(1, !IO)
     ).
 
