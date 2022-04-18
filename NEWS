@@ -4,6 +4,9 @@ Please note that config keys related to authentication have changed.
 
 * Support OAuth2 authentication.
 * Support ~ expansion in config keys.
+* Refuse to sync if too many files missing from local mailbox, by default.
+* Add --allow-mass-delete option.
+* Add -h, --help option.
 
 plugsink 0.2 (2018-10-07)
 =========================
