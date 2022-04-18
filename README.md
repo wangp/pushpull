@@ -23,8 +23,7 @@ Requirements
   * Linux system (the inotify API is used, so other Unix-like systems will
     require some porting effort)
 
-  * Mercury compiler (release-of-the-day); available at
-    <http://dl.mercurylang.org/index.html>
+  * Mercury compiler; available at <http://dl.mercurylang.org/index.html>
 
   * OpenSSL
 
