@@ -1,7 +1,7 @@
-plugsink
+pushpull
 ========
 
-plugsink is a bidirectional IMAP/Maildir synchronisation tool.
+pushpull is a bidirectional IMAP/Maildir synchronisation tool.
 It synchronises one IMAP folder with one Maildir folder, then optionally
 waits for a change to either the IMAP folder (using the IDLE command) or
 to the Maildir folder (using the inotify API) before synchronising again.
@@ -9,10 +9,10 @@ I wrote it for me, but you might like it, too.
 
 **WARNING**: Use at your own risk.
 
-plugsink is known to work with GMail, and was tested against Dovecot
+pushpull is known to work with GMail, and was tested against Dovecot
 during its earlier development. I don't know if anyone else uses it,
 or has tested it with other IMAP servers.
-plugsink does not send the EXPUNGE command (yet) so it should not
+pushpull does not send the EXPUNGE command (yet) so it should not
 permanently delete your mail from the IMAP server, nonetheless I suggest
 you do your own testing. And read the source code.
 
@@ -35,7 +35,7 @@ With Mercury installed and `mmc` in your PATH, run:
 
     make PARALLEL=-j6
 
-If successful, you will get a binary named `plugsink`.
+If successful, you will get a binary named `pushpull`.
 
 
 Invocation
@@ -43,10 +43,10 @@ Invocation
 
 Run it like this:
 
-    plugsink [OPTIONS] CONFIG-FILE PAIRING
+    pushpull [OPTIONS] CONFIG-FILE PAIRING
 
 The configuration file can be placed anywhere you like.
-See `plugsink.conf.sample` for the details.
+See `pushpull.conf.sample` for the details.
 
 The *pairing* argument names the pair of Maildir folder and IMAP folder to
 be synchronised.  For example, if the configuration file contains:
@@ -55,7 +55,7 @@ be synchronised.  For example, if the configuration file contains:
     local = All Mail
     remote = [Google Mail]/All Mail
 
-then running the command `plugsink config-file "All Mail"` will synchronise
+then running the command `pushpull config-file "All Mail"` will synchronise
 the IMAP folder "[Google Mail]/All Mail" with the local folder `All Mail`
 under the top-level Maildir directory.
 
@@ -75,7 +75,7 @@ Command line options
 Idling
 ======
 
-After the initial synchronisation cycle, plugsink can maintain an open
+After the initial synchronisation cycle, pushpull can maintain an open
 connection to the IMAP server if the configuration key is set:
 
     [imap]
@@ -109,13 +109,13 @@ the IMAP system flags:
 Other IMAP flags are recorded in the database but not otherwise visible as
 there is no standard way to express them in Maildir.
 
-plugsink does not permanently delete messages from the Maildir folder.
+pushpull does not permanently delete messages from the Maildir folder.
 If a message in the IMAP folder is deleted then the corresponding Maildir
 message will be marked as deleted -- the message gains the `T` flag.
 If you access the Maildir through a mail client and use its "expunge"
 function then it will probably permanently delete the messages so marked.
 
-plugsink does not issue the EXPUNGE command to permanently delete messages
+pushpull does not issue the EXPUNGE command to permanently delete messages
 from the IMAP folder.  If a message in the Maildir folder is deleted then
 the corresponding message in the IMAP folder will only be marked as deleted
 -- the message gains the `\Deleted` flag.  If you access the IMAP folder
@@ -145,10 +145,10 @@ that previously were in `Foo`, to the program, it looks as though all the
 message in `Foo` have been deleted, and therefore all the corresponding
 messages in `RemoteFoo` should be marked as well.
 
-To prevent this kind of mishap, plugsink will refuse to proceed if it
+To prevent this kind of mishap, pushpull will refuse to proceed if it
 discovers that too many (> 50) messages that previously existed in a Maildir
 folder have gone missing. If you are sure that you want to continue,
-run plugsink with the `--allow-mass-delete=NUM` option to perform a
+run pushpull with the `--allow-mass-delete=NUM` option to perform a
 synchronisation cycle allowing up to NUM deleted files.
 The program will quit after one synchronisation cycle.
 

@@ -13,7 +13,7 @@ Python 3 (at the time of writing).
 
     - Agree to TOS
 
-    - Create a project, e.g. "plugsink"
+    - Create a project, e.g. "pushpull"
 
     - Go to Library > GMail API and enable it
 
@@ -21,7 +21,7 @@ Python 3 (at the time of writing).
 
         - for User Type, select "Internal", or "External" if you have no choice
 
-        - for App name, e.g. "plugsink"
+        - for App name, e.g. "pushpull"
 
         - under Scopes, click "Add or remove scopes"
           then enable the Gmail API scope (https://mail.google.com/)
@@ -71,16 +71,16 @@ Python 3 (at the time of writing).
     You may want to keep all the secret tokens in a keyring or otherwise
     in an encrypted form.
 
- 5. In the plugsink.conf file set these keys:
+ 5. In the pushpull.conf file set these keys:
 
         [imap]
         host = imap.gmail.com
         oauth2_username = <your email>
         oauth2_refresh_command = <your script and args>
 
- 6. Test plugsink with:
+ 6. Test pushpull with:
 
-        ./plugsink --test-auth-only plugsink.conf INBOX
+        ./pushpull --test-auth-only pushpull.conf INBOX
 
 See also
 --------
