@@ -1,3 +1,3 @@
-.PHONY: plugsink
-plugsink:
-	@$(MAKE) -C src ../plugsink
+.PHONY: pushpull
+pushpull:
+	@$(MAKE) -C src ../pushpull

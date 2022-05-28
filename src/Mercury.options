@@ -1,10 +1,10 @@
 # Default target for mmc --make.
-MAIN_TARGET = plugsink
+MAIN_TARGET = pushpull
 
 # Linking.
-MCFLAGS-plugsink += --mercury-linkage static
-LDFLAGS-plugsink += -pthread -lsqlite3 -ldl
-LDFLAGS-plugsink += -Wl,-Bstatic -lssl -lcrypto -Wl,-Bdynamic
+MCFLAGS-pushpull += --mercury-linkage static
+LDFLAGS-pushpull += -pthread -lsqlite3 -ldl
+LDFLAGS-pushpull += -Wl,-Bstatic -lssl -lcrypto -Wl,-Bdynamic
 
 # General optimisation flags.
 MCFLAGS += --optimise-constructor-last-call

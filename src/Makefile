@@ -2,10 +2,10 @@ MMC = mmc
 PARALLEL =
 files = $(wildcard *.m)
 
-../plugsink: plugsink
-	@ln -L -f plugsink ../plugsink
+../pushpull: pushpull
+	@ln -L -f pushpull ../pushpull
 
-plugsink: $(files) Mercury.options Mercury.params
+pushpull: $(files) Mercury.options Mercury.params
 	@$(MMC) --make $(PARALLEL) $@ && touch $@
 
 Mercury.params:

@@ -67,7 +67,7 @@
 %-----------------------------------------------------------------------------%
 
 real_main(!IO) :-
-    io.progname_base("plugsink", ProgName, !IO),
+    io.progname_base("pushpull", ProgName, !IO),
     io.command_line_arguments(Args0, !IO),
     parse_options(Args0, NonOptionArgs, MaybeOptions),
     (
