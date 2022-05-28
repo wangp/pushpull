@@ -9,7 +9,7 @@
 
 [log]
     # Path to log file. [tilde-expansion]
-    file = ~/.config/plugsink/plugsink.log
+    file = ~/.config/pushpull/pushpull.log
 
     # Logging level: debug, info, notice, warning, error
     level = info
@@ -23,7 +23,7 @@
     # Path to a file that will contain the state of the synchronisation
     # between Maildir folders and IMAP folders. [tilde-expansion]
     # The file contains an SQLite database. Try not to lose it!
-    state = ~/.config/plugsink/state.db
+    state = ~/.config/pushpull/state.db
 
     # Path to top-level Maildir directory. Local folders are stored
     # under this directory. [tilde-expansion]
@@ -53,7 +53,7 @@
     #
     # Note that if you have a folder which HAPPENS to have one or more
     # subfolders named XX (two hexadecimal digits) then
-    # plugsink will assume ...
+    # pushpull will assume ...
     buckets = no
 
 [imap]
