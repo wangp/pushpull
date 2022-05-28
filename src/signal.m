@@ -1,4 +1,4 @@
-% plugsink - a bidirectional IMAP/Maildir synchronisation tool.
+% pushpull - a bidirectional IMAP/Maildir synchronisation tool.
 % Copyright (C) 2015 Peter Wang
 
 :- module signal.
