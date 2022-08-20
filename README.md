@@ -27,6 +27,8 @@ Requirements
 
   * OpenSSL
 
+  * SQLite 3
+
 
 Compiling
 =========
