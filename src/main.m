@@ -41,6 +41,7 @@
 :- import_module process.
 :- import_module prog_config.
 :- import_module prog_options.
+:- import_module prog_version.
 :- import_module select.
 :- import_module setsockopt.
 :- import_module shell_word.
@@ -74,6 +75,9 @@ real_main(!IO) :-
         MaybeOptions = ok(Options),
         ( Options ^ help = yes ->
             print_help(ProgName, !IO)
+        ; Options ^ version = yes ->
+            io.write_string(version_string, !IO),
+            io.nl(!IO)
         ; NonOptionArgs = [ConfigFileName, PairingName] ->
             main_0(Options, ConfigFileName, PairingName, !IO)
         ;

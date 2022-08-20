@@ -11,6 +11,7 @@
 :- type prog_options
     --->    prog_options(
                 help :: bool,
+                version :: bool,
                 test_auth_only :: bool,
                 allow_mass_delete :: maybe(int)
             ).
@@ -32,6 +33,7 @@
 
 :- type option
     --->    help
+    ;       version
     ;       test_auth_only
     ;       allow_mass_delete.
 
@@ -42,12 +44,14 @@ short_option('h', help).
 :- pred long_option(string::in, option::out) is semidet.
 
 long_option("help", help).
+long_option("version", version).
 long_option("test-auth-only", test_auth_only).
 long_option("allow-mass-delete", allow_mass_delete).
 
 :- pred option_default(option::out, option_data::out) is multi.
 
 option_default(help, bool(no)).
+option_default(version, bool(no)).
 option_default(test_auth_only, bool(no)).
 option_default(allow_mass_delete, maybe_int(no)).
 
@@ -59,6 +63,7 @@ parse_options(Args, NonOptionArgs, Res) :-
     (
         MaybeOptionTable = ok(OptionTable),
         getopt.lookup_bool_option(OptionTable, help, Help),
+        getopt.lookup_bool_option(OptionTable, version, Version),
         getopt.lookup_bool_option(OptionTable, test_auth_only, TestAuth),
         getopt.lookup_maybe_int_option(OptionTable, allow_mass_delete,
             AllowMassDelete),
@@ -69,7 +74,7 @@ parse_options(Args, NonOptionArgs, Res) :-
             Res = error("option `--allow-mass-delete' requires " ++
                 "a positive integer argument")
         ;
-            Options = prog_options(Help, TestAuth, AllowMassDelete),
+            Options = prog_options(Help, Version, TestAuth, AllowMassDelete),
             Res = ok(Options)
         )
     ;

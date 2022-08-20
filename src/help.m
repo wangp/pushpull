@@ -27,6 +27,7 @@ print_help(ProgName, !IO) :-
         "",
         "Options:",
         "  -h, --help                  Display usage and options.",
+        "  --version                   Display version.",
         "  --test-auth-only            Try logging into IMAP server only.",
         "  --allow-mass-delete=NUM     Sync even if more than NUM messages",
         "                              are missing from the Maildir folder."
