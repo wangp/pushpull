@@ -35,7 +35,7 @@ Compiling
 
 With Mercury installed and `mmc` in your PATH, run:
 
-    make PARALLEL=-j6
+    make
 
 If successful, you will get a binary named `pushpull`.
 
