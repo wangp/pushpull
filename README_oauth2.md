@@ -1,12 +1,18 @@
 Using OAuth2 authentication with GMail
 ======================================
 
-These instructions use the following script:
+The following instructions were written using this script:
 
 <https://github.com/google/gmail-oauth2-tools/blob/master/python/oauth2.py>
 
-Note that the script works with Python 2 but has not been updated to work with
-Python 3 (at the time of writing).
+But this is probably a better script to use now:
+
+<https://github.com/getmail6/getmail6/blob/master/getmail-gmail-xoauth-tokens>
+
+with instructions at (search for oauth2):
+
+<https://github.com/getmail6/getmail6/blob/master/docs/getmailrc-examples>
+
 
  1. Obtain OAuth 2.0 client credentials from the Google API Console
     <https://console.developers.google.com/>
@@ -85,5 +91,5 @@ Python 3 (at the time of writing).
 See also
 --------
 
-  - <https://github.com/tenllado/dotfiles/tree/master/config/msmtp>
+  - <https://github.com/tenllado/dotfiles/tree/master/.config/msmtp>
   - <https://developers.google.com/identity/protocols/oauth2>
