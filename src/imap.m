@@ -470,15 +470,15 @@ get_capabilities(IMAP, MaybeCaps, !IO) :-
     get_mutvar(StateMutvar, State, !IO),
     MaybeCaps = State ^ capabilities.
 
-:- pred update_state(pred(T, U, imap_state, imap_state, A, A, io, io),
+:- pred update_state(pred(T, U, imap_state, imap_state, A, A),
     imap, T, U, A, A, io, io).
-:- mode update_state(in(pred(in, out, in, out, in, out, di, uo) is det),
+:- mode update_state(in(pred(in, out, in, out, in, out) is det),
     in, in, out, in, out, di, uo) is det.
 
 update_state(Pred, IMAP, X, Y, !A, !IO) :-
     IMAP = imap(_Pipe, _TagMutvar, StateMutvar),
     get_mutvar(StateMutvar, State0, !IO),
-    Pred(X, Y, State0, State, !A, !IO),
+    Pred(X, Y, State0, State, !A),
     set_mutvar(StateMutvar, State, !IO).
 
 :- pred make_result(tagged_response_or_bye::in, resp_text::in, list(alert)::in,
@@ -552,11 +552,10 @@ do_capability(IMAP, Res, !IO) :-
     ).
 
 :- pred apply_capability_response(complete_response::in, unit::out,
-    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
-    io::di, io::uo) is det.
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out) is det.
 
-apply_capability_response(Response, unit, !State, !Alerts, !IO) :-
-    apply_complete_response(Response, !State, !Alerts, !IO).
+apply_capability_response(Response, unit, !State, !Alerts) :-
+    apply_complete_response2(Response, !State, !Alerts).
 
 %-----------------------------------------------------------------------------%
 
@@ -628,11 +627,10 @@ do_login(username(UserName), password(Password), IMAP, Res, !IO) :-
     ).
 
 :- pred apply_login_response(complete_response::in, unit::out,
-    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
-    io::di, io::uo) is det.
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out) is det.
 
-apply_login_response(Response, unit, !State, !Alerts, !IO) :-
-    apply_complete_response(Response, !State, !Alerts, !IO),
+apply_login_response(Response, unit, !State, !Alerts) :-
+    apply_complete_response2(Response, !State, !Alerts),
     Response = complete_response(_, FinalMaybeTag, _),
     (
         FinalMaybeTag = tagged(_, ok),
@@ -726,11 +724,10 @@ do_authenticate(IMAP, AuthMechName, SASLString, Res, !IO) :-
     ).
 
 :- pred apply_authenticate_response(complete_response::in, unit::out,
-    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
-    io::di, io::uo) is det.
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out) is det.
 
-apply_authenticate_response(Response, unit, !State, !Alerts, !IO) :-
-    apply_complete_response(Response, !State, !Alerts, !IO),
+apply_authenticate_response(Response, unit, !State, !Alerts) :-
+    apply_complete_response2(Response, !State, !Alerts),
     Response = complete_response(_, FinalMaybeTag, _),
     (
         FinalMaybeTag = tagged(_, ok),
@@ -781,11 +778,11 @@ do_noop(IMAP, Res, !IO) :-
     ).
 
 :- pred apply_noop_response(complete_response::in, unit::out,
-    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
-    io::di, io::uo) is det.
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out)
+    is det.
 
-apply_noop_response(Response, unit, !State, !Alerts, !IO) :-
-    apply_complete_response(Response, !State, !Alerts, !IO),
+apply_noop_response(Response, unit, !State, !Alerts) :-
+    apply_complete_response2(Response, !State, !Alerts),
     Response = complete_response(_, FinalMaybeTag, _),
     (
         FinalMaybeTag = tagged(_, ok)
@@ -836,11 +833,10 @@ do_logout(IMAP, Res, !IO) :-
     ).
 
 :- pred apply_logout_response(complete_response::in, unit::out,
-    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
-    io::di, io::uo) is det.
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out) is det.
 
-apply_logout_response(Response, unit, !State, !Alerts, !IO) :-
-    apply_complete_response(Response, !State, !Alerts, !IO),
+apply_logout_response(Response, unit, !State, !Alerts) :-
+    apply_complete_response2(Response, !State, !Alerts),
     Response = complete_response(_, FinalMaybeTag, _),
     (
         FinalMaybeTag = tagged(_, ok),
@@ -911,10 +907,9 @@ do_select_or_examine(DoSelect, Mailbox, Params, IMAP, Res, !IO) :-
 
 :- pred apply_select_or_examine_response(mailbox::in, complete_response::in,
     unit::out, imap_state::in, imap_state::out,
-    list(alert)::in, list(alert)::out, io::di, io::uo) is det.
+    list(alert)::in, list(alert)::out) is det.
 
-apply_select_or_examine_response(Mailbox, Response, unit, !State, !Alerts, !IO)
-        :-
+apply_select_or_examine_response(Mailbox, Response, unit, !State, !Alerts) :-
     Response = complete_response(_, FinalMaybeTag, _FinalRespText),
     (
         FinalMaybeTag = tagged(_, ok),
@@ -932,7 +927,7 @@ apply_select_or_examine_response(Mailbox, Response, unit, !State, !Alerts, !IO)
         ),
         !State ^ connection_state := logout
     ),
-    apply_complete_response(Response, !State, !Alerts, !IO).
+    apply_complete_response2(Response, !State, !Alerts).
 
 :- func new_selected_mailbox(mailbox) = selected_mailbox.
 
@@ -1078,11 +1073,11 @@ do_append(Mailbox, Flags, MaybeDateTime, Content, IMAP, Res, !IO) :-
 
 :- pred apply_append_response(complete_response::in,
     imap_result(maybe(appenduid))::out, imap_state::in, imap_state::out,
-    unit::in, unit::out, io::di, io::uo) is det.
+    unit::in, unit::out) is det.
 
-apply_append_response(Response, Result, !State, unit, unit, !IO) :-
-    apply_complete_response(Response, !State, [], Alerts,
-        accept_appenduid(no), accept_appenduid(MaybeAppendUID), !IO),
+apply_append_response(Response, Result, !State, unit, unit) :-
+    apply_complete_response3(Response, !State, [], Alerts,
+        accept_appenduid(no), accept_appenduid(MaybeAppendUID)),
     Response = complete_response(_, FinalMaybeTag, FinalRespText),
     (
         FinalMaybeTag = tagged(_, ok),
@@ -1145,11 +1140,11 @@ do_uid_search(SearchKey, MaybeResultOptions, IMAP, Res, !IO) :-
 
 :- pred apply_uid_search_response(complete_response::in,
     imap_result(uid_search_result)::out, imap_state::in, imap_state::out,
-    unit::in, unit::out, io::di, io::uo) is det.
+    unit::in, unit::out) is det.
 
-apply_uid_search_response(Response, Result, !State, unit, unit, !IO) :-
-    apply_complete_response(Response, !State, [], Alerts,
-        uid_search_result([], no, []), SearchResult, !IO),
+apply_uid_search_response(Response, Result, !State, unit, unit) :-
+    apply_complete_response3(Response, !State, [], Alerts,
+        uid_search_result([], no, []), SearchResult),
     Response = complete_response(_, FinalMaybeTag, FinalRespText),
     (
         FinalMaybeTag = tagged(_, ok),
@@ -1215,12 +1210,11 @@ do_uid_fetch(SequenceSet, Items, MaybeModifier, IMAP, Res, !IO) :-
 
 :- pred apply_uid_fetch_response(complete_response::in,
     imap_res(assoc_list(message_seq_nr, msg_atts))::out,
-    imap_state::in, imap_state::out, unit::in, unit::out, io::di, io::uo)
-    is det.
+    imap_state::in, imap_state::out, unit::in, unit::out) is det.
 
-apply_uid_fetch_response(Response, Result, !State, unit, unit, !IO) :-
-    apply_complete_response(Response, !State, [], Alerts,
-        accept_fetch_results([]), accept_fetch_results(RevFetchResults), !IO),
+apply_uid_fetch_response(Response, Result, !State, unit, unit) :-
+    apply_complete_response3(Response, !State, [], Alerts,
+        accept_fetch_results([]), accept_fetch_results(RevFetchResults)),
     Response = complete_response(_, FinalMaybeTag, FinalRespText),
     (
         FinalMaybeTag = tagged(_, ok),
@@ -1324,11 +1318,10 @@ do_idle(IMAP, Res, !IO) :-
     ).
 
 :- pred apply_idle_response(tag::in, complete_response::in, imap_res::out,
-    imap_state::in, imap_state::out, unit::in, unit::out, io::di, io::uo)
-    is det.
+    imap_state::in, imap_state::out, unit::in, unit::out) is det.
 
-apply_idle_response(Tag, Response, Result, !State, unit, unit, !IO) :-
-    apply_complete_response(Response, !State, [], Alerts, !IO),
+apply_idle_response(Tag, Response, Result, !State, unit, unit) :-
+    apply_complete_response2(Response, !State, [], Alerts),
     Response = complete_response(_, FinalMaybeTag, FinalRespText),
     (
         % Unexpected response.
@@ -1399,9 +1392,9 @@ read_single_idle_response(IMAP, Res, !IO) :-
 
 :- pred apply_idle_untagged_response(untagged_response_data::in,
     pair(stop_or_continue, list(alert))::out, imap_state::in, imap_state::out,
-    unit::in, unit::out, io::di, io::uo) is det.
+    unit::in, unit::out) is det.
 
-apply_idle_untagged_response(ResponseData, Stop - Alerts, !State, !R, !IO) :-
+apply_idle_untagged_response(ResponseData, Stop - Alerts, !State, !R) :-
     apply_untagged_response(ResponseData, !State, [], Alerts, !R),
     ( stop_idling(ResponseData, StopPrime) ->
         Stop = StopPrime
@@ -1495,12 +1488,11 @@ do_idle_done(IMAP, Tag, ResumeConnState, Res, !IO) :-
     ).
 
 :- pred apply_idle_done_response(connection_state::in, complete_response::in,
-    imap_res::out, imap_state::in, imap_state::out, unit::in, unit::out,
-    io::di, io::uo) is det.
+    imap_res::out, imap_state::in, imap_state::out, unit::in, unit::out) is det.
 
-apply_idle_done_response(ResumeConnState, Response, Result, !State, unit, unit,
-        !IO) :-
-    apply_complete_response(Response, !State, [], Alerts, !IO),
+apply_idle_done_response(ResumeConnState, Response, Result, !State, unit, unit)
+        :-
+    apply_complete_response2(Response, !State, [], Alerts),
     Response = complete_response(_, FinalMaybeTag, FinalRespText),
     (
         (
@@ -1601,18 +1593,17 @@ wait_for_complete_response_2(Pipe, Tag, RevUntagged0, Res, !IO) :-
 
 %-----------------------------------------------------------------------------%
 
-:- pred apply_complete_response(complete_response::in,
+:- pred apply_complete_response2(complete_response::in,
+    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out) is det.
+
+apply_complete_response2(Response, !State, !Alerts) :-
+    apply_complete_response3(Response, !State, !Alerts, unit, _ : unit).
+
+:- pred apply_complete_response3(complete_response::in,
     imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
-    io::di, io::uo) is det.
+    R::in, R::out) is det <= handle_results(R).
 
-apply_complete_response(Response, !State, !Alerts, !IO) :-
-    apply_complete_response(Response, !State, !Alerts, unit, _ : unit, !IO).
-
-:- pred apply_complete_response(complete_response::in,
-    imap_state::in, imap_state::out, list(alert)::in, list(alert)::out,
-    R::in, R::out, io::di, io::uo) is det <= handle_results(R).
-
-apply_complete_response(Response, !State, !Alerts, !R, !IO) :-
+apply_complete_response3(Response, !State, !Alerts, !R) :-
     Response = complete_response(UntaggedResponses, FinalMaybeTag,
         FinalRespText),
     apply_untagged_responses(UntaggedResponses, !State, !Alerts, !R),

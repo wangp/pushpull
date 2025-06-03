@@ -36,7 +36,7 @@ split(Input, ParseResult) :-
 
 :- pred no_skip_whitespace(src::in, unit::out, ps::in, ps::out) is semidet.
 
-no_skip_whitespace(_, unit, !PS) :-
+no_skip_whitespace(_, unit, PS, PS) :-
     semidet_true.
 
 :- pred next_char_np(src::in, char::out, ps::in, ps::out) is semidet.
