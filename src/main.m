@@ -1057,7 +1057,8 @@ idle_until_sync(Log, Config, IMAP, Inotify, Res, !DirCache, !IO) :-
     EndTime = StartTime + IdleTimeoutSecs,
 
     % Send IDLE command.
-    log_notice(Log, "Idling", !IO),
+    log_notice(Log, format("Idling for %d seconds", [i(IdleTimeoutSecs)]),
+        !IO),
     idle(IMAP, Res0, !IO),
     (
         Res0 = ok(result(Status, IdleText, IdleAlerts)),
