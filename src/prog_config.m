@@ -88,6 +88,7 @@
 :- implementation.
 
 :- import_module dir.
+:- import_module float.
 :- import_module int.
 :- import_module map.
 :- import_module parsing_utils.
@@ -291,8 +292,9 @@ make_prog_config(Config, Home, PairingName, ProgConfig, !Errors) :-
     ),
 
     ( nonempty(Config, "imap", "idle_timeout_minutes", Mins0) ->
-        ( positive_int(Mins0, Mins) ->
-            IdleTimeoutSecs = min(Mins * 60, max_idle_timeout_seconds)
+        ( positive_float(Mins0, Mins) ->
+            Secs = floor_to_int(Mins * 60.0),
+            IdleTimeoutSecs = max(1, min(Secs, max_idle_timeout_seconds))
         ;
             IdleTimeoutSecs = 0,
             cons("imap.idle_timeout_minutes invalid: " ++ Mins0, !Errors)
@@ -385,6 +387,12 @@ positive_int(String, Int) :-
 nonnegative_int(String, Int) :-
     string.to_int(String, Int),
     Int >= 0.
+
+:- pred positive_float(string::in, float::out) is semidet.
+
+positive_float(String, Float) :-
+    string.to_float(String, Float),
+    Float > 0.0.
 
 :- pred bool(string::in, bool::out) is semidet.
 

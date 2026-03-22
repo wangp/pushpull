@@ -83,7 +83,8 @@
     # after a sychronisation cycle.
     idle = no
 
-    # Re-enter idle mode after this many minutes.
+    # Re-enter idle mode after this many minutes (max 29).
+    # Fractional values are rounded down to the nearest second.
     idle_timeout_minutes = 29
 
     # Whether to perform synchronisation after the IDLE command times
