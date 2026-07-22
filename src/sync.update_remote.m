@@ -6,6 +6,9 @@
 
 :- import_module io.
 
+:- import_module database.
+:- import_module log.
+
     % Update the database's knowledge of the remote mailbox state,
     % since the last known mod-sequence-value.
     %
@@ -31,9 +34,7 @@
 :- import_module unit.
 
 :- import_module binary_string.
-:- import_module database.
 :- import_module flag_delta.
-:- import_module log.
 :- import_module log_help.
 :- import_module message_file.
 :- import_module string_util.

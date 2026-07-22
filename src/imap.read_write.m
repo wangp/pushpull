@@ -4,6 +4,8 @@
 :- module imap.read_write.
 :- interface.
 
+:- import_module imap.command.
+
 :- pred read_crlf_line_chop(pipe::in, io.result(list(int))::out,
     io::di, io::uo) is det.
 

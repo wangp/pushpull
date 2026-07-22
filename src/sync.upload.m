@@ -7,6 +7,8 @@
 :- import_module io.
 
 :- import_module dir_cache.
+:- import_module log.
+:- import_module maybe_result.
 
 :- pred upload_unpaired_local_messages(log::in, prog_config::in, database::in,
     imap::in, mailbox_pair::in, dir_cache::in, maybe_result::out,
@@ -28,10 +30,8 @@
 :- import_module binary_string.
 :- import_module flag_delta.
 :- import_module imap.date_time.
-:- import_module log.
 :- import_module log_help.
 :- import_module maildir.
-:- import_module maybe_result.
 :- import_module message_file.
 :- import_module path.
 

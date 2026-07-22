@@ -9,6 +9,8 @@
 :- import_module io.
 :- import_module map.
 
+:- import_module imap.parsing.
+
 :- type greeting
     --->    ok(resp_text)
     ;       preauth(resp_text)

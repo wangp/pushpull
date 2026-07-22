@@ -4,6 +4,7 @@
 :- module sync.flags_local.
 :- interface.
 
+:- import_module bool.
 :- import_module maybe.
 
 :- import_module dir_cache.

@@ -4,9 +4,12 @@
 :- module sync.download.
 :- interface.
 
+:- import_module bool.
 :- import_module io.
 
 :- import_module dir_cache.
+:- import_module log.
+:- import_module maildir.
 
 :- pred download_unpaired_remote_messages(log::in, prog_config::in,
     env_info::in, database::in, imap::in, mailbox_pair::in, maybe_result::out,
@@ -18,7 +21,6 @@
 :- implementation.
 
 :- import_module assoc_list.
-:- import_module bool.
 :- import_module dir.
 :- import_module int.
 :- import_module integer.
@@ -33,10 +35,8 @@
 :- import_module crc8.
 :- import_module flag_delta.
 :- import_module imap.date_time.
-:- import_module log.
 :- import_module log_help.
 :- import_module lowio.
-:- import_module maildir.
 :- import_module message_file.
 :- import_module path.
 :- import_module signal.

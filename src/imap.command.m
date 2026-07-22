@@ -4,6 +4,8 @@
 :- module imap.command.
 :- interface.
 
+:- import_module list.
+
 :- type command
     --->    tag - command_in_state.
 
@@ -85,7 +87,6 @@
 :- implementation.
 
 :- import_module cord.
-:- import_module list.
 :- import_module string.
 
 :- type acc == cord(chunk). % could probably be reverse list
