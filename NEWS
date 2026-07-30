@@ -1,3 +1,11 @@
+pushpull 0.3.1 (2026-07-30)
+===========================
+
+* Changes to compile with recent Mercury ROTD.
+* Accept fractional values for idle_timeout_minutes.
+* Build with PARALLEL by default.
+* Add reset_lastmodseq.sh script.
+
 pushpull 0.3 (2022-08-21)
 =========================
 Please note that config keys related to authentication have changed.
